@@ -24,6 +24,7 @@ import { slackEventOf } from '../service-worker/slack-frame.js'
 import {
   runSlackPageCommand,
   type SlackPageCommand,
+  type SlackPageFailure,
   type SlackPageResult,
   SlackPageResultSchema,
 } from '../service-worker/slack-page.js'
@@ -81,23 +82,46 @@ const injected = async (target: chrome.scripting.InjectionTarget, command: Slack
   return injection?.result
 }
 
-// What the command answered, checked. A command that failed in the page throws with the page's own words, which quote
-// nothing the page holds.
-const pageResultOf = (tabId: number, answered: unknown): SlackPageResult => {
+// What each failure code of a Slack page says (slack-page.ts SLACK_PAGE_FAILURES). Worded here, so no error quotes the
+// page or a response.
+const PAGE_FAILURE_TEXT: Readonly<Record<SlackPageFailure, string>> = {
+  'client-state-unreadable': "Slack's saved client state does not read",
+  'no-api-session': "Slack's client keeps no API session for the workspace",
+  'no-api-address': "Slack's client keeps no Slack API address for the workspace",
+  'api-unreachable': "Slack's Web API could not be reached",
+  'api-refused': "Slack's Web API refused the call",
+  'api-no-answer': "Slack's Web API answered no JSON object with a boolean ok",
+  'file-unreachable': 'Slack could not be reached for the file',
+  'file-refused': 'Slack refused the file',
+  'file-bytes-lost': "The file's bytes did not arrive",
+  'upload-url-missing': 'files.getUploadURLExternal answered neither an upload URL nor an error',
+  'upload-unreachable': 'The upload URL could not be reached',
+  'uncaught': 'The command failed in the page',
+}
+
+// What the command answered, checked. Every error here is worded by the service worker: a failure from its code and
+// status, and an answer that does not read with a fixed message, since zod's would quote the keys the answer holds.
+const pageResultOf = (tabId: number, command: SlackPageCommand, answered: unknown): SlackPageResult => {
   if (answered === undefined) {
     throw new Error(`The Slack page in tab ${tabId} answered nothing`)
   }
 
-  const result = SlackPageResultSchema.parse(answered)
-  if (result.kind === 'failed') {
-    throw new Error(`The Slack page in tab ${tabId} failed: ${result.error}`)
+  const result = SlackPageResultSchema.safeParse(answered)
+  if (!result.success) {
+    throw new Error(`The Slack page in tab ${tabId} answered what does not read`)
   }
 
-  return result
+  if (result.data.kind === 'failed') {
+    const { failure, status } = result.data
+    const refusal = status === null ? '' : ` (HTTP ${status})`
+    throw new Error(`The Slack page in tab ${tabId} failed ${command.kind}: ${PAGE_FAILURE_TEXT[failure]}${refusal}`)
+  }
+
+  return result.data
 }
 
 const runInPage = async (tabId: number, command: SlackPageCommand): Promise<SlackPageResult> =>
-  pageResultOf(tabId, await injected({ tabId }, command))
+  pageResultOf(tabId, command, await injected({ tabId }, command))
 
 const unexpected = (result: SlackPageResult): Error => new Error(`The Slack page answered ${result.kind}`)
 
@@ -105,12 +129,13 @@ const unexpected = (result: SlackPageResult): Error => new Error(`The Slack page
 // page. A page the extension cannot script (discarded, still loading, an error page, a document that is gone) shows no
 // account; an answer that does not read is an error.
 const identityOf = async (target: chrome.scripting.InjectionTarget): Promise<SlackIdentity | null> => {
-  const answered = await injected(target, { kind: 'identity' }).catch(() => null)
+  const command: SlackPageCommand = { kind: 'identity' }
+  const answered = await injected(target, command).catch(() => null)
   if (answered === null) {
     return null
   }
 
-  const result = pageResultOf(target.tabId, answered)
+  const result = pageResultOf(target.tabId, command, answered)
   if (result.kind !== 'identity') {
     throw unexpected(result)
   }
@@ -240,6 +265,10 @@ const handlers: Handlers = {
     const result = await inSlackTab(account, { kind: 'upload', account, filename, chunks: parts })
     if (result === null) {
       return { ok: false, error: NO_SLACK_TAB_ERROR }
+    }
+
+    if (result.kind === 'upload-refused') {
+      return { ok: false, error: `The upload URL answered HTTP ${result.status}` }
     }
 
     if (result.kind !== 'prepared') {

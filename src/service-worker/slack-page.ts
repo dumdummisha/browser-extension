@@ -20,8 +20,40 @@ export type SlackPageCommand =
       readonly chunks: readonly string[]
     }
 
+// Why a command did not complete, as a fixed code. The page words no error itself, so no text the page or a response
+// holds becomes one: the service worker words each code (background.ts).
+// - client-state-unreadable: Slack's saved client state is not JSON
+// - no-api-session, no-api-address: the saved state keeps no token, or no https address on a workspace's Slack host
+// - api-unreachable, api-refused, api-no-answer: a Web API call got no response, an HTTP status other than 2xx, or no
+//   JSON object with a boolean ok
+// - file-unreachable, file-refused, file-bytes-lost: a private file got no response, a status other than 2xx, or its
+//   bytes did not arrive
+// - upload-url-missing: files.getUploadURLExternal answered neither an upload URL with a file id nor an error
+// - upload-unreachable: the upload URL got no response
+// - uncaught: any other error
+export const SLACK_PAGE_FAILURES = [
+  'client-state-unreadable',
+  'no-api-session',
+  'no-api-address',
+  'api-unreachable',
+  'api-refused',
+  'api-no-answer',
+  'file-unreachable',
+  'file-refused',
+  'file-bytes-lost',
+  'upload-url-missing',
+  'upload-unreachable',
+  'uncaught',
+] as const
+
+export type SlackPageFailure = (typeof SLACK_PAGE_FAILURES)[number]
+
+// The HTTP status of a response that was not 2xx: a number, never text.
+const HttpStatusSchema = z.number().int().min(100).max(599)
+
 // What a command answers, checked when it comes back, since the page's own scripts run in the same world. A command
-// that did not complete answers failed, in words the function chose itself.
+// that did not complete answers failed with its code, and with the HTTP status of the refusal for api-refused and
+// file-refused. upload-refused: the upload URL answered a status other than 2xx, so Slack holds no bytes.
 export const SlackPageResultSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     kind: z.literal('identity'),
@@ -31,7 +63,12 @@ export const SlackPageResultSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('answer'), answer: SlackAnswerSchema }),
   z.strictObject({ kind: z.literal('file'), data: z.string() }),
   z.strictObject({ kind: z.literal('prepared'), prepared: PreparedUploadSchema }),
-  z.strictObject({ kind: z.literal('failed'), error: z.string().min(1) }),
+  z.strictObject({ kind: z.literal('upload-refused'), status: HttpStatusSchema }),
+  z.strictObject({
+    kind: z.literal('failed'),
+    failure: z.enum(SLACK_PAGE_FAILURES),
+    status: HttpStatusSchema.nullable(),
+  }),
 ])
 
 export type SlackPageResult = z.infer<typeof SlackPageResultSchema>
@@ -42,10 +79,17 @@ export type SlackPageResult = z.infer<typeof SlackPageResultSchema>
 // answers and file bytes. It posts the token, with the browser's cookies, only to the workspace's https address on
 // Slack's own domain, and follows no redirect with it, since the saved state is the page's to change. An error could
 // quote what the page holds (a JSON parser quotes the text it failed on), so none leaves the function: a command that
-// fails answers failed, in words of its own.
+// fails answers failed with a fixed code (SLACK_PAGE_FAILURES).
 export const runSlackPageCommand = async (command: SlackPageCommand): Promise<SlackPageResult> => {
-  // A failure the function words itself; any other error becomes a fixed message.
-  class PageFailure extends Error {}
+  // A failure the function names itself; any other error becomes uncaught.
+  class PageFailure extends Error {
+    constructor(
+      public readonly failure: SlackPageFailure,
+      public readonly status: number | null = null
+    ) {
+      super(failure)
+    }
+  }
 
   // A workspace's own host on Slack's domain: example.slack.com, or example.enterprise.slack.com in an Enterprise Grid.
   const SLACK_API_HOSTNAME = /^[a-z0-9][a-z0-9-]*(?:\.enterprise)?\.slack\.com$/u
@@ -53,7 +97,10 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
   const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
 
   // Runs step, and fails with failure in place of whatever error it threw.
-  const guarded = async <TResult>(failure: string, step: () => TResult | Promise<TResult>): Promise<TResult> => {
+  const guarded = async <TResult>(
+    failure: SlackPageFailure,
+    step: () => TResult | Promise<TResult>
+  ): Promise<TResult> => {
     try {
       return await step()
     } catch {
@@ -65,9 +112,7 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
     const teamId = /^\/client\/(?<teamId>[TE][A-Z0-9]+)/u.exec(location.pathname)?.groups?.teamId
     const saved = localStorage.getItem('localConfig_v2')
     const config: unknown =
-      saved === null
-        ? null
-        : await guarded("Slack's saved client state does not read", (): unknown => JSON.parse(saved))
+      saved === null ? null : await guarded('client-state-unreadable', (): unknown => JSON.parse(saved))
     const team: unknown =
       teamId !== undefined && isRecord(config) && isRecord(config.teams) ? config.teams[teamId] : null
     if (teamId === undefined || !isRecord(team) || typeof team.user_id !== 'string' || typeof team.name !== 'string') {
@@ -83,7 +128,7 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
     }
 
     if (typeof team.token !== 'string' || typeof team.url !== 'string') {
-      throw new PageFailure(`Slack's client keeps no API session for ${teamId}`)
+      throw new PageFailure('no-api-session')
     }
 
     const { token } = team
@@ -95,7 +140,7 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
       base.port === '' &&
       SLACK_API_HOSTNAME.test(base.hostname)
     if (!isSlackApiBase) {
-      throw new PageFailure(`Slack's client keeps no Slack API address for ${teamId}`)
+      throw new PageFailure('no-api-address')
     }
 
     const apiUrl = new URL('/api/', base.origin)
@@ -105,7 +150,7 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
       method: string,
       params: Readonly<Record<string, string>>
     ): Promise<{ readonly ok: boolean; readonly [field: string]: unknown }> => {
-      const response = await guarded(`Slack ${method} could not be reached`, () =>
+      const response = await guarded('api-unreachable', () =>
         fetch(new URL(method, apiUrl), {
           method: 'POST',
           body: new URLSearchParams({ ...params, token }),
@@ -113,11 +158,13 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
           redirect: 'error',
         })
       )
-      const answer: unknown = response.ok
-        ? await guarded(`Slack ${method} answered no JSON`, (): Promise<unknown> => response.json())
-        : null
+      if (!response.ok) {
+        throw new PageFailure('api-refused', response.status)
+      }
+
+      const answer: unknown = await guarded('api-no-answer', (): Promise<unknown> => response.json())
       if (!isRecord(answer) || typeof answer.ok !== 'boolean') {
-        throw new PageFailure(`Slack ${method} answered ${response.status}`)
+        throw new PageFailure('api-no-answer')
       }
 
       return { ...answer, ok: answer.ok }
@@ -125,14 +172,14 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
 
     // A private file, fetched with the browser's cookies.
     const download = async (url: string): Promise<SlackPageResult> => {
-      const response = await guarded('Slack could not be reached for the file', () =>
+      const response = await guarded('file-unreachable', () =>
         fetch(url, { credentials: 'include', redirect: 'error' })
       )
       if (!response.ok) {
-        throw new PageFailure(`Slack answered ${response.status} for the file`)
+        throw new PageFailure('file-refused', response.status)
       }
 
-      const bytes = await guarded("The file's bytes did not arrive", () => response.arrayBuffer())
+      const bytes = await guarded('file-bytes-lost', () => response.arrayBuffer())
 
       return { kind: 'file', data: new Uint8Array(bytes).toBase64() }
     }
@@ -144,7 +191,7 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
       const ticket = await callSlack('files.getUploadURLExternal', { filename, length: String(byteLength) })
       if (!ticket.ok) {
         if (typeof ticket.error !== 'string') {
-          throw new PageFailure('files.getUploadURLExternal answered not ok without an error')
+          throw new PageFailure('upload-url-missing')
         }
 
         return { kind: 'prepared', prepared: { ok: false, error: ticket.error } }
@@ -152,19 +199,17 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
 
       const { upload_url: uploadUrl, file_id: fileId } = ticket
       if (typeof uploadUrl !== 'string' || typeof fileId !== 'string') {
-        throw new PageFailure('files.getUploadURLExternal answered no upload URL')
+        throw new PageFailure('upload-url-missing')
       }
 
       // A multipart body needs no preflight, and the upload URL itself grants the upload, so no cookies go with it.
       const body = new FormData()
       body.append('filename', new Blob(parts), filename)
-      const posted = await guarded('The upload URL could not be reached', () =>
-        fetch(uploadUrl, { method: 'POST', body })
-      )
+      const posted = await guarded('upload-unreachable', () => fetch(uploadUrl, { method: 'POST', body }))
 
       return posted.ok
         ? { kind: 'prepared', prepared: { ok: true, fileId } }
-        : { kind: 'prepared', prepared: { ok: false, error: `The upload URL answered ${posted.status}` } }
+        : { kind: 'upload-refused', status: posted.status }
     }
 
     switch (command.kind) {
@@ -180,9 +225,8 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
   try {
     return await run()
   } catch (error) {
-    return {
-      kind: 'failed',
-      error: error instanceof PageFailure ? error.message : `The Slack page could not run ${command.kind}`,
-    }
+    return error instanceof PageFailure
+      ? { kind: 'failed', failure: error.failure, status: error.status }
+      : { kind: 'failed', failure: 'uncaught', status: null }
   }
 }

@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict'
 import { describe, it, type TestContext } from 'node:test'
-import { runSlackPageCommand, type SlackPageCommand, type SlackPageResult } from './slack-page.js'
+import {
+  runSlackPageCommand,
+  type SlackPageCommand,
+  type SlackPageResult,
+  SlackPageResultSchema,
+} from './slack-page.js'
 
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 const TOKEN = 'xoxc-0000-example'
@@ -65,14 +70,14 @@ describe('[service-worker] Slack page - where the token goes', () => {
     // Assert
     assert.deepEqual(
       results,
-      addresses.map(() => ({ kind: 'failed', error: "Slack's client keeps no Slack API address for T0EXAMPLE1" }))
+      addresses.map(() => ({ kind: 'failed', failure: 'no-api-address', status: null }))
     )
     assert.equal(fetched.mock.callCount(), 0)
   })
 })
 
 describe('[service-worker] Slack page - failures', () => {
-  it('should answer a fixed failure, quoting nothing, when the saved client state does not parse', async (context) => {
+  it('should answer a failure code, quoting nothing, when the saved client state does not parse', async (context) => {
     // Arrange
     openSlackPage(context, () => `{"teams":{"T0EXAMPLE1":{"token":"${TOKEN}",`)
 
@@ -80,10 +85,10 @@ describe('[service-worker] Slack page - failures', () => {
     const result = await runSlackPageCommand({ kind: 'identity' })
 
     // Assert
-    assert.deepEqual(result, { kind: 'failed', error: "Slack's saved client state does not read" })
+    assert.deepEqual(result, { kind: 'failed', failure: 'client-state-unreadable', status: null })
   })
 
-  it('should answer a fixed failure, quoting nothing, when what Slack answered does not parse', async (context) => {
+  it('should answer a failure code, quoting nothing, when what Slack answered does not parse', async (context) => {
     // Arrange
     openSlackPage(context, () => savedConfig('https://example.slack.com/'))
     context.mock.method(globalThis, 'fetch', () => Promise.resolve(new Response(`not json ${TOKEN}`)))
@@ -92,10 +97,22 @@ describe('[service-worker] Slack page - failures', () => {
     const result = await runSlackPageCommand(CALL)
 
     // Assert
-    assert.deepEqual(result, { kind: 'failed', error: 'Slack auth.test answered no JSON' })
+    assert.deepEqual(result, { kind: 'failed', failure: 'api-no-answer', status: null })
   })
 
-  it('should replace any other error with a fixed message naming only the command', async (context) => {
+  it('should answer a refused call with its code and HTTP status, quoting nothing of the response', async (context) => {
+    // Arrange
+    openSlackPage(context, () => savedConfig('https://example.slack.com/'))
+    context.mock.method(globalThis, 'fetch', () => Promise.resolve(new Response(`denied ${TOKEN}`, { status: 503 })))
+
+    // Act
+    const result = await runSlackPageCommand(CALL)
+
+    // Assert
+    assert.deepEqual(result, { kind: 'failed', failure: 'api-refused', status: 503 })
+  })
+
+  it('should answer any other error as uncaught', async (context) => {
     // Arrange
     openSlackPage(context, () => {
       throw new Error(`The storage failed near ${TOKEN}`)
@@ -105,6 +122,26 @@ describe('[service-worker] Slack page - failures', () => {
     const result = await runSlackPageCommand({ kind: 'identity' })
 
     // Assert
-    assert.deepEqual(result, { kind: 'failed', error: 'The Slack page could not run identity' })
+    assert.deepEqual(result, { kind: 'failed', failure: 'uncaught', status: null })
+  })
+
+  it('should refuse a failure that carries text, a code it does not know or a status that is no HTTP status', () => {
+    // Arrange
+    const answers = [
+      { kind: 'failed', error: TOKEN },
+      { kind: 'failed', failure: TOKEN, status: null },
+      { kind: 'failed', failure: 'api-refused', status: TOKEN },
+      { kind: 'failed', failure: 'api-refused', status: 503.5 },
+      { kind: 'upload-refused', status: TOKEN },
+    ]
+
+    // Act
+    const results = answers.map((answer) => SlackPageResultSchema.safeParse(answer).success)
+
+    // Assert
+    assert.deepEqual(
+      results,
+      answers.map(() => false)
+    )
   })
 })

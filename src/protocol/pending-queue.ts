@@ -24,8 +24,10 @@ import { type SlackEvent, SlackEventSchema } from './slack.js'
 // 2. admitting a captured event: an event already pending changes nothing; with fewer than EVENT_QUEUE_MAX pending, the
 //    event is put, and with the queue full it is counted instead (countedLoss). An event whose put committed is
 //    forwarded from the queue.
-// 3. the ack, which the app sends after the commit that took the event: the event is deleted, from the queue or from
-//    the unstored events below.
+// 3. the ack, which the app sends after the commit that took the event. An unstored event (below) is dropped from
+//    memory and from its redelivery at once, with no transaction, since the app already committed it; that alone does
+//    not end a queue failure. A stored event is deleted in the change's transaction, before anything else that
+//    transaction does, so the room it frees counts for the unstored events the same transaction admits.
 // A change whose transaction does not commit (it aborts or fails, on the quota or anything else) is a queue failure,
 // which the status reports as failing (slack.ts QueueHealthSchema) until a change commits. A recovery that failed runs
 // again before the next change, so while it keeps failing every admission fails too. An event whose admission did not
@@ -33,8 +35,9 @@ import { type SlackEvent, SlackEventSchema } from './slack.js'
 // directly, now when one is attached and to each listener that attaches later, with the same redelivery waits as a
 // stored event. The app commits an event before it acknowledges it, so an acknowledged unstored event is durable on the
 // app's side, and the ack drops it from memory. An unstored event beyond the limit is lost for want of room, and the
-// writer keeps their number, uncounted. The next change that commits first admits every unstored event still held by
-// rule 2 and adds the uncounted number to the count, all in its own transaction, and the failure clears.
+// writer keeps their number, uncounted. The next change that commits applies its own deletion first when it is an ack,
+// then admits every unstored event still held by rule 2 and adds the uncounted number to the count, all in its own
+// transaction, and the failure clears. If that transaction does not commit, the unstored events stay held.
 //
 // The limit that remains: an event is lost without a durable count only when its admission did not commit, the app did
 // not commit it (no listener was attached, or the app had not acknowledged it yet), and the worker restarts before any

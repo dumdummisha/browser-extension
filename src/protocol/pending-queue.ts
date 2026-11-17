@@ -27,9 +27,9 @@ export const DROPPED_EVENTS_KEY = 'dropped-events'
 export const pendingEventKey = (eventId: string): string => `${PENDING_EVENT_KEY_PREFIX}${eventId}`
 
 // While a listener is attached, an event forwarded and not yet acknowledged is forwarded again under the same id after
-// each of these waits in turn, and then after the last one again for as long as it stays pending. They are the website's
-// routing retry waits up to ten minutes (messaging-routing.ts RETRY_DELAYS_SECONDS). They repeat rather than end,
-// because the website gave an event up after its last wait and an event given up here is lost. A listener attaching
+// each of these waits in turn, and then after the last one again for as long as it stays pending. They are the retry
+// waits Misha's earlier cloud router used for an event it failed to route, up to ten minutes. They repeat rather than
+// end, because that router gave an event up after its last wait and an event given up here is lost. A listener attaching
 // gets every pending event at once, and each one's waits start over. The app does not acknowledge an event it failed
 // to commit, and taking a repeat it already has changes nothing (its receipt is unique), so redelivery needs no reply
 // of its own: the extension owns it, and the app only acknowledges.

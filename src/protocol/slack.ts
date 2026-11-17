@@ -35,12 +35,39 @@ export const parseSlackAccountId = (accountId: string): SlackAccount => {
   return { teamId: groups.teamId, userId: groups.userId }
 }
 
-// A message event from Slack's socket, as the page received it. Only what the dedupe key needs is read here; the app
-// parses the rest, and nothing in it ever becomes a command to the extension.
-export const SlackMessageFrameSchema = z.looseObject({
+// Routing takes only a new message: one with no subtype, or with one of these. An edit (message_changed) or a deletion
+// is never forwarded, so it never becomes a command.
+export const NEW_MESSAGE_SUBTYPES = ['thread_broadcast', 'file_share'] as const
+
+// The fields of a new message the app reads (misha-desktop inbound.ts), under Slack's own names. channel_type is often
+// missing from the socket's frames, and the app resolves it.
+const messageFields = {
   type: z.literal('message'),
+  subtype: z.enum(NEW_MESSAGE_SUBTYPES).optional(),
   channel: z.string().min(1),
+  channel_type: z.string().min(1).optional(),
   ts: SlackTsSchema,
+  user: z.string().min(1).optional(),
+  bot_id: z.string().min(1).optional(),
+  app_id: z.string().min(1).optional(),
+  client_msg_id: z.string().min(1).optional(),
+  text: z.string(),
+  thread_ts: SlackTsSchema.optional(),
+  parent_user_id: z.string().min(1).optional(),
+}
+const FileIdSchema = z.string().min(1)
+
+// A new message as the extension forwards it: only those fields and the ids of the files it shares, so nothing else the
+// page received (file URLs, profiles, blocks) leaves it, and nothing in it ever becomes a command to the extension.
+export const SlackMessageFrameSchema = z.strictObject({
+  ...messageFields,
+  files: z.array(z.strictObject({ id: FileIdSchema })).optional(),
+})
+
+// A new message as Slack's socket sends it: the extension reads the frame's fields and drops everything else.
+export const SocketMessageSchema = z.object({
+  ...messageFields,
+  files: z.array(z.object({ id: FileIdSchema })).optional(),
 })
 
 export type SlackMessageFrame = z.infer<typeof SlackMessageFrameSchema>

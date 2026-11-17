@@ -12,6 +12,9 @@ export const SLACK_SOCKET_HOSTNAME = /^wss-[a-z]+\.slack\.com$/u
 // The workspace a Slack tab shows: the team in its /client/<team> path.
 export const SLACK_CLIENT_PATH = /^\/client\/(?<teamId>[TE][A-Z0-9]+)/u
 
+// Slack's saved client state in the page's localStorage: each workspace under teams, with its signed-in user_id.
+export const SLACK_CLIENT_STATE_KEY = 'localConfig_v2'
+
 // The page's observer and the extension's relay in the isolated world share only the document, and use it once, at
 // document_start before any of the page's scripts run. The manifest loads the observer first, and it listens for
 // RELAY_READY_EVENT; the relay dispatches that event, and while it does, the observer answers with OBSERVER_PORT_EVENT,

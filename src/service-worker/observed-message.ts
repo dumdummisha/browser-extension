@@ -4,11 +4,11 @@ import { type CaptureHealth, SlackAccountSchema, SlackMessageFrameSchema } from 
 // The messages between a Slack tab's observer, its relay and the service worker (extension/observer.ts, relay.ts and
 // background.ts). What the page reports is data: it becomes events and status, never a command.
 
-// A new message the observer saw, already cut down in the page (message-projection.ts), with the workspace the tab
-// showed when it came.
+// A new message the observer saw, already cut down in the page (message-projection.ts), with the account the tab showed
+// when it came: the workspace in its address, and that workspace's signed-in user in Slack's saved client state.
 const FrameMessageSchema = z.strictObject({
   kind: z.literal('frame'),
-  teamId: SlackAccountSchema.shape.teamId,
+  account: SlackAccountSchema,
   frame: SlackMessageFrameSchema,
 })
 

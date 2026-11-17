@@ -2,14 +2,15 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { captureHealthOf, ObserverMessageSchema } from './observed-message.js'
 
+const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 const FRAME = { type: 'message', channel: 'C0EXAMPLE1', ts: '1700000000.000100', text: 'hello' }
 const SAVED_STATE = '{"teams":{"T0EXAMPLE1":{"token":"xoxc-0000-example"}}}'
 
 describe('[service-worker] Observed messages - from the observer', () => {
-  it('should take a new message with its workspace, and a socket state that is a boolean', () => {
+  it('should take a new message with its signed-in account, and a socket state that is a boolean', () => {
     // Arrange
     const messages = [
-      { kind: 'frame', teamId: 'T0EXAMPLE1', frame: FRAME },
+      { kind: 'frame', account: ACCOUNT, frame: FRAME },
       { kind: 'socket', isSocketOpen: true },
     ]
 
@@ -20,14 +21,16 @@ describe('[service-worker] Observed messages - from the observer', () => {
     assert.deepEqual(results, [true, true])
   })
 
-  it('should refuse a socket state that is no boolean, and anything that is not a new message', () => {
+  it('should refuse a socket state that is no boolean, a message without its signed-in user, and anything else', () => {
     // Arrange
     const messages = [
       { kind: 'socket' },
       { kind: 'socket', isSocketOpen: '{}' },
       { kind: 'socket', isSocketOpen: true, state: SAVED_STATE },
-      { kind: 'frame', teamId: 'T0EXAMPLE1', frame: SAVED_STATE },
-      { kind: 'frame', teamId: 'T0EXAMPLE1', frame: { ...FRAME, token: 'xoxc-0000-example' } },
+      { kind: 'frame', account: ACCOUNT, frame: SAVED_STATE },
+      { kind: 'frame', account: ACCOUNT, frame: { ...FRAME, token: 'xoxc-0000-example' } },
+      { kind: 'frame', teamId: ACCOUNT.teamId, frame: FRAME },
+      { kind: 'frame', account: { teamId: ACCOUNT.teamId }, frame: FRAME },
       { kind: 'frame', frame: FRAME },
       SAVED_STATE,
     ]

@@ -1,11 +1,17 @@
 import { projectedMessageOf } from '../service-worker/message-projection.js'
-import { OBSERVER_PORT_EVENT, RELAY_READY_EVENT, SLACK_CLIENT_PATH, SLACK_SOCKET_HOSTNAME } from './config.js'
+import {
+  OBSERVER_PORT_EVENT,
+  RELAY_READY_EVENT,
+  SLACK_CLIENT_PATH,
+  SLACK_CLIENT_STATE_KEY,
+  SLACK_SOCKET_HOSTNAME,
+} from './config.js'
 
 // Runs in the page's own world at document_start, before Slack's scripts, so it wraps WebSocket before Slack opens its
 // socket. It only reads: it sends nothing on the socket, and never passes the socket's URL on, since the URL carries a
 // token. It hands the extension's relay one end of a private channel (config.ts), and passes on it only what it takes
 // from Slack's socket itself: whether a socket is open, and each new message cut down to the fields the app reads, with
-// the workspace the tab showed when it came.
+// the account the tab showed when it came.
 //
 // Slack's scripts, and anything else the page runs later, share this world and can replace any built-in. So every
 // built-in that decides what the relay gets is taken here before they run (and in message-projection.ts), and only
@@ -16,6 +22,8 @@ const NativeUrl = URL
 const execPattern = RegExp.prototype.exec
 const listen = EventTarget.prototype.addEventListener
 const postToPort = MessagePort.prototype.postMessage
+const storedItem = Storage.prototype.getItem
+const parseJson = JSON.parse
 
 const getterOf = (prototype: object, name: string): (() => unknown) => {
   const getter = getOwnPropertyDescriptor(prototype, name)?.get
@@ -48,6 +56,30 @@ const reportSocketState = (): void => {
 const matches = (pattern: RegExp, text: unknown): RegExpExecArray | null =>
   typeof text === 'string' ? apply(execPattern, pattern, [text]) : null
 
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
+
+// The user this tab is signed in as in workspace teamId, from Slack's saved client state, where the service worker's
+// identity read finds it too (slack-page.ts); undefined when the state names none. A JSON parser's error quotes the text
+// it failed on, which holds the token, so a state that does not parse fails in words of its own.
+const signedInUserOf = (teamId: string): string | undefined => {
+  const saved: unknown = apply(storedItem, localStorage, [SLACK_CLIENT_STATE_KEY])
+  if (typeof saved !== 'string') {
+    return undefined
+  }
+
+  let state: unknown
+  try {
+    state = parseJson(saved)
+  } catch {
+    throw new Error("Slack's saved client state does not read")
+  }
+
+  const team = isRecord(state) && isRecord(state.teams) ? state.teams[teamId] : undefined
+  const userId = isRecord(team) ? team.user_id : undefined
+
+  return typeof userId === 'string' ? userId : undefined
+}
+
 // Listens for the socket's events the browser dispatched; one a page script dispatched on the socket is not Slack's.
 const onTrusted = (socket: WebSocket, type: string, handler: (event: Event) => void): void => {
   apply(listen, socket, [
@@ -74,12 +106,19 @@ const observe = (socket: WebSocket): void => {
       reportSocketState()
     }
   })
+  // The account is read as the message comes, so the service worker can drop it if the tab is signed in as another
+  // account by the time it is admitted. A tab that shows no workspace, or no user for it, keys nothing.
   onTrusted(socket, 'message', (event) => {
     const data: unknown = apply(messageData, event, [])
     const frame = typeof data === 'string' ? projectedMessageOf(data) : null
     const teamId = matches(SLACK_CLIENT_PATH, location.pathname)?.groups?.teamId
-    if (frame !== null && teamId !== undefined) {
-      toRelay({ kind: 'frame', teamId, frame })
+    if (frame === null || teamId === undefined) {
+      return
+    }
+
+    const userId = signedInUserOf(teamId)
+    if (userId !== undefined) {
+      toRelay({ kind: 'frame', account: { teamId, userId }, frame })
     }
   })
 }

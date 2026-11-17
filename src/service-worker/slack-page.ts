@@ -109,6 +109,8 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
   }
 
   const run = async (): Promise<SlackPageResult> => {
+    // The path and the key the observer reads too (config.ts SLACK_CLIENT_PATH and SLACK_CLIENT_STATE_KEY), written out
+    // since this function cannot import.
     const teamId = /^\/client\/(?<teamId>[TE][A-Z0-9]+)/u.exec(location.pathname)?.groups?.teamId
     const saved = localStorage.getItem('localConfig_v2')
     const config: unknown =

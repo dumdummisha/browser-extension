@@ -357,21 +357,20 @@ const attachListener = (): Promise<void> =>
     }
   })
 
-// A new message a Slack tab's observer saw in the document source, while the tab showed workspace teamId. It becomes an
-// event keyed by the account that same document is signed in as, and only while it still shows that workspace: a
-// document that is gone, or that moved to another workspace since, would key the message by an account it did not come
-// to, so the message is dropped instead.
+// A new message a Slack tab's observer saw in the document source, while the tab showed the captured account. It
+// becomes an event only while that same document is still signed in as that account (slackEventOf): a document that is
+// gone, or that moved to another workspace or user since, would key the message by an account it did not come to, so
+// the message is dropped instead.
 const admitFrame = async (
   source: chrome.scripting.InjectionTarget,
-  teamId: string,
+  captured: SlackAccount,
   message: SlackMessageFrame
 ): Promise<void> => {
-  const identity = await identityOf(source)
-  if (identity?.teamId !== teamId) {
+  const event = slackEventOf(captured, await identityOf(source), message)
+  if (event === null) {
     return
   }
 
-  const event = slackEventOf({ teamId, userId: identity.userId }, message)
   const admission = await writer.admit(event)
   if (admission === 'stored' || admission === 'held') {
     forwarder.forward(event)
@@ -423,7 +422,7 @@ chrome.runtime.onMessage.addListener((message: unknown, sender) => {
 
   const observed = ObservedMessageSchema.parse(message)
   if (observed.kind === 'frame') {
-    void intake(() => admitFrame({ tabId, documentIds: [documentId] }, observed.teamId, observed.frame))
+    void intake(() => admitFrame({ tabId, documentIds: [documentId] }, observed.account, observed.frame))
   } else {
     void pushStatus()
   }

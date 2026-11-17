@@ -68,9 +68,12 @@ export type SlackEvent = z.infer<typeof SlackEventSchema>
 // Who an open Slack tab is signed in as, and whether its observer sees Slack's socket. The two are reported apart: a
 // tab can be signed in while its observer is detached (a reload, a socket Slack moved), and that is a capture
 // problem, not a sign-in one. droppedEvents counts every event the extension lost since it was installed (no room in
-// the pending queue, no room in storage, a stored entry it could not read back): it is stored with the queue
-// (pending-queue.ts), so it survives restarts and only grows, and a count higher than the last one the app saw is a
-// loss to report.
+// the pending queue, a stored record it could not read back, and the events a queue failure lost, once a later change
+// counts them): it is stored with the queue (pending-queue.ts), so it survives restarts and only grows, and a count
+// higher than the last one the app saw is a loss to report. queueFailure is a pending-queue change that did not commit:
+// the error its transaction failed with, and how many events were lost since without droppedEvents counting them yet.
+// It is a capture failure, since the extension keeps no event it cannot store, and it clears when a change commits,
+// which adds those events to droppedEvents. Null while the queue's changes commit.
 export const SlackIdentitySchema = SlackAccountSchema.extend({
   tabId: z.number().int(),
   teamName: z.string(),
@@ -82,15 +85,22 @@ export const CaptureHealthSchema = z.strictObject({
   isSocketOpen: z.boolean(),
 })
 
+export const QueueFailureSchema = z.strictObject({
+  error: z.string().min(1),
+  uncountedEvents: z.number().int().nonnegative(),
+})
+
 export const SlackStatusSchema = z.strictObject({
   type: z.literal('status'),
   identities: z.array(SlackIdentitySchema),
   captures: z.array(CaptureHealthSchema),
   droppedEvents: z.number().int().nonnegative(),
+  queueFailure: QueueFailureSchema.nullable(),
 })
 
 export type SlackIdentity = z.infer<typeof SlackIdentitySchema>
 export type CaptureHealth = z.infer<typeof CaptureHealthSchema>
+export type QueueFailure = z.infer<typeof QueueFailureSchema>
 export type SlackStatus = z.infer<typeof SlackStatusSchema>
 
 // The Web API methods a Slack tab will call for the app. Reads change nothing anyone sees; writes do, so the app sends

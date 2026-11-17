@@ -1,18 +1,34 @@
 import { z } from 'zod'
 import { type SlackEvent, SlackEventSchema } from './slack.js'
 
-// The extension's pending queue: every event it captured that the app has not acknowledged yet. Service workers stop
-// and restart and the browser quits, so the queue lives in the extension's own durable storage (chrome.storage.local),
-// never only in memory:
-// - an event is written to storage before it is forwarded; one that cannot be written is not admitted, and is counted
-// - on startup the extension restores the queue (restoredQueue) before it forwards anything
-// - an event leaves storage only when the app's ack for it arrives, which the app sends after the commit that took it
-// - the loss count (the status's droppedEvents) is stored beside the events, so it survives restarts too
+// The extension's pending queue: every event it captured that the app has not acknowledged yet, and the count of the
+// events it lost (the status's droppedEvents). Service workers stop and restart and the browser quits, so both live in
+// IndexedDB in the extension's origin, never only in memory. IndexedDB commits a transaction over several stores whole
+// or not at all, so deleting an event and counting it as lost commit together, and a crash can neither hide a loss nor
+// count one twice. chrome.storage has no such transaction, and the queue does not use it.
 //
-// Storage holds one item per event, under pendingEventKey(id), whose value is the event exactly as it goes on the wire
-// (SlackEventSchema), so admitting an event writes one item rather than the whole queue. One more item,
-// DROPPED_EVENTS_KEY, holds the loss count; it is absent until the first loss. A full queue can outgrow
-// storage.local's default quota, so the manifest asks for unlimitedStorage.
+// The database is PENDING_QUEUE_DATABASE at PENDING_QUEUE_DATABASE_VERSION, created with two stores, each with keyPath
+// STORE_KEY_PATH:
+// - PENDING_EVENTS_STORE: one record per pending event, the event exactly as it goes on the wire (SlackEventSchema), so
+//   a record's key is its event's id
+// - LOSS_STORE: at most one record, DroppedEventsRecordSchema under DROPPED_EVENTS_ID, absent until the first loss
+// Chrome may evict an extension's IndexedDB under storage pressure, which would take the queue and its count with it,
+// unless the extension holds the unlimitedStorage permission, so the manifest asks for it.
+//
+// Only the extension's service worker opens the database, and one writer there makes every change, one at a time, each
+// as one readwrite transaction over both stores with durability strict, so a commit means the change is on disk:
+// 1. recovery, when the worker starts and before any intake or ack: read every pending record and the loss record
+//    (restoredQueue), delete the records that hold no readable event, and add their number to the count (countedLoss).
+//    Once it commits, the extension forwards the restored events. An event captured before then waits for it.
+// 2. admitting a captured event: an event already pending changes nothing; with fewer than EVENT_QUEUE_MAX pending, the
+//    event is put, and with the queue full it is counted instead (countedLoss). Only an event whose put committed is
+//    forwarded.
+// 3. the ack, which the app sends after the commit that took the event: the event is deleted.
+// A change whose transaction does not commit (it aborts or fails, on the quota or anything else) is a queue failure,
+// which the status reports (slack.ts QueueFailureSchema). An event that could not be admitted is lost, and is never
+// discarded while the count stays as it was and the status looks healthy: while the failure lasts, the writer keeps the
+// number of events it lost, the next change that commits adds that number to the count in its own transaction, and
+// the failure clears. A recovery that failed runs again before the next change.
 
 // Events the queue holds at most. When it is full, a new event is dropped and counted, so the queue keeps the oldest
 // run in order.
@@ -21,10 +37,12 @@ export const EVENT_QUEUE_MAX = 2000
 // there; the app's unique event receipt drops any that get past.
 export const EVENT_IDS_REMEMBERED = 5000
 
-export const PENDING_EVENT_KEY_PREFIX = 'pending-event:'
-export const DROPPED_EVENTS_KEY = 'dropped-events'
-
-export const pendingEventKey = (eventId: string): string => `${PENDING_EVENT_KEY_PREFIX}${eventId}`
+export const PENDING_QUEUE_DATABASE = 'misha-pending-queue'
+export const PENDING_QUEUE_DATABASE_VERSION = 1
+export const PENDING_EVENTS_STORE = 'pending-events'
+export const LOSS_STORE = 'loss'
+export const STORE_KEY_PATH = 'id'
+export const DROPPED_EVENTS_ID = 'dropped-events'
 
 // While a listener is attached, an event forwarded and not yet acknowledged is forwarded again under the same id after
 // each of these waits in turn, and then after the last one again for as long as it stays pending. They are the retry
@@ -52,16 +70,56 @@ export class PendingQueueError extends Error {
   }
 }
 
+// The one record of LOSS_STORE: how many events the extension lost since it was installed (no room in the queue, a
+// stored record it could not read back, and the events a queue failure lost, once a later change counts them). It
+// only grows.
+export const DroppedEventsRecordSchema = z.strictObject({
+  id: z.literal(DROPPED_EVENTS_ID),
+  droppedEvents: z.number().int().nonnegative(),
+})
+
+export type DroppedEventsRecord = z.infer<typeof DroppedEventsRecordSchema>
+
+// A record of PENDING_EVENTS_STORE as recovery's cursor reads it: its primary key and its value.
+export interface IStoredPendingEvent {
+  readonly key: IDBValidKey
+  readonly value: unknown
+}
+
 export interface IRestoredQueue {
   // Oldest message first (by its ts, then its id), the order they are forwarded in.
   readonly events: SlackEvent[]
   readonly droppedEvents: number
-  // Items under the prefix that hold no readable event, or another event than their key names. They can never be
-  // delivered: the extension removes them and adds their number to droppedEvents.
-  readonly unreadableKeys: string[]
+  // The records that hold no readable event. They can never be delivered: recovery deletes them and adds their number
+  // to the count, in its one transaction.
+  readonly unreadableKeys: IDBValidKey[]
 }
 
-const DroppedEventsSchema = z.number().int().nonnegative()
+// The count LOSS_STORE holds, from what IDBObjectStore.get answered for DROPPED_EVENTS_ID: zero only when there is no
+// record (undefined). Anything else, null included, has to be a DroppedEventsRecord, or it is an error: guessing a
+// count would hide how many events were lost.
+export const droppedEventsOf = (lossRecord: unknown): number => {
+  if (lossRecord === undefined) {
+    return 0
+  }
+
+  const record = DroppedEventsRecordSchema.safeParse(lossRecord)
+  if (!record.success) {
+    throw new PendingQueueError(`The stored loss record is no count:\n${z.prettifyError(record.error)}`)
+  }
+
+  return record.data.droppedEvents
+}
+
+// The LOSS_STORE record that counts `lost` more events than lossRecord, which the same transaction read. The count
+// only grows, so `lost` is a whole number above zero.
+export const countedLoss = (lossRecord: unknown, lost: number): DroppedEventsRecord => {
+  if (!Number.isInteger(lost) || lost < 1) {
+    throw new RangeError(`${lost} is no number of lost events`)
+  }
+
+  return { id: DROPPED_EVENTS_ID, droppedEvents: droppedEventsOf(lossRecord) + lost }
+}
 
 // By the message's ts, as a whole number of microseconds so ten-digit and nine-digit seconds compare right, then by id.
 const compareMessages = (left: SlackEvent, right: SlackEvent): number => {
@@ -74,34 +132,21 @@ const compareMessages = (left: SlackEvent, right: SlackEvent): number => {
   return Number(left.id > right.id) - Number(left.id < right.id)
 }
 
-// The queue as the extension finds it on startup, from everything chrome.storage.local holds (get(null)). Items under
-// other keys are not the queue's and are left alone. A loss count that is not a count is an error: guessing one would
-// hide how many events were lost.
-export const restoredQueue = (stored: Readonly<Record<string, unknown>>): IRestoredQueue => {
-  const storedCount = stored[DROPPED_EVENTS_KEY]
-  const droppedEvents = DroppedEventsSchema.safeParse(storedCount ?? 0)
-  if (!droppedEvents.success) {
-    throw new PendingQueueError(`The stored ${DROPPED_EVENTS_KEY} is no count: ${JSON.stringify(storedCount)}`)
-  }
-
+// The queue as recovery finds it, from every record of PENDING_EVENTS_STORE and the LOSS_STORE record (droppedEventsOf).
+// The store's keyPath makes each record's key its event's id, so a record is readable exactly when its value is an
+// event.
+export const restoredQueue = (records: readonly IStoredPendingEvent[], lossRecord: unknown): IRestoredQueue => {
+  const droppedEvents = droppedEventsOf(lossRecord)
   const events: SlackEvent[] = []
-  const unreadableKeys: string[] = []
-  for (const [key, value] of Object.entries(stored)) {
-    if (!key.startsWith(PENDING_EVENT_KEY_PREFIX)) {
-      continue
-    }
-
+  const unreadableKeys: IDBValidKey[] = []
+  for (const { key, value } of records) {
     const event = SlackEventSchema.safeParse(value)
-    if (event.success && pendingEventKey(event.data.id) === key) {
+    if (event.success) {
       events.push(event.data)
     } else {
       unreadableKeys.push(key)
     }
   }
 
-  return {
-    events: events.sort(compareMessages),
-    droppedEvents: droppedEvents.data,
-    unreadableKeys,
-  }
+  return { events: events.sort(compareMessages), droppedEvents, unreadableKeys }
 }

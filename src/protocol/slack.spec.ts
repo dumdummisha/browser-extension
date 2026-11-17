@@ -9,6 +9,7 @@ import {
   slackAccountId,
   slackEventKey,
   SlackEventSchema,
+  SlackStatusSchema,
 } from './slack.js'
 
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
@@ -53,6 +54,21 @@ describe('[protocol] Slack accounts and events', () => {
     // Assert
     assert.equal(accepted.success, true)
     assert.equal(refused.success, false)
+  })
+})
+
+describe('[protocol] Slack status', () => {
+  it('should state a queue failure, or that there is none, in every snapshot', () => {
+    // Arrange
+    const silent = { type: 'status', identities: [], captures: [], droppedEvents: 2 }
+    const healthy = { ...silent, queueFailure: null }
+    const failing = { ...silent, queueFailure: { error: 'QuotaExceededError', uncountedEvents: 3 } }
+
+    // Act
+    const parsed = [healthy, failing, silent].map((status) => SlackStatusSchema.safeParse(status).success)
+
+    // Assert
+    assert.deepEqual(parsed, [true, true, false])
   })
 })
 

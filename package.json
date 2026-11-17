@@ -20,6 +20,7 @@
   },
   "scripts": {
     "build": "tsc && node scripts/build-extension.js",
+    "install-host": "node dist/host/install.js",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint",
     "format": "oxfmt",

@@ -4,7 +4,7 @@ import { ClientMessageSchema, ExtensionFrameSchema, HostFrameSchema, RelayMessag
 import { slackEventKey } from './slack.js'
 
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
-const FRAME = { type: 'message', channel: 'D0EXAMPLE1', ts: '1700000000.000100' } as const
+const FRAME = { type: 'message', channel: 'D0EXAMPLE1', ts: '1700000000.000100', text: 'hello' } as const
 const EVENT = { type: 'event', id: slackEventKey(ACCOUNT, FRAME), account: ACCOUNT, frame: FRAME } as const
 
 describe('[protocol] Wire messages', () => {

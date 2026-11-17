@@ -14,7 +14,7 @@ import { type SlackEvent, slackEventKey } from './slack.js'
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 
 const eventAt = (channel: string, ts: string): SlackEvent => {
-  const frame = { type: 'message', channel, ts } as const
+  const frame = { type: 'message', channel, ts, text: 'hello' } as const
 
   return { type: 'event', id: slackEventKey(ACCOUNT, frame), account: ACCOUNT, frame } as const
 }

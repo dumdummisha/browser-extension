@@ -286,6 +286,15 @@
       }
     },
     {
+      "files": ["scripts/**/*.js"],
+      "rules": {
+        "no-console": "off",
+        "typescript/no-unsafe-assignment": "off",
+        "typescript/no-unsafe-call": "off",
+        "typescript/no-unsafe-member-access": "off"
+      }
+    },
+    {
       "files": ["lint/**/*.mjs"],
       "rules": {
         "import/no-default-export": "off",

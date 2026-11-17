@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { type MessageField, NEW_MESSAGE_SUBTYPES } from './slack-message-fields.js'
 
 // The Slack half of the protocol: who a tab is signed in as, what the page's observer reports, and what the app may ask
 // the extension to do in a Slack tab. Every call names the account it acts as, and the extension acts only in a tab
@@ -35,12 +36,28 @@ export const parseSlackAccountId = (accountId: string): SlackAccount => {
   return { teamId: groups.teamId, userId: groups.userId }
 }
 
-// A message event from Slack's socket, as the page received it. Only what the dedupe key needs is read here; the app
-// parses the rest, and nothing in it ever becomes a command to the extension.
-export const SlackMessageFrameSchema = z.looseObject({
+// The fields of a new message the app reads but its files (slack-message-fields.ts).
+const messageFields = {
   type: z.literal('message'),
+  subtype: z.enum(NEW_MESSAGE_SUBTYPES).optional(),
   channel: z.string().min(1),
+  channel_type: z.string().min(1).optional(),
   ts: SlackTsSchema,
+  user: z.string().min(1).optional(),
+  bot_id: z.string().min(1).optional(),
+  app_id: z.string().min(1).optional(),
+  client_msg_id: z.string().min(1).optional(),
+  text: z.string(),
+  thread_ts: SlackTsSchema.optional(),
+  parent_user_id: z.string().min(1).optional(),
+} satisfies Record<MessageField, z.ZodType>
+
+// A new message as the extension forwards it: only those fields and the ids of the files it shares, so nothing else the
+// page received (file URLs, profiles, blocks) leaves it, and nothing in it ever becomes a command to the extension. The
+// page's observer cuts each frame down to these before it leaves the page, and the relay checks it against this.
+export const SlackMessageFrameSchema = z.strictObject({
+  ...messageFields,
+  files: z.array(z.strictObject({ id: z.string().min(1) })).optional(),
 })
 
 export type SlackMessageFrame = z.infer<typeof SlackMessageFrameSchema>
@@ -50,11 +67,16 @@ export type SlackMessageFrame = z.infer<typeof SlackMessageFrameSchema>
 export const slackEventKey = (account: SlackAccount, frame: Pick<SlackMessageFrame, 'channel' | 'ts'>): string =>
   `${slackAccountId(account)}/${frame.channel}/${frame.ts}`
 
+// The longest event id the extension admits: far longer than any real key (an account id, a channel id and a ts come
+// to about 50 characters), and short enough that the ack naming it always fits a native message (framing.ts
+// HOST_MESSAGE_MAX_BYTES).
+export const SLACK_EVENT_ID_MAX_LENGTH = 1024
+
 // An event the extension holds until the app acknowledges it, which the app does only once it has committed it.
 export const SlackEventSchema = z
   .strictObject({
     type: z.literal('event'),
-    id: z.string(),
+    id: z.string().max(SLACK_EVENT_ID_MAX_LENGTH),
     account: SlackAccountSchema,
     frame: SlackMessageFrameSchema,
   })
@@ -65,19 +87,24 @@ export const SlackEventSchema = z
 
 export type SlackEvent = z.infer<typeof SlackEventSchema>
 
-// Who an open Slack tab is signed in as, and whether its observer sees Slack's socket. The two are reported apart: a
-// tab can be signed in while its observer is detached (a reload, a socket Slack moved), and that is a capture
-// problem, not a sign-in one.
+const TabIdSchema = z.number().int()
+
+// Who an open Slack tab is signed in as, and how its capture stands. The two are reported apart: a tab can be signed in
+// while its capture is detached or failed, and that is a capture problem, not a sign-in one.
 export const SlackIdentitySchema = SlackAccountSchema.extend({
-  tabId: z.number().int(),
+  tabId: TabIdSchema,
   teamName: z.string(),
 })
 
-export const CaptureHealthSchema = z.strictObject({
-  tabId: z.number().int(),
-  isObserverAttached: z.boolean(),
-  isSocketOpen: z.boolean(),
-})
+// A tab's capture. detached: no observer reports in it (a tab opened before the extension loaded, which captures once
+// it reloads). attached: its observer reports, and isSocketOpen says whether it sees Slack's socket open. failed: what
+// the tab's capture produced did not read (a frame whose fields Slack moved, or its relay's answer), so its messages may
+// be lost until it reloads; error says what did not read.
+export const CaptureHealthSchema = z.discriminatedUnion('state', [
+  z.strictObject({ tabId: TabIdSchema, state: z.literal('detached') }),
+  z.strictObject({ tabId: TabIdSchema, state: z.literal('attached'), isSocketOpen: z.boolean() }),
+  z.strictObject({ tabId: TabIdSchema, state: z.literal('failed'), error: z.string().min(1) }),
+])
 
 const EventCountSchema = z.number().int().nonnegative()
 

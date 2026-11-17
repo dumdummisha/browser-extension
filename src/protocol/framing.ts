@@ -1,7 +1,7 @@
 // Chrome native messaging frames each JSON message with its byte length as a 32-bit integer in native byte order,
 // which is little-endian on every Mac. The relay's socket clients (the app, and any process that drives the browser)
 // carry one JSON message per line instead. Node only: the extension's side of the pipe is Chrome's port.
-const FRAME_HEADER_BYTES = 4
+export const FRAME_HEADER_BYTES = 4
 
 // Chrome refuses a message from the native host larger than this and closes the pipe; messages to the host may be far
 // larger. So every frame the relay writes to the extension must fit, which is why files travel in chunks.
@@ -37,12 +37,23 @@ export const createFrameReader = (onMessage: (message: unknown) => void): ((chun
 // JSON.stringify escapes the newlines inside strings, so a line always holds exactly one message.
 export const encodeLine = (message: unknown): string => `${JSON.stringify(message)}\n`
 
-export const createLineReader = (onMessage: (message: unknown) => void): ((chunk: string) => void) => {
+// A line longer than maxLineLength characters throws, a line still unfinished as soon as it runs past it, so a peer
+// that never ends a line cannot make the reader hold it without bound. With no maxLineLength, lines are unbounded.
+export const createLineReader = (
+  onMessage: (message: unknown) => void,
+  maxLineLength = Number.POSITIVE_INFINITY
+): ((chunk: string) => void) => {
   let buffer = ''
 
   return (chunk) => {
     const lines = `${buffer}${chunk}`.split('\n')
     buffer = lines.pop() ?? ''
+
+    for (const line of [...lines, buffer]) {
+      if (line.length > maxLineLength) {
+        throw new RangeError(`A line runs past ${maxLineLength} characters`)
+      }
+    }
 
     for (const line of lines) {
       const message: unknown = JSON.parse(line)

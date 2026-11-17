@@ -11,9 +11,11 @@ const DISK_FULL = 'QuotaExceededError: The disk is full'
 interface IQueueControl {
   // While set, opening the database fails, as a disk that is full does.
   isOpeningRefused: boolean
-  // While set, the loss store of a database opened refuses every write, as a disk that fills up between a
-  // transaction's reads and its writes does.
+  // While set, the loss store refuses every write, as a disk that fills up between a transaction's reads and its
+  // writes does.
   isLossWriteRefused: boolean
+  // Runs with each record put in the pending events store, before the put; what it throws, the put throws.
+  onEventPut: (record: unknown) => void
   connection: IDBDatabase | null
 }
 
@@ -63,7 +65,8 @@ const storedQueue = async (factory: IDBFactory): Promise<IStoredQueue> => {
   return { ids: keys.result.map(String), lossRecord: loss.result }
 }
 
-const refuseLossWrites = (database: IDBDatabase): void => {
+// Puts on the database go through control: isLossWriteRefused and onEventPut.
+const interceptPuts = (database: IDBDatabase, control: IQueueControl): void => {
   const openTransaction = database.transaction.bind(database)
   Object.defineProperty(database, 'transaction', {
     value: (...args: Parameters<IDBDatabase['transaction']>): IDBTransaction => {
@@ -72,13 +75,20 @@ const refuseLossWrites = (database: IDBDatabase): void => {
       Object.defineProperty(transaction, 'objectStore', {
         value: (name: string): IDBObjectStore => {
           const store = openStore(name)
-          if (name === LOSS_STORE) {
-            Object.defineProperty(store, 'put', {
-              value: () => {
+          const put = store.put.bind(store)
+          Object.defineProperty(store, 'put', {
+            value: (record: unknown): IDBRequest<IDBValidKey> => {
+              if (name === LOSS_STORE && control.isLossWriteRefused) {
                 throw new DOMException('The disk is full', 'QuotaExceededError')
-              },
-            })
-          }
+              }
+
+              if (name === PENDING_EVENTS_STORE) {
+                control.onEventPut(record)
+              }
+
+              return put(record)
+            },
+          })
 
           return store
         },
@@ -92,7 +102,12 @@ const refuseLossWrites = (database: IDBDatabase): void => {
 const createWriter = (
   factory: IDBFactory
 ): { writer: PendingQueueWriter; control: IQueueControl; restored: SlackEvent[][]; healths: QueueHealth[] } => {
-  const control: IQueueControl = { isOpeningRefused: false, isLossWriteRefused: false, connection: null }
+  const control: IQueueControl = {
+    isOpeningRefused: false,
+    isLossWriteRefused: false,
+    onEventPut: () => undefined,
+    connection: null,
+  }
   const restored: SlackEvent[][] = []
   const healths: QueueHealth[] = []
   const writer = new PendingQueueWriter(
@@ -102,9 +117,7 @@ const createWriter = (
       }
 
       control.connection = await openPendingQueue(factory)
-      if (control.isLossWriteRefused) {
-        refuseLossWrites(control.connection)
-      }
+      interceptPuts(control.connection, control)
 
       return control.connection
     },
@@ -293,6 +306,59 @@ describe('[service-worker] Pending queue writer - failures', () => {
       uncountedEvents: 0,
       loss: { kind: 'last-known', droppedEvents: 0 },
     })
+  })
+
+  it('should settle the ack of a held event a commit in progress stores only once its deletion committed', async () => {
+    // Arrange
+    const factory = new IDBFactory()
+    const held = eventAt('1700000001.000100')
+    const next = eventAt('1700000002.000100')
+    const { writer, control } = createWriter(factory)
+    await writer.recover()
+    breakQueue(control)
+    await writer.admit(held)
+    control.isOpeningRefused = false
+    const acks: Promise<boolean>[] = []
+    control.onEventPut = (record) => {
+      if (record === held) {
+        acks.push(writer.ack(held.id))
+      }
+    }
+
+    // Act
+    const admission = await writer.admit(next)
+    const isRemoved = await Promise.all(acks)
+
+    // Assert
+    assert.deepEqual([admission, isRemoved], ['stored', [true]])
+    assert.equal(writer.isPending(held.id), false)
+    assert.deepEqual((await storedQueue(factory)).ids, [next.id])
+  })
+
+  it('should drop the acknowledged held event from memory when the commit in progress that put it fails', async () => {
+    // Arrange
+    const held = eventAt('1700000001.000100')
+    const next = eventAt('1700000002.000100')
+    const { writer, control } = createWriter(new IDBFactory())
+    await writer.recover()
+    breakQueue(control)
+    await writer.admit(held)
+    control.isOpeningRefused = false
+    const acks: Promise<boolean>[] = []
+    control.onEventPut = (record) => {
+      if (record === held) {
+        acks.push(writer.ack(held.id))
+        throw new DOMException('The disk is full', 'QuotaExceededError')
+      }
+    }
+
+    // Act
+    const admission = await writer.admit(next)
+    const isRemoved = await Promise.all(acks)
+
+    // Assert
+    assert.deepEqual([admission, isRemoved], ['held', [true]])
+    assert.deepEqual(writer.pending(), [next])
   })
 
   it('should keep an acknowledged stored event pending while its deletion fails, and free its room with the next commit', async () => {

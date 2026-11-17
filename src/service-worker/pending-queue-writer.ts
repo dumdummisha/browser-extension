@@ -134,6 +134,8 @@ export class PendingQueueWriter {
   private stored = new Map<string, SlackEvent>()
   // Events whose admission did not commit, forwarded from memory until a change commits and stores or counts them.
   private readonly held = new Map<string, SlackEvent>()
+  // The held events the change in progress put in its transaction, which stores them if it commits.
+  private readonly drafted = new Set<string>()
   // Events lost for want of room while the queue failed, not in the stored count yet.
   private uncountedEvents = 0
   // Whether recovery committed; until it does, every change runs it first.
@@ -187,20 +189,21 @@ export class PendingQueueWriter {
   }
 
   // The app acknowledges an event once it committed it, and the writer remembers it at once. A held event leaves memory
-  // at once too, with no transaction. A stored one is deleted by a change, which deletes every acknowledged event still
-  // stored before it admits the held events (commitChange). It resolves true once the event is no longer pending, and
-  // false when the deletion did not commit: the event stays pending, so it is forwarded again, and the next change that
-  // commits deletes it.
+  // at once too, with no transaction, unless the change in progress put it in its transaction: then the ack waits for
+  // that change, after which the event is either still held, and leaves memory, or stored. A stored one is deleted by a
+  // change, which deletes every acknowledged event still stored before it admits the held events (commitChange). It
+  // resolves true once the event is no longer pending, and false when the deletion did not commit: the event stays
+  // pending, so it is forwarded again, and the next change that commits deletes it.
   public ack(id: string): Promise<boolean> {
     this.remember(id)
-    if (this.held.delete(id)) {
+    if (!this.drafted.has(id) && this.held.delete(id)) {
       this.reportHealth()
 
       return Promise.resolve(true)
     }
 
     return this.enqueue(async () => {
-      if (!this.stored.has(id)) {
+      if (this.held.delete(id) || !this.stored.has(id)) {
         return true
       }
 
@@ -331,6 +334,7 @@ export class PendingQueueWriter {
 
   private admitHeld(draft: IDraft): void {
     for (const event of this.held.values()) {
+      this.drafted.add(event.id)
       admitInto(draft, event)
     }
   }
@@ -339,14 +343,17 @@ export class PendingQueueWriter {
   private settle(pending: Map<string, SlackEvent>, droppedEvents: number): void {
     this.stored = pending
     this.held.clear()
+    this.drafted.clear()
     this.uncountedEvents = 0
     this.droppedEvents = droppedEvents
     this.failure = null
   }
 
-  // A change did not commit. The connection is dropped, so the next change opens the database again.
+  // A change did not commit, so the held events it put in its transaction stay held only. The connection is dropped, so
+  // the next change opens the database again.
   private fail(error: unknown): void {
     this.failure = describeError(error)
+    this.drafted.clear()
     this.database?.close()
     this.database = null
   }

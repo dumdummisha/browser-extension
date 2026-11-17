@@ -26,10 +26,12 @@ import { type SlackEvent, SlackEventSchema } from './slack.js'
 //    forwarded from the queue.
 // 3. the ack, which the app sends after the commit that took the event. The writer remembers the event as acknowledged
 //    at once. An unstored event (below) is dropped from memory and from its redelivery at once, with no transaction,
-//    since the app already committed it; that alone does not end a queue failure. A stored event is deleted in a
-//    change's transaction, before anything else that transaction does, so the room it frees counts for the unstored
-//    events the same transaction admits, and its redelivery stops only once that commits. A deletion that does not
-//    commit leaves the event pending and forwarded again: every change deletes the acknowledged events still stored
+//    since the app already committed it; that alone does not end a queue failure. The exception is an unstored event
+//    the change in progress put in its transaction, which stores it if it commits: the ack waits for that change, then
+//    drops the event from memory if it did not commit, or deletes it as a stored event if it did. A stored event is
+//    deleted in a change's transaction, before anything else that transaction does, so the room it frees counts for the
+//    unstored events the same transaction admits, and its redelivery stops only once that commits. A deletion that does
+//    not commit leaves the event pending and forwarded again: every change deletes the acknowledged events still stored
 //    before anything else, so the first change that commits frees their room.
 // A change whose transaction does not commit (it aborts or fails, on the quota or anything else) is a queue failure,
 // which the status reports as failing (slack.ts QueueHealthSchema) until a change commits. A recovery that failed runs

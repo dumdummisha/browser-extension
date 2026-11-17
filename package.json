@@ -24,7 +24,8 @@
     "lint": "oxlint",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
-    "test": "pnpm run build && node --test 'dist/**/*.spec.js'"
+    "test": "pnpm run build && node --test 'dist/**/*.spec.js'",
+    "prepare": "tsc"
   },
   "packageManager": "pnpm@11.11.0",
   "dependencies": {

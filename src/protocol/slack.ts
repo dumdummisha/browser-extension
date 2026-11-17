@@ -120,8 +120,9 @@ export type SlackWriteMethod = (typeof SLACK_WRITE_METHODS)[number]
 export const NO_SLACK_TAB_ERROR = 'misha_no_slack_tab'
 
 // Slack's own answer, as its Web API sent it: ok with the method's fields, or not ok with Slack's error code (or
-// NO_SLACK_TAB_ERROR). An answer means Slack said so; a reply error instead means the outcome is unknown, so a write
-// that got one may have happened.
+// NO_SLACK_TAB_ERROR, when the extension sent nothing). The extension passes it on as it is and draws no conclusion:
+// some of Slack's errors come after part of a write took effect, so only the app, which knows the method, tells from
+// the code whether a write happened. A reply error means no answer came at all.
 export const SlackAnswerSchema = z.looseObject({ ok: z.boolean(), error: z.string().optional() })
 
 export type SlackAnswer = z.infer<typeof SlackAnswerSchema>
@@ -148,18 +149,22 @@ const ChunkIndexSchema = z.number().int().nonnegative()
 const ChunkDataSchema = z.base64().max(BASE64_CHUNK_MAX)
 const TransferIdSchema = z.uuid()
 
-// An upload is shared once Slack completed it: the file's id is its receipt. Not ok means Slack refused a step, or the
-// chunks did not add up, and nothing was shared.
-export const UploadAnswerSchema = z.discriminatedUnion('ok', [
+// A prepared upload: Slack gave the file its id and holds the bytes, and nobody sees the file until a completion shares
+// it. Not ok means Slack refused the upload URL, the bytes did not reach it, or the chunks did not add up; either way
+// nothing was shared.
+export const PreparedUploadSchema = z.discriminatedUnion('ok', [
   z.strictObject({ ok: z.literal(true), fileId: z.string().min(1) }),
   z.strictObject({ ok: z.literal(false), error: z.string().min(1) }),
 ])
 
-export type UploadAnswer = z.infer<typeof UploadAnswerSchema>
+export type PreparedUpload = z.infer<typeof PreparedUploadSchema>
 
 // The bridge methods of a Slack tab, each with its params and its result. Downloads are pulled chunk by chunk after
-// slackDownload fetched the file; uploads are pushed chunk by chunk under an id the app chose, then slackUploadFinish
-// runs Slack's upload flow (an upload URL, the bytes, the completion that shares the file) for that one file.
+// slackDownload fetched the file. An upload takes two steps, so the app can record the file's id before anything is
+// shared: the app pushes the bytes chunk by chunk under an id it chose, slackUploadPrepare asks Slack for an upload URL
+// and sends them (files.getUploadURLExternal, then the raw POST) and answers the file's id, and slackUploadFinish shares
+// exactly that file (files.completeUploadExternal), with the optional comment Slack posts with it, answering Slack's
+// completion answer as it is.
 export const SLACK_BRIDGE_METHODS = {
   slackCall: {
     params: z.strictObject({
@@ -184,16 +189,25 @@ export const SLACK_BRIDGE_METHODS = {
     params: z.strictObject({ uploadId: TransferIdSchema, index: ChunkIndexSchema, data: ChunkDataSchema }),
     result: z.strictObject({}),
   },
-  slackUploadFinish: {
+  slackUploadPrepare: {
     params: z.strictObject({
       account: SlackAccountSchema,
       uploadId: TransferIdSchema,
       filename: z.string().min(1),
       byteLength: z.number().int().positive(),
+    }),
+    result: PreparedUploadSchema,
+  },
+  slackUploadFinish: {
+    params: z.strictObject({
+      account: SlackAccountSchema,
+      fileId: z.string().min(1),
+      title: z.string().min(1),
       channel: z.string().min(1),
       threadTs: SlackTsSchema.nullable(),
+      initialComment: z.string().min(1).nullable(),
     }),
-    result: UploadAnswerSchema,
+    result: SlackAnswerSchema,
   },
 } as const
 

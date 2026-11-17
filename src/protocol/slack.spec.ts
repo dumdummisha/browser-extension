@@ -80,6 +80,34 @@ describe('[protocol] Slack bridge methods', () => {
     assert.equal(download('http://files.slack.com/files-pri/T0EXAMPLE1-F0EXAMPLE1/report.pdf'), false)
     assert.equal(download('https://files.slack.com.example.org/report.pdf'), false)
   })
+
+  it("should share only a prepared file, by Slack's file id, with or without a comment", () => {
+    // Arrange
+    const finish = {
+      account: ACCOUNT,
+      fileId: 'F0EXAMPLE1',
+      title: 'chart.png',
+      channel: 'C0EXAMPLE1',
+      threadTs: '1700000000.000100',
+      initialComment: ':misha: The chart shows the fix.',
+    }
+
+    // Act
+    const withComment = SLACK_BRIDGE_METHODS.slackUploadFinish.params.safeParse(finish)
+    const without = SLACK_BRIDGE_METHODS.slackUploadFinish.params.safeParse({ ...finish, initialComment: null })
+    const byUploadId = SLACK_BRIDGE_METHODS.slackUploadFinish.params.safeParse({
+      ...finish,
+      fileId: undefined,
+      uploadId: '5b0d7e3a-9c41-4f2e-8a6b-1d2c3e4f5a6b',
+    })
+    const prepared = SLACK_BRIDGE_METHODS.slackUploadPrepare.result.safeParse({ ok: true, fileId: 'F0EXAMPLE1' })
+
+    // Assert
+    assert.deepEqual(
+      [withComment.success, without.success, byUploadId.success, prepared.success],
+      [true, true, false, true]
+    )
+  })
 })
 
 describe('[protocol] File chunks', () => {

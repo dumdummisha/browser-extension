@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { type MessageField, NEW_MESSAGE_SUBTYPES } from './slack-message-fields.js'
 
 // The Slack half of the protocol: who a tab is signed in as, what the page's observer reports, and what the app may ask
 // the extension to do in a Slack tab. Every call names the account it acts as, and the extension acts only in a tab
@@ -35,12 +36,7 @@ export const parseSlackAccountId = (accountId: string): SlackAccount => {
   return { teamId: groups.teamId, userId: groups.userId }
 }
 
-// Routing takes only a new message: one with no subtype, or with one of these. An edit (message_changed) or a deletion
-// is never forwarded, so it never becomes a command.
-export const NEW_MESSAGE_SUBTYPES = ['thread_broadcast', 'file_share'] as const
-
-// The fields of a new message the app reads (misha-desktop inbound.ts), under Slack's own names. channel_type is often
-// missing from the socket's frames, and the app resolves it.
+// The fields of a new message the app reads but its files (slack-message-fields.ts).
 const messageFields = {
   type: z.literal('message'),
   subtype: z.enum(NEW_MESSAGE_SUBTYPES).optional(),
@@ -54,20 +50,14 @@ const messageFields = {
   text: z.string(),
   thread_ts: SlackTsSchema.optional(),
   parent_user_id: z.string().min(1).optional(),
-}
-const FileIdSchema = z.string().min(1)
+} satisfies Record<MessageField, z.ZodType>
 
 // A new message as the extension forwards it: only those fields and the ids of the files it shares, so nothing else the
-// page received (file URLs, profiles, blocks) leaves it, and nothing in it ever becomes a command to the extension.
+// page received (file URLs, profiles, blocks) leaves it, and nothing in it ever becomes a command to the extension. The
+// page's observer cuts each frame down to these before it leaves the page, and the relay checks it against this.
 export const SlackMessageFrameSchema = z.strictObject({
   ...messageFields,
-  files: z.array(z.strictObject({ id: FileIdSchema })).optional(),
-})
-
-// A new message as Slack's socket sends it: the extension reads the frame's fields and drops everything else.
-export const SocketMessageSchema = z.object({
-  ...messageFields,
-  files: z.array(z.object({ id: FileIdSchema })).optional(),
+  files: z.array(z.strictObject({ id: z.string().min(1) })).optional(),
 })
 
 export type SlackMessageFrame = z.infer<typeof SlackMessageFrameSchema>
@@ -97,19 +87,24 @@ export const SlackEventSchema = z
 
 export type SlackEvent = z.infer<typeof SlackEventSchema>
 
-// Who an open Slack tab is signed in as, and whether its observer sees Slack's socket. The two are reported apart: a
-// tab can be signed in while its observer is detached (a reload, a socket Slack moved), and that is a capture
-// problem, not a sign-in one.
+const TabIdSchema = z.number().int()
+
+// Who an open Slack tab is signed in as, and how its capture stands. The two are reported apart: a tab can be signed in
+// while its capture is detached or failed, and that is a capture problem, not a sign-in one.
 export const SlackIdentitySchema = SlackAccountSchema.extend({
-  tabId: z.number().int(),
+  tabId: TabIdSchema,
   teamName: z.string(),
 })
 
-export const CaptureHealthSchema = z.strictObject({
-  tabId: z.number().int(),
-  isObserverAttached: z.boolean(),
-  isSocketOpen: z.boolean(),
-})
+// A tab's capture. detached: no observer reports in it (a tab opened before the extension loaded, which captures once
+// it reloads). attached: its observer reports, and isSocketOpen says whether it sees Slack's socket open. failed: what
+// the tab's capture produced did not read (a frame whose fields Slack moved, or its relay's answer), so its messages may
+// be lost until it reloads; error says what did not read.
+export const CaptureHealthSchema = z.discriminatedUnion('state', [
+  z.strictObject({ tabId: TabIdSchema, state: z.literal('detached') }),
+  z.strictObject({ tabId: TabIdSchema, state: z.literal('attached'), isSocketOpen: z.boolean() }),
+  z.strictObject({ tabId: TabIdSchema, state: z.literal('failed'), error: z.string().min(1) }),
+])
 
 const EventCountSchema = z.number().int().nonnegative()
 

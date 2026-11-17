@@ -14,11 +14,13 @@ import {
   type SlackBridgeResult,
   type SlackIdentity,
   SlackIdentitySchema,
+  type SlackMessageFrame,
   type SlackStatus,
 } from '../protocol/slack.js'
 import { Forwarder } from '../service-worker/forwarder.js'
+import { captureHealthOf, ObservedMessageSchema } from '../service-worker/observed-message.js'
 import { openPendingQueue, PendingQueueWriter } from '../service-worker/pending-queue-writer.js'
-import { newMessageOf, slackEventOf } from '../service-worker/slack-frame.js'
+import { slackEventOf } from '../service-worker/slack-frame.js'
 import {
   runSlackPageCommand,
   type SlackPageCommand,
@@ -26,7 +28,6 @@ import {
   SlackPageResultSchema,
 } from '../service-worker/slack-page.js'
 import { CAPTURE_QUERY, RECONNECT_ALARM, RECONNECT_PERIOD_MINUTES, SLACK_ORIGIN, SLACK_TAB_URL } from './config.js'
-import { ObservedMessageSchema, SocketStateSchema } from './observed-message.js'
 
 // The service worker: the native port to the host, the pending queue and its forwarding, the status, and the bridge
 // methods, each run in a Slack tab signed in as the account it names. What the page reports is data: it becomes events
@@ -68,10 +69,10 @@ const uploads = new Map<string, Map<number, string>>()
 const slackTabs = async (): Promise<IdentifiedTab[]> =>
   (await chrome.tabs.query({ url: SLACK_TAB_URL })).filter((tab): tab is IdentifiedTab => tab.id !== undefined)
 
-// What the command answered in the tab's page, unchecked; undefined when it answered nothing.
-const injected = async (tabId: number, command: SlackPageCommand): Promise<unknown> => {
+// What the command answered in the target's page, unchecked; undefined when it answered nothing.
+const injected = async (target: chrome.scripting.InjectionTarget, command: SlackPageCommand): Promise<unknown> => {
   const [injection] = await chrome.scripting.executeScript({
-    target: { tabId },
+    target,
     world: 'MAIN',
     func: runSlackPageCommand,
     args: [command],
@@ -96,42 +97,33 @@ const pageResultOf = (tabId: number, answered: unknown): SlackPageResult => {
 }
 
 const runInPage = async (tabId: number, command: SlackPageCommand): Promise<SlackPageResult> =>
-  pageResultOf(tabId, await injected(tabId, command))
+  pageResultOf(tabId, await injected({ tabId }, command))
 
 const unexpected = (result: SlackPageResult): Error => new Error(`The Slack page answered ${result.kind}`)
 
-// Who the tab is signed in as, from Slack's client state: only the ids and the workspace's name leave the page. A tab
-// the extension cannot script (discarded, still loading, an error page) shows no account; an answer that does not
-// read is an error.
-const identityOf = async (tabId: number): Promise<SlackIdentity | null> => {
-  const answered = await injected(tabId, { kind: 'identity' }).catch(() => null)
+// Who the target's page is signed in as, from Slack's client state: only the ids and the workspace's name leave the
+// page. A page the extension cannot script (discarded, still loading, an error page, a document that is gone) shows no
+// account; an answer that does not read is an error.
+const identityOf = async (target: chrome.scripting.InjectionTarget): Promise<SlackIdentity | null> => {
+  const answered = await injected(target, { kind: 'identity' }).catch(() => null)
   if (answered === null) {
     return null
   }
 
-  const result = pageResultOf(tabId, answered)
+  const result = pageResultOf(target.tabId, answered)
   if (result.kind !== 'identity') {
     throw unexpected(result)
   }
 
-  return result.identity === null ? null : SlackIdentitySchema.parse({ ...result.identity, tabId })
+  return result.identity === null ? null : SlackIdentitySchema.parse({ ...result.identity, tabId: target.tabId })
 }
 
 // A tab opened before the extension loaded has no relay to answer, and its observer is not attached until it reloads.
-const captureOf = async (tabId: number): Promise<CaptureHealth> => {
-  const socketState: unknown = await chrome.tabs.sendMessage(tabId, CAPTURE_QUERY).catch(() => null)
-  if (socketState === null) {
-    return { tabId, isObserverAttached: false, isSocketOpen: false }
-  }
-
-  if (typeof socketState !== 'string') {
-    throw new Error(`The relay in tab ${tabId} answered no socket state`)
-  }
-
-  const { isSocketOpen } = SocketStateSchema.parse(JSON.parse(socketState))
-
-  return { tabId, isObserverAttached: true, isSocketOpen }
-}
+const captureOf = (tabId: number): Promise<CaptureHealth> =>
+  chrome.tabs.sendMessage(tabId, CAPTURE_QUERY).then(
+    (answer: unknown) => captureHealthOf(tabId, answer),
+    (): CaptureHealth => ({ tabId, state: 'detached' })
+  )
 
 // Runs a command in a tab signed in as the account and in no other; null when there is none. Tabs are tried one at a
 // time, so a write goes out at most once: a tab whose user changed since its identity was read answers other-account
@@ -139,7 +131,7 @@ const captureOf = async (tabId: number): Promise<CaptureHealth> => {
 // since the command may have reached Slack.
 const inSlackTab = async (account: SlackAccount, command: SlackPageCommand): Promise<SlackPageResult | null> => {
   const tabs = await slackTabs()
-  const identities = await Promise.all(tabs.map(({ id }) => identityOf(id)))
+  const identities = await Promise.all(tabs.map(({ id }) => identityOf({ tabId: id })))
   const signedIn = tabs.filter(
     (_tab, index) => identities[index]?.teamId === account.teamId && identities[index].userId === account.userId
   )
@@ -305,7 +297,7 @@ const statusSnapshot = async (): Promise<SlackStatus> => {
   await writer.settled()
   const tabs = await slackTabs()
   const [identities, captures] = await Promise.all([
-    Promise.all(tabs.map(({ id }) => identityOf(id))),
+    Promise.all(tabs.map(({ id }) => identityOf({ tabId: id }))),
     Promise.all(tabs.map(({ id }) => captureOf(id))),
   ])
 
@@ -325,27 +317,32 @@ const pushStatus = (): Promise<void> =>
     }
   })
 
-// A listener attached: it gets the status, then every event still waiting for its ack.
+// A listener attached: it gets the status, then every event still waiting for its ack. The events go out even when the
+// status could not be taken, so nothing a tab reports can keep them from the app.
 const attachListener = (): Promise<void> =>
   statusQueue(async () => {
-    post(await statusSnapshot())
-    forwarder.attach(writer.pending())
+    try {
+      post(await statusSnapshot())
+    } finally {
+      forwarder.attach(writer.pending())
+    }
   })
 
-// A frame a Slack tab's observer saw. Only a new message becomes an event, keyed by the account the tab shows; a tab
-// that shows none has no account to key it by.
-const admitFrame = async (tabId: number, text: string): Promise<void> => {
-  const message = newMessageOf(JSON.parse(text))
-  if (message === null) {
+// A new message a Slack tab's observer saw in the document source, while the tab showed workspace teamId. It becomes an
+// event keyed by the account that same document is signed in as, and only while it still shows that workspace: a
+// document that is gone, or that moved to another workspace since, would key the message by an account it did not come
+// to, so the message is dropped instead.
+const admitFrame = async (
+  source: chrome.scripting.InjectionTarget,
+  teamId: string,
+  message: SlackMessageFrame
+): Promise<void> => {
+  const identity = await identityOf(source)
+  if (identity?.teamId !== teamId) {
     return
   }
 
-  const identity = await identityOf(tabId)
-  if (identity === null) {
-    return
-  }
-
-  const event = slackEventOf({ teamId: identity.teamId, userId: identity.userId }, message)
+  const event = slackEventOf({ teamId, userId: identity.userId }, message)
   const admission = await writer.admit(event)
   if (admission === 'stored' || admission === 'held') {
     forwarder.forward(event)
@@ -390,13 +387,14 @@ const connect = (): void => {
 // Only the relay in a Slack tab's top frame sends messages here.
 chrome.runtime.onMessage.addListener((message: unknown, sender) => {
   const tabId = sender.tab?.id
-  if (tabId === undefined || sender.origin !== SLACK_ORIGIN || sender.frameId !== 0) {
+  const { documentId } = sender
+  if (tabId === undefined || documentId === undefined || sender.origin !== SLACK_ORIGIN || sender.frameId !== 0) {
     throw new Error(`A message came from outside a Slack tab's relay (${sender.origin ?? 'no origin'})`)
   }
 
   const observed = ObservedMessageSchema.parse(message)
   if (observed.kind === 'frame') {
-    void intake(() => admitFrame(tabId, observed.text))
+    void intake(() => admitFrame({ tabId, documentIds: [documentId] }, observed.teamId, observed.frame))
   } else {
     void pushStatus()
   }

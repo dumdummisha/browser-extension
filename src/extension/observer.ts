@@ -1,53 +1,104 @@
-import { OBSERVED_FRAME_EVENT, OBSERVED_SOCKET_EVENT, RELAY_READY_EVENT, SLACK_SOCKET_HOSTNAME } from './config.js'
+import { projectedMessageOf } from '../service-worker/message-projection.js'
+import { OBSERVER_PORT_EVENT, RELAY_READY_EVENT, SLACK_CLIENT_PATH, SLACK_SOCKET_HOSTNAME } from './config.js'
 
 // Runs in the page's own world at document_start, before Slack's scripts, so it wraps WebSocket before Slack opens its
-// socket. It only reads: frames that are messages go to the extension's relay as their raw text, and so does whether a
-// socket is open. It sends nothing on the socket, and never passes the socket's URL on, since the URL carries a token.
+// socket. It only reads: it sends nothing on the socket, and never passes the socket's URL on, since the URL carries a
+// token. It hands the extension's relay one end of a private channel (config.ts), and passes on it only what it takes
+// from Slack's socket itself: whether a socket is open, and each new message cut down to the fields the app reads, with
+// the workspace the tab showed when it came.
+//
+// Slack's scripts, and anything else the page runs later, share this world and can replace any built-in. So every
+// built-in that decides what the relay gets is taken here before they run (and in message-projection.ts), and only
+// events the browser itself dispatched count (isTrusted), never one a page script dispatched on a socket.
+const { apply, construct } = Reflect
+const { getOwnPropertyDescriptor } = Object
+const NativeUrl = URL
+const execPattern = RegExp.prototype.exec
+const listen = EventTarget.prototype.addEventListener
+const postToPort = MessagePort.prototype.postMessage
 
-const openSockets = new Set<WebSocket>()
+const getterOf = (prototype: object, name: string): (() => unknown) => {
+  const getter = getOwnPropertyDescriptor(prototype, name)?.get
+  if (getter === undefined) {
+    throw new Error(`The observer found no ${name} to read`)
+  }
 
-const announce = (name: string, detail: string): void => {
-  document.dispatchEvent(new CustomEvent(name, { detail }))
+  return getter
 }
 
-const announceSocketState = (): void => {
-  announce(OBSERVED_SOCKET_EVENT, JSON.stringify({ isSocketOpen: openSockets.size > 0 }))
+const messageData = getterOf(MessageEvent.prototype, 'data')
+const urlProtocol = getterOf(URL.prototype, 'protocol')
+const urlHostname = getterOf(URL.prototype, 'hostname')
+
+const channel = new MessageChannel()
+// Set once the relay holds the other end. Nothing is posted before, so nothing piles up in a port nobody reads.
+let isHandedOver = false
+let openSockets = 0
+
+const toRelay = (message: object): void => {
+  if (isHandedOver) {
+    apply(postToPort, channel.port1, [message])
+  }
 }
 
-// Slack's socket also carries presence, typing and pings; only messages go on.
-const isMessageFrame = (text: string): boolean => {
-  const frame: unknown = JSON.parse(text)
+const reportSocketState = (): void => {
+  toRelay({ kind: 'socket', isSocketOpen: openSockets > 0 })
+}
 
-  return typeof frame === 'object' && frame !== null && 'type' in frame && frame.type === 'message'
+const matches = (pattern: RegExp, text: unknown): RegExpExecArray | null =>
+  typeof text === 'string' ? apply(execPattern, pattern, [text]) : null
+
+// Listens for the socket's events the browser dispatched; one a page script dispatched on the socket is not Slack's.
+const onTrusted = (socket: WebSocket, type: string, handler: (event: Event) => void): void => {
+  apply(listen, socket, [
+    type,
+    (event: Event) => {
+      if (event.isTrusted) {
+        handler(event)
+      }
+    },
+  ])
 }
 
 const observe = (socket: WebSocket): void => {
-  socket.addEventListener('open', () => {
-    openSockets.add(socket)
-    announceSocketState()
+  let isOpen = false
+  onTrusted(socket, 'open', () => {
+    isOpen = true
+    openSockets += 1
+    reportSocketState()
   })
-  socket.addEventListener('close', () => {
-    openSockets.delete(socket)
-    announceSocketState()
+  // A socket that never opened closes too.
+  onTrusted(socket, 'close', () => {
+    if (isOpen) {
+      openSockets -= 1
+      reportSocketState()
+    }
   })
-  socket.addEventListener('message', ({ data }: MessageEvent<unknown>) => {
-    if (typeof data === 'string' && isMessageFrame(data)) {
-      announce(OBSERVED_FRAME_EVENT, data)
+  onTrusted(socket, 'message', (event) => {
+    const data: unknown = apply(messageData, event, [])
+    const frame = typeof data === 'string' ? projectedMessageOf(data) : null
+    const teamId = matches(SLACK_CLIENT_PATH, location.pathname)?.groups?.teamId
+    if (frame !== null && teamId !== undefined) {
+      toRelay({ kind: 'frame', teamId, frame })
     }
   })
 }
 
-const isSlackSocket = (url: string | URL): boolean => {
-  const { protocol, hostname } = new URL(url, location.href)
+const isSlackSocket = (url: string): boolean => {
+  const parsed: unknown = construct(NativeUrl, [url, location.href])
 
-  return protocol === 'wss:' && SLACK_SOCKET_HOSTNAME.test(hostname)
+  return (
+    apply(urlProtocol, parsed, []) === 'wss:' && matches(SLACK_SOCKET_HOSTNAME, apply(urlHostname, parsed, [])) !== null
+  )
 }
 
-// A proxy keeps WebSocket's name, prototype and constants, so the page sees the class it expects.
+// A proxy keeps WebSocket's name, prototype and constants, so the page sees the class it expects. The URL is read once,
+// so the socket that opens is the one checked.
 window.WebSocket = new Proxy(window.WebSocket, {
   construct: (target, args: ConstructorParameters<typeof WebSocket>, newTarget: typeof WebSocket) => {
-    const socket = Reflect.construct(target, args, newTarget)
-    if (isSlackSocket(args[0])) {
+    const url = `${args[0]}`
+    const socket: WebSocket = construct(target, [url, args[1]], newTarget)
+    if (isSlackSocket(url)) {
       observe(socket)
     }
 
@@ -55,6 +106,14 @@ window.WebSocket = new Proxy(window.WebSocket, {
   },
 })
 
-// The relay may load after this script; it asks for the state once it listens.
-document.addEventListener(RELAY_READY_EVENT, announceSocketState)
-announceSocketState()
+// The relay dispatches RELAY_READY_EVENT right after this script runs, before the page's scripts, and takes the port
+// while it does (config.ts). Only the first ready event is answered.
+document.addEventListener(
+  RELAY_READY_EVENT,
+  () => {
+    document.dispatchEvent(new MessageEvent(OBSERVER_PORT_EVENT, { ports: [channel.port2] }))
+    isHandedOver = true
+    reportSocketState()
+  },
+  { once: true }
+)

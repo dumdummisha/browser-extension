@@ -9,12 +9,16 @@ export const SLACK_TAB_URL = `${SLACK_ORIGIN}/*`
 // Slack's real-time socket (wss-primary.slack.com, opened by the page's own scripts on the main thread).
 export const SLACK_SOCKET_HOSTNAME = /^wss-[a-z]+\.slack\.com$/u
 
-// The page's observer and the extension's relay in the isolated world talk through events on the document, the one
-// thing their worlds share. Page scripts can see and send these too, so they carry only what the page already has, and
-// the service worker checks everything that reaches it.
-export const OBSERVED_FRAME_EVENT = 'misha-observed-frame'
-export const OBSERVED_SOCKET_EVENT = 'misha-observed-socket'
+// The workspace a Slack tab shows: the team in its /client/<team> path.
+export const SLACK_CLIENT_PATH = /^\/client\/(?<teamId>[TE][A-Z0-9]+)/u
+
+// The page's observer and the extension's relay in the isolated world share only the document, and use it once, at
+// document_start before any of the page's scripts run. The manifest loads the observer first, and it listens for
+// RELAY_READY_EVENT; the relay dispatches that event, and while it does, the observer answers with OBSERVER_PORT_EVENT,
+// a MessageEvent carrying one end of a MessageChannel. The relay listens for the port only during its own dispatch, so
+// no page script can ever hand it one, and from then on nothing goes through the document.
 export const RELAY_READY_EVENT = 'misha-relay-ready'
+export const OBSERVER_PORT_EVENT = 'misha-observer-port'
 
 // The message the service worker sends a tab's relay to learn its observer's socket state.
 export const CAPTURE_QUERY = 'misha-capture-query'

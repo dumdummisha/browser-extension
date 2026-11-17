@@ -15,7 +15,7 @@ const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 const STATUS: SlackStatus = {
   type: 'status',
   identities: [{ tabId: 7, teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1', teamName: 'Example Workspace' }],
-  captures: [{ tabId: 7, isObserverAttached: true, isSocketOpen: true }],
+  captures: [{ tabId: 7, state: 'attached', isSocketOpen: true }],
   queue: { state: 'committing', droppedEvents: 0 },
 }
 

@@ -205,6 +205,31 @@ describe('[host] Relay - socket takeover', () => {
     await roundTrip(relay, await connectClient(relay))
   })
 
+  it('should let two hosts that find one stale socket take the path in turn, so neither removes the live one', async (context) => {
+    // Arrange
+    const socketPath = join(await tempDir(context), 'bridge', 'bridge.sock')
+    await mkdir(dirname(socketPath), { mode: 0o700 })
+    spawnSync(process.execPath, [
+      '-e',
+      "require('node:net').createServer().listen(process.argv[1], () => process.kill(process.pid, 'SIGKILL'))",
+      socketPath,
+    ])
+
+    // Act
+    const relays = await Promise.all([startRelayAt(context, socketPath), startRelayAt(context, socketPath)])
+    const taken = relays.filter(({ server }) => !server.listening)
+    for (const { input } of taken) {
+      input.end()
+      await once(input, 'end')
+    }
+
+    // Assert
+    assert.equal(taken.length, 1)
+    const live = relays.find(({ server }) => server.listening)
+    assert.ok(live !== undefined)
+    await roundTrip(live, await connectClient(live))
+  })
+
   it('should leave anything but a socket at the path alone, and fail', async (context) => {
     // Arrange
     const socketPath = join(await tempDir(context), 'bridge', 'bridge.sock')

@@ -1,4 +1,5 @@
-import { chmodSync, lstatSync, rmSync } from 'node:fs'
+import { chmodSync, constants, lstatSync, rmSync } from 'node:fs'
+import { type FileHandle, open } from 'node:fs/promises'
 import { createConnection, createServer, type Server, type Socket } from 'node:net'
 import { dirname } from 'node:path'
 import type { Readable, Writable } from 'node:stream'
@@ -43,12 +44,36 @@ const warn = (message: string): void => {
   process.stderr.write(`misha-browser host: ${message}\n`)
 }
 
-// Clears the socket path for this host. A relay listening there, another browser's host, is asked to let go (messages.ts
-// takeover), and this host goes on only once that relay closed the connection, which it does after closing its server.
-// Node removes a server's path when the server closes, so the path must be the other relay's to remove before this host
-// binds it, never after. A socket nothing listens on, left by a host that crashed, is removed; anything else at the
-// path is left alone.
+// macOS's open(2) flag that takes an exclusive flock(2) lock on the file as it opens it, waiting while another open
+// file holds one (sys/fcntl.h); Node names no constant for it. The kernel releases the lock when the file closes or its
+// process dies, so a host that crashed never leaves the bridge locked.
+const O_EXLOCK = 0x20
+// Each flag is its own bit, so their sum is the mask open(2) takes.
+const LOCK_OPEN_FLAGS = constants.O_RDWR + constants.O_CREAT + constants.O_NOFOLLOW + O_EXLOCK
+
+// Locks the bridge for this host, waiting while another host holds it, until the returned file closes. Hosts the
+// browsers start together clear and bind the socket path one at a time under it, so none acts on what it found at the
+// path while another changes it.
+const lockBridge = (socketPath: string): Promise<FileHandle> => {
+  if (process.platform !== 'darwin') {
+    throw new Error(`The bridge's lock takes macOS's O_EXLOCK, which ${process.platform} does not have`)
+  }
+
+  return open(`${socketPath}.lock`, LOCK_OPEN_FLAGS, 0o600)
+}
+
+// Clears the socket path for this host, which holds the bridge lock, so no other host binds the path meanwhile. A relay
+// listening there, another browser's host, is asked to let go (messages.ts takeover), and this host goes on only once
+// that relay closed the connection, which it does after closing its server. Node removes a server's path when the
+// server closes, so the path must be the other relay's to remove before this host binds it, never after. A socket
+// nothing listens on, left by a host that crashed, is removed while it is still the file that refused the connection;
+// anything else at the path is left alone.
 const clearSocketPath = async (socketPath: string): Promise<void> => {
+  const probed = lstatSync(socketPath, { throwIfNoEntry: false })
+  if (probed === undefined) {
+    return
+  }
+
   const holder = createConnection(socketPath)
   const failure = await new Promise<NodeJS.ErrnoException | null>((resolve) => {
     holder.once('connect', () => resolve(null))
@@ -66,7 +91,9 @@ const clearSocketPath = async (socketPath: string): Promise<void> => {
     return
   }
 
-  if (failure.code !== 'ECONNREFUSED' || !lstatSync(socketPath).isSocket()) {
+  const refused = lstatSync(socketPath, { throwIfNoEntry: false })
+  const isProbedSocket = probed.isSocket() && refused?.dev === probed.dev && refused.ino === probed.ino
+  if (failure.code !== 'ECONNREFUSED' || !isProbedSocket) {
     throw new Error(`${socketPath} holds no socket a relay can take over (${failure.message})`)
   }
 
@@ -196,12 +223,17 @@ export const startNativeHostRelay = async ({
 
   // The newest browser to start its host takes the socket over. Only this user may open the folder or the socket.
   ensurePrivateDir(dirname(socketPath))
-  await clearSocketPath(socketPath)
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(socketPath, resolve)
-  })
-  chmodSync(socketPath, 0o600)
+  const lock = await lockBridge(socketPath)
+  try {
+    await clearSocketPath(socketPath)
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(socketPath, resolve)
+    })
+    chmodSync(socketPath, 0o600)
+  } finally {
+    await lock.close()
+  }
 
   input.on('data', createFrameReader(relayExtensionFrame))
   input.on('end', () => {

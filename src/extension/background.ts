@@ -19,14 +19,14 @@ import {
 import { Forwarder } from '../service-worker/forwarder.js'
 import { openPendingQueue, PendingQueueWriter } from '../service-worker/pending-queue-writer.js'
 import { newMessageOf, slackEventOf } from '../service-worker/slack-frame.js'
-import { CAPTURE_QUERY, RECONNECT_ALARM, RECONNECT_PERIOD_MINUTES, SLACK_ORIGIN, SLACK_TAB_URL } from './config.js'
-import { ObservedMessageSchema, SocketStateSchema } from './observed-message.js'
 import {
   runSlackPageCommand,
   type SlackPageCommand,
   type SlackPageResult,
   SlackPageResultSchema,
-} from './slack-page.js'
+} from '../service-worker/slack-page.js'
+import { CAPTURE_QUERY, RECONNECT_ALARM, RECONNECT_PERIOD_MINUTES, SLACK_ORIGIN, SLACK_TAB_URL } from './config.js'
+import { ObservedMessageSchema, SocketStateSchema } from './observed-message.js'
 
 // The service worker: the native port to the host, the pending queue and its forwarding, the status, and the bridge
 // methods, each run in a Slack tab signed in as the account it names. What the page reports is data: it becomes events
@@ -80,12 +80,19 @@ const injected = async (tabId: number, command: SlackPageCommand): Promise<unkno
   return injection?.result
 }
 
+// What the command answered, checked. A command that failed in the page throws with the page's own words, which quote
+// nothing the page holds.
 const pageResultOf = (tabId: number, answered: unknown): SlackPageResult => {
   if (answered === undefined) {
     throw new Error(`The Slack page in tab ${tabId} answered nothing`)
   }
 
-  return SlackPageResultSchema.parse(answered)
+  const result = SlackPageResultSchema.parse(answered)
+  if (result.kind === 'failed') {
+    throw new Error(`The Slack page in tab ${tabId} failed: ${result.error}`)
+  }
+
+  return result
 }
 
 const runInPage = async (tabId: number, command: SlackPageCommand): Promise<SlackPageResult> =>

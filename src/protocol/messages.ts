@@ -12,6 +12,9 @@ import { SlackEventSchema, SlackStatusSchema } from './slack.js'
 // is forwarded directly from the extension's memory, in the same event message and acknowledged the same way, so the
 // app's commit before its ack is what keeps it.
 
+// The native messaging host's name: the extension connects to it, and the installer registers it with each browser.
+export const NATIVE_HOST_NAME = 'misha.browser_bridge'
+
 const RequestIdSchema = z.number().int()
 
 // method stays a string on the wire, so an extension older than its client can name what it does not know.

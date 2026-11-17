@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { SlackEventSchema } from '../protocol/slack.js'
+import { SLACK_EVENT_ID_MAX_LENGTH, SlackEventSchema } from '../protocol/slack.js'
 import { newMessageOf, SlackFrameError, slackEventOf } from './slack-frame.js'
 
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
@@ -149,5 +149,16 @@ describe('[service-worker] Slack frames - everything else', () => {
     for (const frame of unreadable) {
       assert.throws(() => newMessageOf(frame), SlackFrameError)
     }
+  })
+})
+
+describe('[service-worker] Slack frames - events', () => {
+  it('should refuse to make an event whose id runs past the limit, so its ack always fits', () => {
+    // Arrange
+    const channel = `C${'0'.repeat(SLACK_EVENT_ID_MAX_LENGTH)}`
+    const message = { type: 'message', channel, ts: '1700000000.000100', text: 'hello' } as const
+
+    // Act + Assert
+    assert.throws(() => slackEventOf(ACCOUNT, message), new RegExp(`<=${SLACK_EVENT_ID_MAX_LENGTH} characters`, 'u'))
   })
 })

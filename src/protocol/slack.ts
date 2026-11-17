@@ -77,11 +77,16 @@ export type SlackMessageFrame = z.infer<typeof SlackMessageFrameSchema>
 export const slackEventKey = (account: SlackAccount, frame: Pick<SlackMessageFrame, 'channel' | 'ts'>): string =>
   `${slackAccountId(account)}/${frame.channel}/${frame.ts}`
 
+// The longest event id the extension admits: far longer than any real key (an account id, a channel id and a ts come
+// to about 50 characters), and short enough that the ack naming it always fits a native message (framing.ts
+// HOST_MESSAGE_MAX_BYTES).
+export const SLACK_EVENT_ID_MAX_LENGTH = 1024
+
 // An event the extension holds until the app acknowledges it, which the app does only once it has committed it.
 export const SlackEventSchema = z
   .strictObject({
     type: z.literal('event'),
-    id: z.string(),
+    id: z.string().max(SLACK_EVENT_ID_MAX_LENGTH),
     account: SlackAccountSchema,
     frame: SlackMessageFrameSchema,
   })

@@ -4,6 +4,7 @@ import {
   type SlackAccount,
   type SlackEvent,
   slackEventKey,
+  SlackEventSchema,
   type SlackMessageFrame,
   SocketMessageSchema,
 } from '../protocol/slack.js'
@@ -39,10 +40,7 @@ export const newMessageOf = (frame: unknown): SlackMessageFrame | null => {
   return message.data
 }
 
-// The event a new message makes for the account its tab is signed in as, keyed by its dedupe key.
-export const slackEventOf = (account: SlackAccount, message: SlackMessageFrame): SlackEvent => ({
-  type: 'event',
-  id: slackEventKey(account, message),
-  account,
-  frame: message,
-})
+// The event a new message makes for the account its tab is signed in as, keyed by its dedupe key. One whose id runs past
+// SLACK_EVENT_ID_MAX_LENGTH throws, since the ack naming it could not reach the extension.
+export const slackEventOf = (account: SlackAccount, message: SlackMessageFrame): SlackEvent =>
+  SlackEventSchema.parse({ type: 'event', id: slackEventKey(account, message), account, frame: message })

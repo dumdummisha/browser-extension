@@ -37,6 +37,17 @@ describe('[protocol] Framing', () => {
     assert.deepEqual(messages, [{ id: 1, text: 'two\nlines' }, { id: 2 }])
   })
 
+  it('should throw once an unfinished line runs past the line limit, before it ends', () => {
+    // Arrange
+    const messages: unknown[] = []
+    const read = createLineReader((message) => messages.push(message), 16)
+    read(encodeLine({ id: 1 }))
+
+    // Act + Assert
+    assert.throws(() => read('{"text":"far too long'), /A line runs past 16 characters/u)
+    assert.deepEqual(messages, [{ id: 1 }])
+  })
+
   it('should keep a full upload chunk request under the host message limit', () => {
     // Arrange
     const params = {

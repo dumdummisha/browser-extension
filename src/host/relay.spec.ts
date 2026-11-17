@@ -7,7 +7,13 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { describe, it, type TestContext } from 'node:test'
-import { createFrameReader, createLineReader, encodeFrame, encodeLine } from '../protocol/framing.js'
+import {
+  createFrameReader,
+  createLineReader,
+  encodeFrame,
+  encodeLine,
+  HOST_MESSAGE_MAX_BYTES,
+} from '../protocol/framing.js'
 import { type SlackEvent, slackEventKey } from '../protocol/slack.js'
 import { startNativeHostRelay } from './relay.js'
 
@@ -101,6 +107,13 @@ const connectClient = async ({ socketPath }: IRelay): Promise<IClient> => {
 
 const send = ({ socket }: IClient, message: unknown): void => {
   socket.write(encodeLine(message))
+}
+
+// Resolves once the relay closed the client's connection; a write cut off by it is no failure of the test.
+const closeOf = ({ socket }: IClient): Promise<unknown> => {
+  socket.on('error', () => undefined)
+
+  return new Promise((resolve) => socket.once('close', resolve))
 }
 
 const fromExtension = ({ input }: IRelay, frame: unknown): void => {
@@ -237,6 +250,57 @@ describe('[host] Relay - requests', () => {
     )
     assert.deepEqual(await second.inbox.next(), { type: 'reply', id: 1, result: { ok: true } })
     assert.deepEqual(await first.inbox.next(), { type: 'reply', id: 1, error: 'Tab 12 closed' })
+  })
+})
+
+describe('[host] Relay - message size', () => {
+  it('should refuse a request too large for the extension without writing it, keeping the pipe and the client', async (context) => {
+    // Arrange
+    const relay = await startRelay(context)
+    const client = await connectClient(relay)
+    const text = 'x'.repeat(HOST_MESSAGE_MAX_BYTES)
+
+    // Act
+    send(client, { type: 'request', id: 7, method: 'slackCall', params: { text } })
+    const refusal = await client.inbox.next()
+
+    // Assert
+    assert.deepEqual(refusal, {
+      type: 'reply',
+      id: 7,
+      error: `The request is larger than the ${HOST_MESSAGE_MAX_BYTES} bytes the extension takes from its host`,
+    })
+    await roundTrip(relay, client)
+  })
+
+  it('should close a client whose line runs on past the limit, and keep serving the others', async (context) => {
+    // Arrange
+    const relay = await startRelay(context)
+    const [endless, other] = [await connectClient(relay), await connectClient(relay)]
+    const closed = closeOf(endless)
+
+    // Act
+    endless.socket.write('x'.repeat(2 * HOST_MESSAGE_MAX_BYTES + 1))
+    await closed
+
+    // Assert
+    await roundTrip(relay, other)
+  })
+
+  it('should close a listener whose ack is too large to pass on, and keep the pipe', async (context) => {
+    // Arrange
+    const relay = await startRelay(context)
+    const [listener, other] = [await connectClient(relay), await connectClient(relay)]
+    send(listener, { type: 'listen' })
+    await relay.extension.next()
+    const closed = closeOf(listener)
+
+    // Act
+    send(listener, { type: 'ack', id: 'x'.repeat(HOST_MESSAGE_MAX_BYTES) })
+    await closed
+
+    // Assert
+    await roundTrip(relay, other)
   })
 })
 

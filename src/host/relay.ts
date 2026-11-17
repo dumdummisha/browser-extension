@@ -2,7 +2,14 @@ import { chmodSync, lstatSync, rmSync } from 'node:fs'
 import { createConnection, createServer, type Server, type Socket } from 'node:net'
 import { dirname } from 'node:path'
 import type { Readable, Writable } from 'node:stream'
-import { createFrameReader, createLineReader, encodeFrame, encodeLine } from '../protocol/framing.js'
+import {
+  createFrameReader,
+  createLineReader,
+  encodeFrame,
+  encodeLine,
+  FRAME_HEADER_BYTES,
+  HOST_MESSAGE_MAX_BYTES,
+} from '../protocol/framing.js'
 import {
   type ClientMessage,
   ClientMessageSchema,
@@ -24,6 +31,11 @@ interface IPendingRequest {
   readonly client: Socket
   readonly clientId: number
 }
+
+// The longest line a client may send, in characters, twice the largest frame the extension takes, since a request that
+// fits is about as long as its frame. A longer line closes the client's connection before it ends, so no client can
+// make the relay hold an endless line; whether a message fits the extension is checked on its frame.
+const CLIENT_LINE_MAX_LENGTH = 2 * HOST_MESSAGE_MAX_BYTES
 
 const errorMessage = (error: unknown): string => (error instanceof Error ? error.message : String(error))
 
@@ -77,8 +89,17 @@ export const startNativeHostRelay = async ({
   let listener: Socket | null = null
   let nextId = 1
 
-  const toExtension = (frame: HostFrame): void => {
-    output.write(encodeFrame(frame))
+  // Chrome closes the pipe on a frame larger than HOST_MESSAGE_MAX_BYTES, which would cut off the listener and every
+  // caller; such a frame is refused here instead, and false says nothing of it went out.
+  const toExtension = (frame: HostFrame): boolean => {
+    const encoded = encodeFrame(frame)
+    if (encoded.length - FRAME_HEADER_BYTES > HOST_MESSAGE_MAX_BYTES) {
+      return false
+    }
+
+    output.write(encoded)
+
+    return true
   }
 
   const toClient = (client: Socket, message: RelayMessage): void => {
@@ -91,8 +112,16 @@ export const startNativeHostRelay = async ({
       case 'request': {
         const id = nextId
         nextId += 1
+        if (!toExtension({ ...message, id })) {
+          toClient(client, {
+            type: 'reply',
+            id: message.id,
+            error: `The request is larger than the ${HOST_MESSAGE_MAX_BYTES} bytes the extension takes from its host`,
+          })
+          return
+        }
+
         pending.set(id, { client, clientId: message.id })
-        toExtension({ ...message, id })
         return
       }
       case 'listen':
@@ -100,9 +129,10 @@ export const startNativeHostRelay = async ({
         toExtension({ type: 'listener' })
         return
       case 'ack':
-        // Only the listener was sent the event, so only its ack can mean the app committed it.
-        if (client === listener) {
-          toExtension(message)
+        // Only the listener was sent the event, so only its ack can mean the app committed it. An event's id is bounded
+        // (slack.ts), so an ack too large to pass on names no event.
+        if (client === listener && !toExtension(message)) {
+          throw new Error(`An ack is larger than the ${HOST_MESSAGE_MAX_BYTES} bytes the extension takes from its host`)
         }
 
         return
@@ -137,7 +167,7 @@ export const startNativeHostRelay = async ({
   const server = createServer((client) => {
     clients.add(client)
     client.setEncoding('utf8')
-    const readLines = createLineReader((raw) => relayClientMessage(client, raw))
+    const readLines = createLineReader((raw) => relayClientMessage(client, raw), CLIENT_LINE_MAX_LENGTH)
     // A client that breaks the protocol loses its connection; the browser's host and the other clients carry on.
     client.on('data', (chunk: string) => {
       try {

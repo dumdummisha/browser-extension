@@ -4,8 +4,9 @@ import { type SlackEvent, SlackEventSchema } from './slack.js'
 // The extension's pending queue: every event it captured that the app has not acknowledged yet, and the count of the
 // events it lost (the status's droppedEvents). Service workers stop and restart and the browser quits, so both live in
 // IndexedDB in the extension's origin, never only in memory. IndexedDB commits a transaction over several stores whole
-// or not at all, so deleting an event and counting it as lost commit together, and a crash can neither hide a loss nor
-// count one twice. chrome.storage has no such transaction, and the queue does not use it.
+// or not at all, so deleting an event and counting it as lost commit together, and a crash between the two can neither
+// hide that loss nor count it twice. chrome.storage has no such transaction, and the queue does not use it. What a
+// failing database can still lose without a count is stated below the writer's changes.
 //
 // The database is PENDING_QUEUE_DATABASE at PENDING_QUEUE_DATABASE_VERSION, created with two stores, each with keyPath
 // STORE_KEY_PATH:
@@ -21,14 +22,28 @@ import { type SlackEvent, SlackEventSchema } from './slack.js'
 //    (restoredQueue), delete the records that hold no readable event, and add their number to the count (countedLoss).
 //    Once it commits, the extension forwards the restored events. An event captured before then waits for it.
 // 2. admitting a captured event: an event already pending changes nothing; with fewer than EVENT_QUEUE_MAX pending, the
-//    event is put, and with the queue full it is counted instead (countedLoss). Only an event whose put committed is
-//    forwarded.
-// 3. the ack, which the app sends after the commit that took the event: the event is deleted.
+//    event is put, and with the queue full it is counted instead (countedLoss). An event whose put committed is
+//    forwarded from the queue.
+// 3. the ack, which the app sends after the commit that took the event: the event is deleted, from the queue or from
+//    the unstored events below.
 // A change whose transaction does not commit (it aborts or fails, on the quota or anything else) is a queue failure,
-// which the status reports (slack.ts QueueFailureSchema). An event that could not be admitted is lost, and is never
-// discarded while the count stays as it was and the status looks healthy: while the failure lasts, the writer keeps the
-// number of events it lost, the next change that commits adds that number to the count in its own transaction, and
-// the failure clears. A recovery that failed runs again before the next change.
+// which the status reports as failing (slack.ts QueueHealthSchema) until a change commits. A recovery that failed runs
+// again before the next change, so while it keeps failing every admission fails too. An event whose admission did not
+// commit is unstored: the writer holds it in memory, at most EVENT_QUEUE_MAX of them, and forwards it to the listener
+// directly, now when one is attached and to each listener that attaches later, with the same redelivery waits as a
+// stored event. The app commits an event before it acknowledges it, so an acknowledged unstored event is durable on the
+// app's side, and the ack drops it from memory. An unstored event beyond the limit is lost for want of room, and the
+// writer keeps their number, uncounted. The next change that commits first admits every unstored event still held by
+// rule 2 and adds the uncounted number to the count, all in its own transaction, and the failure clears.
+//
+// The limit that remains: an event is lost without a durable count only when its admission did not commit, the app did
+// not commit it (no listener was attached, or the app had not acknowledged it yet), and the worker restarts before any
+// later change commits. While the worker lives, the status reports the failure and the events at risk (unstoredEvents
+// and uncountedEvents). No mechanism closes this. The loss happens because the queue's storage is failing, and that
+// storage is the only durable place the extension has, so a record of the loss written there fails the same way. A
+// marker that took every worker start after an unclean stop for a gap would report a false gap on every service-worker
+// restart, since Chrome stops service workers without a clean shutdown, and a gap reported on every restart tells the
+// app nothing.
 
 // Events the queue holds at most. When it is full, a new event is dropped and counted, so the queue keeps the oldest
 // run in order.
@@ -71,8 +86,8 @@ export class PendingQueueError extends Error {
 }
 
 // The one record of LOSS_STORE: how many events the extension lost since it was installed (no room in the queue, a
-// stored record it could not read back, and the events a queue failure lost, once a later change counts them). It
-// only grows.
+// stored record it could not read back, and the events a queue failure lost for want of room, once a later change
+// counts them). It only grows.
 export const DroppedEventsRecordSchema = z.strictObject({
   id: z.literal(DROPPED_EVENTS_ID),
   droppedEvents: z.number().int().nonnegative(),
@@ -97,7 +112,9 @@ export interface IRestoredQueue {
 
 // The count LOSS_STORE holds, from what IDBObjectStore.get answered for DROPPED_EVENTS_ID: zero only when there is no
 // record (undefined). Anything else, null included, has to be a DroppedEventsRecord, or it is an error: guessing a
-// count would hide how many events were lost.
+// count would hide how many events were lost. Only a get that succeeded is read here: a get or a transaction that
+// failed is a queue failure, never the absent record, and until a read succeeds the status reports the count as
+// unavailable (slack.ts FailingLossSchema).
 export const droppedEventsOf = (lossRecord: unknown): number => {
   if (lossRecord === undefined) {
     return 0

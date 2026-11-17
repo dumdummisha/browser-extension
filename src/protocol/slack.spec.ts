@@ -58,17 +58,43 @@ describe('[protocol] Slack accounts and events', () => {
 })
 
 describe('[protocol] Slack status', () => {
-  it('should state a queue failure, or that there is none, in every snapshot', () => {
+  it('should state in every snapshot whether the queue commits, with the stored count when it does', () => {
     // Arrange
-    const silent = { type: 'status', identities: [], captures: [], droppedEvents: 2 }
-    const healthy = { ...silent, queueFailure: null }
-    const failing = { ...silent, queueFailure: { error: 'QuotaExceededError', uncountedEvents: 3 } }
+    const silent = { type: 'status', identities: [], captures: [] }
+    const committing = { ...silent, queue: { state: 'committing', droppedEvents: 2 } }
+    const uncounted = { ...silent, queue: { state: 'committing', droppedEvents: null } }
+    const unstated = { ...silent, queue: { state: 'committing' } }
 
     // Act
-    const parsed = [healthy, failing, silent].map((status) => SlackStatusSchema.safeParse(status).success)
+    const parsed = [committing, uncounted, unstated, silent].map(
+      (status) => SlackStatusSchema.safeParse(status).success
+    )
 
     // Assert
-    assert.deepEqual(parsed, [true, true, false])
+    assert.deepEqual(parsed, [true, false, false, false])
+  })
+
+  it('should let a failing queue report its stored count as last known or explicitly unavailable, never as null', () => {
+    // Arrange
+    const failingWith = (loss: unknown): unknown => ({
+      type: 'status',
+      identities: [],
+      captures: [],
+      queue: { state: 'failing', error: 'QuotaExceededError', unstoredEvents: 2, uncountedEvents: 1, loss },
+    })
+    const losses = [
+      { kind: 'last-known', droppedEvents: 7 },
+      { kind: 'unavailable' },
+      { kind: 'unavailable', droppedEvents: 0 },
+      { kind: 'last-known', droppedEvents: null },
+      null,
+    ]
+
+    // Act
+    const parsed = losses.map((loss) => SlackStatusSchema.safeParse(failingWith(loss)).success)
+
+    // Assert
+    assert.deepEqual(parsed, [true, true, false, false, false])
   })
 })
 

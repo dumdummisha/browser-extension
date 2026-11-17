@@ -67,13 +67,7 @@ export type SlackEvent = z.infer<typeof SlackEventSchema>
 
 // Who an open Slack tab is signed in as, and whether its observer sees Slack's socket. The two are reported apart: a
 // tab can be signed in while its observer is detached (a reload, a socket Slack moved), and that is a capture
-// problem, not a sign-in one. droppedEvents counts every event the extension lost since it was installed (no room in
-// the pending queue, a stored record it could not read back, and the events a queue failure lost, once a later change
-// counts them): it is stored with the queue (pending-queue.ts), so it survives restarts and only grows, and a count
-// higher than the last one the app saw is a loss to report. queueFailure is a pending-queue change that did not commit:
-// the error its transaction failed with, and how many events were lost since without droppedEvents counting them yet.
-// It is a capture failure, since the extension keeps no event it cannot store, and it clears when a change commits,
-// which adds those events to droppedEvents. Null while the queue's changes commit.
+// problem, not a sign-in one.
 export const SlackIdentitySchema = SlackAccountSchema.extend({
   tabId: z.number().int(),
   teamName: z.string(),
@@ -85,22 +79,48 @@ export const CaptureHealthSchema = z.strictObject({
   isSocketOpen: z.boolean(),
 })
 
-export const QueueFailureSchema = z.strictObject({
-  error: z.string().min(1),
-  uncountedEvents: z.number().int().nonnegative(),
-})
+const EventCountSchema = z.number().int().nonnegative()
+
+// The stored loss count as a failing queue knows it. Nothing but the queue's one writer changes it, so the count the
+// writer last read or committed is the stored one (last-known). It is unavailable when no read of it succeeded since
+// the worker started: the database did not open, the read failed, or the stored record is no count (pending-queue.ts
+// droppedEventsOf). An unavailable count is never reported as zero, which would read as a reset.
+export const FailingLossSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('last-known'), droppedEvents: EventCountSchema }),
+  z.strictObject({ kind: z.literal('unavailable') }),
+])
+
+// Whether the extension's pending queue commits its changes (pending-queue.ts):
+// - committing: its last change committed. droppedEvents is the stored count of every event the extension lost since
+//   it was installed (no room in the queue, a stored record it could not read back, and the events a queue failure
+//   lost, once a later change counts them). It survives restarts and only grows, so a count higher than the last one
+//   the app saw is a loss to report.
+// - failing: a change did not commit. error is what its transaction failed with. unstoredEvents are events the queue
+//   could not store that the extension holds in memory only, forwarded to a listener directly; the app has not
+//   acknowledged them yet, and a worker restart before a change commits loses them. uncountedEvents are events lost for
+//   want of room that the stored count does not include yet. loss is the stored count as far as the writer knows it.
+//   It is a capture failure, and it clears when a change commits, which stores the unstored events or counts them.
+export const QueueHealthSchema = z.discriminatedUnion('state', [
+  z.strictObject({ state: z.literal('committing'), droppedEvents: EventCountSchema }),
+  z.strictObject({
+    state: z.literal('failing'),
+    error: z.string().min(1),
+    unstoredEvents: EventCountSchema,
+    uncountedEvents: EventCountSchema,
+    loss: FailingLossSchema,
+  }),
+])
 
 export const SlackStatusSchema = z.strictObject({
   type: z.literal('status'),
   identities: z.array(SlackIdentitySchema),
   captures: z.array(CaptureHealthSchema),
-  droppedEvents: z.number().int().nonnegative(),
-  queueFailure: QueueFailureSchema.nullable(),
+  queue: QueueHealthSchema,
 })
 
 export type SlackIdentity = z.infer<typeof SlackIdentitySchema>
 export type CaptureHealth = z.infer<typeof CaptureHealthSchema>
-export type QueueFailure = z.infer<typeof QueueFailureSchema>
+export type QueueHealth = z.infer<typeof QueueHealthSchema>
 export type SlackStatus = z.infer<typeof SlackStatusSchema>
 
 // The Web API methods a Slack tab will call for the app. Reads change nothing anyone sees; writes do, so the app sends

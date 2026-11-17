@@ -8,7 +8,9 @@ import { SlackEventSchema, SlackStatusSchema } from './slack.js'
 // (pending-queue.ts), and status snapshots. They go to the one client that listens (the newest to send listen), and
 // the relay tells the extension each time a listener attaches, so the extension sends its status and every event
 // still waiting, then forwards again whatever stays unacknowledged (EVENT_REDELIVERY_DELAYS_MS). With no listener the
-// relay drops them; the extension still holds the events.
+// relay drops them; the extension still holds the events. While the pending queue fails, an event it could not store
+// is forwarded directly from the extension's memory, in the same event message and acknowledged the same way, so the
+// app's commit before its ack is what keeps it.
 
 const RequestIdSchema = z.number().int()
 

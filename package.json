@@ -16,6 +16,10 @@
     "./protocol/framing": {
       "types": "./dist/protocol/framing.d.ts",
       "default": "./dist/protocol/framing.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "default": "./dist/client/index.js"
     }
   },
   "scripts": {

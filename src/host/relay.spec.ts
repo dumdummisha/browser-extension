@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import { chmod, lstat, mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { createConnection, type Server, type Socket } from 'node:net'
@@ -164,6 +164,34 @@ describe('[host] Relay - bridge folder', () => {
 
     // Act + Assert
     await assert.rejects(startRelayIn(join(dir, 'bridge', 'bridge.sock')), /that nobody else may write to/u)
+  })
+
+  it('should refuse a bridge folder, or its parent, whose ACL allows others in, though its mode is owner-only', async (context) => {
+    // Arrange
+    const [grantedParent, grantedFolder] = [await tempDir(context), await tempDir(context)]
+    execFileSync('/bin/chmod', ['+a', 'group:everyone allow add_subdirectory,delete_child', grantedParent])
+    await mkdir(join(grantedFolder, 'bridge'), { mode: 0o700 })
+    execFileSync('/bin/chmod', ['+a', 'group:everyone allow list,search,add_file', join(grantedFolder, 'bridge')])
+
+    // Act + Assert
+    await assert.rejects(startRelayIn(join(grantedParent, 'bridge', 'bridge.sock')), {
+      message: `${grantedParent} has an ACL entry that allows access (ls -le lists it, and chmod -N removes it)`,
+    })
+    await assert.rejects(startRelayIn(join(grantedFolder, 'bridge', 'bridge.sock')), {
+      message: `${join(grantedFolder, 'bridge')} has an ACL entry that allows access (ls -le lists it, and chmod -N removes it)`,
+    })
+  })
+
+  it('should take a parent whose ACL only denies', async (context) => {
+    // Arrange - a home folder denies delete; this denies what the test's cleanup does not need
+    const dir = await tempDir(context)
+    execFileSync('/bin/chmod', ['+a', 'group:everyone deny add_file', dir])
+
+    // Act
+    const relay = await startRelayAt(context, join(dir, 'bridge', 'bridge.sock'))
+
+    // Assert
+    await roundTrip(relay, await connectClient(relay))
   })
 })
 

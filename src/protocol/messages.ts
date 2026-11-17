@@ -4,17 +4,11 @@ import { SlackEventSchema, SlackStatusSchema } from './slack.js'
 // The wire between the extension, the native host's relay and the relay's socket clients (the app, and any process
 // that drives the browser). Requests and replies work as before: a client numbers its requests, the relay renumbers
 // them for the extension and routes each reply back to the client that asked. The extension also sends what nobody
-// asked for: events, held until the app acknowledges each one after committing it, and status snapshots. They go to
-// the one client that listens (the newest to send listen), and the relay tells the extension each time a listener
-// attaches, so the extension sends its status and every event still waiting. With no listener the relay drops them;
-// the extension still holds the events.
-
-// Events the extension holds unacknowledged at most. When the queue is full, a new event is dropped and counted in
-// the status's droppedEvents, so the queue keeps the oldest run in order.
-export const EVENT_QUEUE_MAX = 2000
-// Event ids the extension remembers after their ack, so a second tab reporting the same message later is dropped
-// there; the app's unique event receipt drops any that get past.
-export const EVENT_IDS_REMEMBERED = 5000
+// asked for: events, held in its durable pending queue until the app acknowledges each one after committing it
+// (pending-queue.ts), and status snapshots. They go to the one client that listens (the newest to send listen), and
+// the relay tells the extension each time a listener attaches, so the extension sends its status and every event
+// still waiting, then forwards again whatever stays unacknowledged (EVENT_REDELIVERY_DELAYS_MS). With no listener the
+// relay drops them; the extension still holds the events.
 
 const RequestIdSchema = z.number().int()
 

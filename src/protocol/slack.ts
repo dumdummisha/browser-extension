@@ -67,8 +67,10 @@ export type SlackEvent = z.infer<typeof SlackEventSchema>
 
 // Who an open Slack tab is signed in as, and whether its observer sees Slack's socket. The two are reported apart: a
 // tab can be signed in while its observer is detached (a reload, a socket Slack moved), and that is a capture
-// problem, not a sign-in one. droppedEvents counts the events the full pending queue had no room for since the
-// extension started.
+// problem, not a sign-in one. droppedEvents counts every event the extension lost since it was installed (no room in
+// the pending queue, no room in storage, a stored entry it could not read back): it is stored with the queue
+// (pending-queue.ts), so it survives restarts and only grows, and a count higher than the last one the app saw is a
+// loss to report.
 export const SlackIdentitySchema = SlackAccountSchema.extend({
   tabId: z.number().int(),
   teamName: z.string(),

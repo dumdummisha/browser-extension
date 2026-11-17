@@ -352,8 +352,13 @@ const onHostFrame = (message: unknown): void => {
       void answer(frame).then(post)
       return
     case 'ack':
-      forwarder.settle(frame.id)
-      void writer.ack(frame.id)
+      // Redelivery stops once the event is no longer pending: a held one at once, a stored one once its deletion
+      // commits, so a deletion that fails leaves the event forwarded again.
+      void writer.ack(frame.id).then((isRemoved) => {
+        if (isRemoved) {
+          forwarder.settle(frame.id)
+        }
+      })
       return
     case 'listener':
       void attachListener()

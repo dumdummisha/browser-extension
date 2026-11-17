@@ -136,8 +136,10 @@ export class PendingQueueWriter {
   private readonly held = new Map<string, SlackEvent>()
   // Events lost for want of room while the queue failed, not in the stored count yet.
   private uncountedEvents = 0
-  // The stored count as of the last change that committed. Undefined until recovery commits, which is also what tells
-  // the writer to run recovery before its next change.
+  // Whether recovery committed; until it does, every change runs it first.
+  private isRecovered = false
+  // The stored count as the writer last read or committed it, so a recovery that read it and then failed still knows
+  // it. Undefined until a read of it succeeds.
   private droppedEvents: number | undefined
   // What the last change that did not commit failed with; null once a change commits.
   private failure: string | null = null
@@ -184,24 +186,33 @@ export class PendingQueueWriter {
     })
   }
 
-  // The app acknowledges an event once it committed it. A held event leaves memory with no transaction; a stored one is
-  // deleted before the same transaction admits the held events, so the room it frees counts for them.
-  public ack(id: string): Promise<void> {
+  // The app acknowledges an event once it committed it, and the writer remembers it at once. A held event leaves memory
+  // at once too, with no transaction. A stored one is deleted by a change, which deletes every acknowledged event still
+  // stored before it admits the held events (commitChange). It resolves true once the event is no longer pending, and
+  // false when the deletion did not commit: the event stays pending, so it is forwarded again, and the next change that
+  // commits deletes it.
+  public ack(id: string): Promise<boolean> {
+    this.remember(id)
+    if (this.held.delete(id)) {
+      this.reportHealth()
+
+      return Promise.resolve(true)
+    }
+
     return this.enqueue(async () => {
-      this.remember(id)
-      if (this.held.delete(id) || !this.stored.has(id)) {
-        return
+      if (!this.stored.has(id)) {
+        return true
       }
 
       try {
         await this.recovered()
-        await this.commitChange((draft) => {
-          draft.events.delete(id)
-          draft.pending.delete(id)
-          this.admitHeld(draft)
-        })
+        await this.commitChange((draft) => this.admitHeld(draft))
+
+        return true
       } catch (error) {
         this.fail(error)
+
+        return false
       }
     })
   }
@@ -225,7 +236,7 @@ export class PendingQueueWriter {
       }
     }
 
-    if (this.droppedEvents === undefined) {
+    if (!this.isRecovered || this.droppedEvents === undefined) {
       throw new PendingQueueError('The pending queue has not run its recovery yet')
     }
 
@@ -249,9 +260,10 @@ export class PendingQueueWriter {
   }
 
   // Runs recovery when it has not committed yet: read every stored record and the count, delete the records that hold
-  // no readable event and count them, and admit what the writer holds, in one transaction.
+  // no readable event and count them, and admit what the writer holds, in one transaction. The count it read is the
+  // stored one until that transaction commits, so it stays the last-known count when the transaction does not.
   private async recovered(): Promise<void> {
-    if (this.droppedEvents !== undefined) {
+    if (this.isRecovered) {
       return
     }
 
@@ -266,6 +278,7 @@ export class PendingQueueWriter {
         keys.map((key, index) => ({ key, value: values[index] })),
         lossRecord
       )
+      this.droppedEvents = queue.droppedEvents
       for (const key of queue.unreadableKeys) {
         events.delete(key)
       }
@@ -284,16 +297,25 @@ export class PendingQueueWriter {
       }
     })
     this.settle(pending, droppedEvents)
+    this.isRecovered = true
     this.hooks.onRestored(restored)
   }
 
-  // A change after recovery: work edits the draft, and the change counts every loss it made, the uncounted ones of a
-  // failure included.
+  // A change after recovery. It first deletes every acknowledged event still stored, whose own deletion did not commit,
+  // so the room they free counts for it. Then work edits the draft, and the change counts every loss it made, the
+  // uncounted ones of a failure included.
   private async commitChange<TResult>(work: (draft: IDraft) => TResult): Promise<TResult> {
     const database = await this.connect()
     const { result, pending, droppedEvents } = await commit(database, async (events, loss) => {
       const lossRecord = await read<unknown>(loss.get(DROPPED_EVENTS_ID))
       const draft: IDraft = { events, pending: new Map(this.stored), lost: 0 }
+      for (const id of this.stored.keys()) {
+        if (this.acknowledged.has(id)) {
+          events.delete(id)
+          draft.pending.delete(id)
+        }
+      }
+
       const changed = work(draft)
 
       return {
@@ -359,7 +381,7 @@ export class PendingQueueWriter {
 
   // Tells the service worker when the queue's health changed, so the status it pushes is never stale.
   private reportHealth(): void {
-    if (this.failure === null && this.droppedEvents === undefined) {
+    if (this.failure === null && !this.isRecovered) {
       return
     }
 

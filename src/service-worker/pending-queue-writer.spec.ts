@@ -11,6 +11,9 @@ const DISK_FULL = 'QuotaExceededError: The disk is full'
 interface IQueueControl {
   // While set, opening the database fails, as a disk that is full does.
   isOpeningRefused: boolean
+  // While set, the loss store of a database opened refuses every write, as a disk that fills up between a
+  // transaction's reads and its writes does.
+  isLossWriteRefused: boolean
   connection: IDBDatabase | null
 }
 
@@ -60,10 +63,36 @@ const storedQueue = async (factory: IDBFactory): Promise<IStoredQueue> => {
   return { ids: keys.result.map(String), lossRecord: loss.result }
 }
 
+const refuseLossWrites = (database: IDBDatabase): void => {
+  const openTransaction = database.transaction.bind(database)
+  Object.defineProperty(database, 'transaction', {
+    value: (...args: Parameters<IDBDatabase['transaction']>): IDBTransaction => {
+      const transaction = openTransaction(...args)
+      const openStore = transaction.objectStore.bind(transaction)
+      Object.defineProperty(transaction, 'objectStore', {
+        value: (name: string): IDBObjectStore => {
+          const store = openStore(name)
+          if (name === LOSS_STORE) {
+            Object.defineProperty(store, 'put', {
+              value: () => {
+                throw new DOMException('The disk is full', 'QuotaExceededError')
+              },
+            })
+          }
+
+          return store
+        },
+      })
+
+      return transaction
+    },
+  })
+}
+
 const createWriter = (
   factory: IDBFactory
 ): { writer: PendingQueueWriter; control: IQueueControl; restored: SlackEvent[][]; healths: QueueHealth[] } => {
-  const control: IQueueControl = { isOpeningRefused: false, connection: null }
+  const control: IQueueControl = { isOpeningRefused: false, isLossWriteRefused: false, connection: null }
   const restored: SlackEvent[][] = []
   const healths: QueueHealth[] = []
   const writer = new PendingQueueWriter(
@@ -73,6 +102,9 @@ const createWriter = (
       }
 
       control.connection = await openPendingQueue(factory)
+      if (control.isLossWriteRefused) {
+        refuseLossWrites(control.connection)
+      }
 
       return control.connection
     },
@@ -132,6 +164,32 @@ describe('[service-worker] Pending queue writer - recovery', () => {
       uncountedEvents: 0,
       loss: { kind: 'unavailable' },
     })
+  })
+
+  it('should report the count it read as last-known when its transaction does not commit, and run again', async () => {
+    // Arrange
+    const factory = new IDBFactory()
+    const unreadable = { id: 'older-format', text: 'hello' }
+    await seed(factory, [unreadable], { id: DROPPED_EVENTS_ID, droppedEvents: 17 })
+    const { writer, control } = createWriter(factory)
+    control.isLossWriteRefused = true
+
+    // Act
+    await writer.recover()
+    const failing = writer.health()
+    control.isLossWriteRefused = false
+    await writer.admit(eventAt('1700000001.000100'))
+
+    // Assert
+    assert.deepEqual(failing, {
+      state: 'failing',
+      error: DISK_FULL,
+      unstoredEvents: 0,
+      uncountedEvents: 0,
+      loss: { kind: 'last-known', droppedEvents: 17 },
+    })
+    assert.deepEqual(writer.health(), { state: 'committing', droppedEvents: 18 })
+    assert.deepEqual((await storedQueue(factory)).lossRecord, { id: DROPPED_EVENTS_ID, droppedEvents: 18 })
   })
 })
 
@@ -223,9 +281,10 @@ describe('[service-worker] Pending queue writer - failures', () => {
     await writer.admit(kept)
 
     // Act
-    await writer.ack(acknowledged.id)
+    const isRemoved = await writer.ack(acknowledged.id)
 
     // Assert
+    assert.equal(isRemoved, true)
     assert.deepEqual(writer.pending(), [kept])
     assert.deepEqual(writer.health(), {
       state: 'failing',
@@ -234,6 +293,33 @@ describe('[service-worker] Pending queue writer - failures', () => {
       uncountedEvents: 0,
       loss: { kind: 'last-known', droppedEvents: 0 },
     })
+  })
+
+  it('should keep an acknowledged stored event pending while its deletion fails, and free its room with the next commit', async () => {
+    // Arrange
+    const factory = new IDBFactory()
+    const oldest = eventAt('1700000000.000001')
+    const newest = eventAt('1700000099.000100')
+    await seed(factory, fullQueue())
+    const { writer, control } = createWriter(factory)
+    await writer.recover()
+    breakQueue(control)
+
+    // Act
+    const isRemoved = await writer.ack(oldest.id)
+    const isPendingAfterFailedAck = writer.isPending(oldest.id)
+    control.isOpeningRefused = false
+    const admission = await writer.admit(newest)
+
+    // Assert
+    assert.deepEqual([isRemoved, isPendingAfterFailedAck, admission], [false, true, 'stored'])
+    assert.equal(writer.isPending(oldest.id), false)
+    assert.deepEqual(writer.health(), { state: 'committing', droppedEvents: 0 })
+    const stored = await storedQueue(factory)
+    assert.deepEqual(
+      [stored.ids.length, stored.ids.includes(newest.id), stored.ids.includes(oldest.id), stored.lossRecord],
+      [EVENT_QUEUE_MAX, true, false, undefined]
+    )
   })
 
   it('should apply an ack before admitting held events, so the room it frees counts for them', async () => {

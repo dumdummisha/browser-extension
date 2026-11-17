@@ -1,0 +1,26 @@
+node_modules/
+dist/
+*.log
+
+# Packed extension builds and the extension's private signing key
+*.zip
+*.crx
+*.pem
+
+# Local notes and drafts
+/tmp/
+
+# Agent settings and state stay local
+.opencode/
+.claude/
+
+# Environment and secrets
+.env
+.env.*
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/

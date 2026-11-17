@@ -19,7 +19,7 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/build-extension.js",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint",
     "format": "oxfmt",

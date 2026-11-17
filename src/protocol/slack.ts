@@ -154,6 +154,7 @@ export type SlackStatus = z.infer<typeof SlackStatusSchema>
 // them only through its provenance ledger. Uploads have their own methods below.
 export const SLACK_READ_METHODS = [
   'auth.test',
+  'chat.getPermalink',
   'conversations.history',
   'conversations.info',
   'conversations.list',

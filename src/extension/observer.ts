@@ -13,9 +13,13 @@ import {
 // from Slack's socket itself: whether a socket is open, and each new message cut down to the fields the app reads, with
 // the account the tab showed when it came.
 //
-// Slack's scripts, and anything else the page runs later, share this world and can replace any built-in. So every
-// built-in that decides what the relay gets is taken here before they run (and in message-projection.ts), and only
-// events the browser itself dispatched count (isTrusted), never one a page script dispatched on a socket.
+// Threat model (README, Security): scripts already running in the page, Slack's own or another extension's in this
+// world, are out of scope, since such a script already holds the session and token and can send them anywhere itself.
+// The guarantees are that the extension's own code never moves a credential out of the page, and that Slack message
+// content, remote data that never runs as script, reaches the relay only as a cut-down message that becomes an event,
+// never as a command, an API call or an ack. The built-ins taken at load (here and in message-projection.ts) and the
+// isTrusted check keep what the observer reads the same when the page's scripts later replace a built-in or dispatch
+// events of their own; they are not a boundary against such a script.
 const { apply, construct } = Reflect
 const { getOwnPropertyDescriptor } = Object
 const NativeUrl = URL
@@ -43,6 +47,8 @@ const channel = new MessageChannel()
 let isHandedOver = false
 let openSockets = 0
 
+// channel.port1 goes through MessageChannel's prototype on every post, so a page script that replaced that getter could
+// take the port. Page scripts are out of scope (above), so this is not hardened against that.
 const toRelay = (message: object): void => {
   if (isHandedOver) {
     apply(postToPort, channel.port1, [message])

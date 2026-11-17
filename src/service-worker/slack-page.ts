@@ -134,6 +134,9 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
     }
 
     const { token } = team
+    // The guard runs on the page's own URL and RegExp, which a page script could replace. Page scripts are out of scope
+    // (README, Security), so it keeps the token from a saved address that is not Slack's and is not hardened against
+    // such a script.
     const base = URL.parse(team.url)
     const isSlackApiBase =
       base?.protocol === 'https:' &&

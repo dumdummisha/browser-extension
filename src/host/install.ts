@@ -1,11 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
 import { NATIVE_HOST_NAME } from '../protocol/messages.js'
 import { extensionIdFromKey } from './extension-id.js'
-import { BRIDGE_DIR, LAUNCHER_PATH } from './paths.js'
+import { BRIDGE_DIR, ensurePrivateDir, LAUNCHER_PATH } from './paths.js'
 
 const ManifestSchema = z.object({ key: z.string() })
 
@@ -20,11 +20,14 @@ const hostScript = fileURLToPath(new URL('native-host.js', import.meta.url))
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
 
 // The browser starts the host with almost no environment, so the launcher names this Node binary by absolute path.
-// Rerun the installer after a Node upgrade moves it.
+// Rerun the installer after a Node upgrade moves it. A launcher already there is removed and written anew, never written
+// through, since a symlink left there before the folder was private could point anywhere.
 const writeLauncher = (): void => {
-  mkdirSync(BRIDGE_DIR, { recursive: true, mode: 0o700 })
+  ensurePrivateDir(BRIDGE_DIR)
+  rmSync(LAUNCHER_PATH, { force: true })
   writeFileSync(LAUNCHER_PATH, `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(hostScript)}\n`, {
     mode: 0o755,
+    flag: 'wx',
   })
   process.stdout.write(`  launcher ${LAUNCHER_PATH}\n`)
 }

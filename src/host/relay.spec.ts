@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
-import { mkdtemp, rm, stat } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, rm, stat, symlink } from 'node:fs/promises'
 import { createConnection, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -20,6 +20,7 @@ interface IInbox {
 }
 
 interface IRelay {
+  readonly server: Server
   readonly socketPath: string
   // The extension's end of the native messaging pipe: frames written here reach the relay, and what the relay sends
   // the extension arrives in the inbox.
@@ -57,22 +58,35 @@ const createInbox = (): IInbox => {
   }
 }
 
-const startRelay = async (context: TestContext): Promise<IRelay> => {
+const tempDir = async (context: TestContext): Promise<string> => {
   const dir = await mkdtemp(join(tmpdir(), 'misha-relay-'))
-  const socketPath = join(dir, 'bridge', 'bridge.sock')
+  context.after(() => rm(dir, { recursive: true, force: true }))
+
+  return dir
+}
+
+// A relay still listening when the test ends sees its browser's pipe end, and closes.
+const startRelayAt = async (context: TestContext, socketPath: string): Promise<IRelay> => {
   const input = new PassThrough()
   const output = new PassThrough()
   const extension = createInbox()
   output.on('data', createFrameReader(extension.put))
-  const server: Server = await startNativeHostRelay({ input, output, socketPath, browserApp: BROWSER_APP })
+  const server = await startNativeHostRelay({ input, output, socketPath, browserApp: BROWSER_APP })
   context.after(async () => {
-    input.end()
-    await once(server, 'close')
-    await rm(dir, { recursive: true, force: true })
+    if (server.listening) {
+      input.end()
+      await once(server, 'close')
+    }
   })
 
-  return { socketPath, input, extension }
+  return { server, socketPath, input, extension }
 }
+
+const startRelay = async (context: TestContext): Promise<IRelay> =>
+  startRelayAt(context, join(await tempDir(context), 'bridge', 'bridge.sock'))
+
+const startRelayIn = (socketPath: string): Promise<Server> =>
+  startNativeHostRelay({ input: new PassThrough(), output: new PassThrough(), socketPath, browserApp: BROWSER_APP })
 
 const connectClient = async ({ socketPath }: IRelay): Promise<IClient> => {
   const socket = createConnection(socketPath)
@@ -101,6 +115,43 @@ const roundTrip = async (relay: IRelay, client: IClient): Promise<void> => {
   fromExtension(relay, { type: 'reply', id: request.id, result: { ok: true } })
   assert.deepEqual(await client.inbox.next(), { type: 'reply', id: 99, result: { ok: true } })
 }
+
+describe('[host] Relay - bridge folder', () => {
+  it('should make an existing bridge folder others may open owner-only before it binds', async (context) => {
+    // Arrange
+    const bridgeDir = join(await tempDir(context), 'bridge')
+    await mkdir(bridgeDir)
+    await chmod(bridgeDir, 0o777)
+
+    // Act
+    await startRelayAt(context, join(bridgeDir, 'bridge.sock'))
+
+    // Assert
+    assert.equal((await stat(bridgeDir)).mode.toString(8).slice(-3), '700')
+  })
+
+  it('should refuse a bridge folder that is a symlink', async (context) => {
+    // Arrange
+    const dir = await tempDir(context)
+    await mkdir(join(dir, 'elsewhere'), { mode: 0o700 })
+    await symlink(join(dir, 'elsewhere'), join(dir, 'bridge'))
+
+    // Act + Assert
+    await assert.rejects(
+      startRelayIn(join(dir, 'bridge', 'bridge.sock')),
+      /must be a folder of this user, not a symlink/u
+    )
+  })
+
+  it('should refuse a bridge folder whose parent others may write to', async (context) => {
+    // Arrange
+    const dir = await tempDir(context)
+    await chmod(dir, 0o777)
+
+    // Act + Assert
+    await assert.rejects(startRelayIn(join(dir, 'bridge', 'bridge.sock')), /that nobody else may write to/u)
+  })
+})
 
 describe('[host] Relay - requests', () => {
   it('should listen on a socket only its owner can open', async (context) => {

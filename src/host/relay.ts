@@ -1,9 +1,10 @@
-import { chmodSync, mkdirSync, rmSync } from 'node:fs'
+import { chmodSync, rmSync } from 'node:fs'
 import { createServer, type Server, type Socket } from 'node:net'
 import { dirname } from 'node:path'
 import type { Readable, Writable } from 'node:stream'
 import { createFrameReader, createLineReader, encodeFrame, encodeLine } from '../protocol/framing.js'
 import { ClientMessageSchema, ExtensionFrameSchema, type HostFrame, type RelayMessage } from '../protocol/messages.js'
+import { ensurePrivateDir } from './paths.js'
 
 export interface IRelayOptions {
   // The browser's end of the native messaging pipe: frames from the extension arrive on input, go out on output.
@@ -122,7 +123,7 @@ export const startNativeHostRelay = async ({
 
   // A socket file left by a host that crashed, or by another browser's host, would make listen fail; the newest
   // browser to start its host takes the socket over. Only this user may open the folder or the socket.
-  mkdirSync(dirname(socketPath), { recursive: true, mode: 0o700 })
+  ensurePrivateDir(dirname(socketPath))
   rmSync(socketPath, { force: true })
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)

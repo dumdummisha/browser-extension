@@ -1,9 +1,15 @@
-import { chmodSync, rmSync } from 'node:fs'
-import { createServer, type Server, type Socket } from 'node:net'
+import { chmodSync, lstatSync, rmSync } from 'node:fs'
+import { createConnection, createServer, type Server, type Socket } from 'node:net'
 import { dirname } from 'node:path'
 import type { Readable, Writable } from 'node:stream'
 import { createFrameReader, createLineReader, encodeFrame, encodeLine } from '../protocol/framing.js'
-import { ClientMessageSchema, ExtensionFrameSchema, type HostFrame, type RelayMessage } from '../protocol/messages.js'
+import {
+  type ClientMessage,
+  ClientMessageSchema,
+  ExtensionFrameSchema,
+  type HostFrame,
+  type RelayMessage,
+} from '../protocol/messages.js'
 import { ensurePrivateDir } from './paths.js'
 
 export interface IRelayOptions {
@@ -23,6 +29,36 @@ const errorMessage = (error: unknown): string => (error instanceof Error ? error
 
 const warn = (message: string): void => {
   process.stderr.write(`misha-browser host: ${message}\n`)
+}
+
+// Clears the socket path for this host. A relay listening there, another browser's host, is asked to let go (messages.ts
+// takeover), and this host goes on only once that relay closed the connection, which it does after closing its server.
+// Node removes a server's path when the server closes, so the path must be the other relay's to remove before this host
+// binds it, never after. A socket nothing listens on, left by a host that crashed, is removed; anything else at the
+// path is left alone.
+const clearSocketPath = async (socketPath: string): Promise<void> => {
+  const holder = createConnection(socketPath)
+  const failure = await new Promise<NodeJS.ErrnoException | null>((resolve) => {
+    holder.once('connect', () => resolve(null))
+    holder.on('error', resolve)
+  })
+  if (failure === null) {
+    // The holder's hello is read and dropped, so the connection can end.
+    holder.resume()
+    holder.end(encodeLine({ type: 'takeover' } satisfies ClientMessage))
+    await new Promise((resolve) => holder.once('close', resolve))
+    return
+  }
+
+  if (failure.code === 'ENOENT') {
+    return
+  }
+
+  if (failure.code !== 'ECONNREFUSED' || !lstatSync(socketPath).isSocket()) {
+    throw new Error(`${socketPath} holds no socket a relay can take over (${failure.message})`)
+  }
+
+  rmSync(socketPath)
 }
 
 // The browser starts one host per extension connection, and every client process connects to its socket. The relay
@@ -67,6 +103,13 @@ export const startNativeHostRelay = async ({
         // Only the listener was sent the event, so only its ack can mean the app committed it.
         if (client === listener) {
           toExtension(message)
+        }
+
+        return
+      case 'takeover':
+        server.close()
+        for (const connected of clients) {
+          connected.destroy()
         }
     }
   }
@@ -121,10 +164,9 @@ export const startNativeHostRelay = async ({
     toClient(client, { type: 'hello', browserApp })
   })
 
-  // A socket file left by a host that crashed, or by another browser's host, would make listen fail; the newest
-  // browser to start its host takes the socket over. Only this user may open the folder or the socket.
+  // The newest browser to start its host takes the socket over. Only this user may open the folder or the socket.
   ensurePrivateDir(dirname(socketPath))
-  rmSync(socketPath, { force: true })
+  await clearSocketPath(socketPath)
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
     server.listen(socketPath, resolve)

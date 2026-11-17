@@ -30,9 +30,13 @@ const AckSchema = z.strictObject({ type: z.literal('ack'), id: z.string() })
 const ListenSchema = z.strictObject({ type: z.literal('listen') })
 const ListenerSchema = z.strictObject({ type: z.literal('listener') })
 const HelloSchema = z.strictObject({ type: z.literal('hello'), browserApp: z.string().nullable() })
+// The newest browser's host takes the socket over: it connects to the relay holding it and sends takeover, and that
+// relay closes its server, which removes the socket's path, and then every connection, after which the new host binds
+// the path. The relay that let go stays up for its own browser until its pipe ends, reaching no client.
+const TakeoverSchema = z.strictObject({ type: z.literal('takeover') })
 
 // A client to the relay, one per line.
-export const ClientMessageSchema = z.union([RequestSchema, ListenSchema, AckSchema])
+export const ClientMessageSchema = z.union([RequestSchema, ListenSchema, AckSchema, TakeoverSchema])
 // The relay to a client, one per line: a hello first, then replies to its requests and, to the listener, events and
 // status snapshots.
 export const RelayMessageSchema = z.union([

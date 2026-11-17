@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { chmod, mkdir, mkdtemp, rm, stat, symlink } from 'node:fs/promises'
+import { chmod, lstat, mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { createConnection, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -150,6 +151,56 @@ describe('[host] Relay - bridge folder', () => {
 
     // Act + Assert
     await assert.rejects(startRelayIn(join(dir, 'bridge', 'bridge.sock')), /that nobody else may write to/u)
+  })
+})
+
+describe('[host] Relay - socket takeover', () => {
+  it('should take the socket over from a live relay, whose closing later leaves the new socket in place', async (context) => {
+    // Arrange
+    const socketPath = join(await tempDir(context), 'bridge', 'bridge.sock')
+    const older = await startRelayAt(context, socketPath)
+    const olderClient = await connectClient(older)
+    const olderClientClose = once(olderClient.socket, 'close')
+
+    // Act
+    const newer = await startRelayAt(context, socketPath)
+    await olderClientClose
+    older.input.end()
+    await once(older.input, 'end')
+
+    // Assert
+    assert.equal(older.server.listening, false)
+    await roundTrip(newer, await connectClient(newer))
+  })
+
+  it('should remove a socket nothing listens on, left by a host that crashed', async (context) => {
+    // Arrange
+    const socketPath = join(await tempDir(context), 'bridge', 'bridge.sock')
+    await mkdir(dirname(socketPath), { mode: 0o700 })
+    spawnSync(process.execPath, [
+      '-e',
+      "require('node:net').createServer().listen(process.argv[1], () => process.kill(process.pid, 'SIGKILL'))",
+      socketPath,
+    ])
+    const isStaleSocket = (await lstat(socketPath)).isSocket()
+
+    // Act
+    const relay = await startRelayAt(context, socketPath)
+
+    // Assert
+    assert.equal(isStaleSocket, true)
+    await roundTrip(relay, await connectClient(relay))
+  })
+
+  it('should leave anything but a socket at the path alone, and fail', async (context) => {
+    // Arrange
+    const socketPath = join(await tempDir(context), 'bridge', 'bridge.sock')
+    await mkdir(dirname(socketPath), { mode: 0o700 })
+    await writeFile(socketPath, 'not a socket')
+
+    // Act + Assert
+    await assert.rejects(startRelayIn(socketPath), /holds no socket a relay can take over/u)
+    assert.equal((await lstat(socketPath)).isFile(), true)
   })
 })
 

@@ -2,7 +2,8 @@
 // request's URL, body and headers in the network log, and every URL a tab command answers (a tab's, a page's, a
 // download's). A body field (URL-encoded, JSON or multipart, a truncated body as far as it goes), query parameter or
 // header whose name says it holds a credential loses its value, and so does any value shaped like a known token or key;
-// the name stays, so the shape of an API stays readable. Pure, so the service worker and its specs share it.
+// the name stays, so the shape of an API stays readable. A URL also loses its userinfo. Pure, so the service worker and
+// its specs share it.
 
 export const REDACTED_VALUE = '[redacted]'
 
@@ -102,6 +103,9 @@ const FORM_FIELD_SEPARATOR = '&'
 // A query string's or fragment's fields, between the marks that start and separate them.
 const URL_FIELD = /[^?&#]+/gu
 const URL_QUERY_START = /[?#]/u
+// The userinfo of an absolute URL's authority, whatever it holds or encodes: up to the authority's last @, as the
+// browser parses it.
+const URL_USERINFO = /^(?<scheme>[a-z][\d+.a-z-]*:\/\/)[^/]*@/iu
 // A run of well-formed percent escapes in a path segment; a malformed escape is left as written.
 const PERCENT_ESCAPES = /(?:%[\dA-Fa-f]{2})+/gu
 // A whole value that is an absolute URL, such as a Referer header or a redirect field, is redacted as a URL.
@@ -141,7 +145,10 @@ export const redactBody = (text: string): string => {
 // A URL as a tab command answers it; navigation keeps the URL as it is.
 export const redactUrl = (url: string): string => {
   const queryStart = url.search(URL_QUERY_START)
-  const address = queryStart === -1 ? url : url.slice(0, queryStart)
+  const address = (queryStart === -1 ? url : url.slice(0, queryStart)).replace(
+    URL_USERINFO,
+    `$<scheme>${REDACTED_VALUE}@`
+  )
   const query = queryStart === -1 ? '' : url.slice(queryStart)
   const redactedAddress = address
     .split('/')

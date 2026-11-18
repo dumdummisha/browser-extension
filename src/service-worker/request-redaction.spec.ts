@@ -163,6 +163,28 @@ describe('[service-worker] Request redaction - URLs and headers', () => {
     assert.equal(redacted, 'https://app.example.com/session/[redacted]/caf%C3%A9/%zz%FF%E0%A4')
   })
 
+  it('should redact the userinfo of a URL whatever it holds or encodes, a URL-valued field included', () => {
+    // Arrange
+    const userinfos = [
+      `example-user:${OPAQUE_SECRET}`,
+      `example%20user:${encodeURIComponent(`${OPAQUE_SECRET}@:/`)}`,
+      `user@example.test:${OPAQUE_SECRET}`,
+      'example-user',
+    ]
+    const redirect = encodeURIComponent(`https://example-user:${OPAQUE_SECRET}@files.example.test/a`)
+
+    // Act
+    const redacted = userinfos.map((userinfo) => redactUrl(`https://${userinfo}@app.example.test/report/@team?page=2`))
+    const nested = redactUrl(`https://app.example.test/login?next=${redirect}`)
+
+    // Assert
+    assert.deepEqual(redacted, Array(userinfos.length).fill('https://[redacted]@app.example.test/report/@team?page=2'))
+    assert.equal(
+      nested,
+      `https://app.example.test/login?next=${encodeURIComponent('https://[redacted]@files.example.test/a')}`
+    )
+  })
+
   it('should keep a URL without credentials as it is', () => {
     // Act
     const redacted = redactUrl('https://app.example.com/reports/2026?page=2#summary')

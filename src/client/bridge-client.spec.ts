@@ -64,12 +64,16 @@ const createQueue = <TItem>(): IQueue<TItem> => {
   }
 }
 
-const startRelay = async (context: TestContext, socketPath: string): Promise<IExtensionEnd> => {
+const startRelay = async (
+  context: TestContext,
+  socketPath: string,
+  browserApp: string | null
+): Promise<IExtensionEnd> => {
   const input = new PassThrough()
   const output = new PassThrough()
   const frames = createQueue<unknown>()
   output.on('data', createFrameReader(frames.put))
-  const server: Server = await startNativeHostRelay({ input, output, socketPath, browserApp: null })
+  const server: Server = await startNativeHostRelay({ input, output, socketPath, browserApp })
   context.after(async () => {
     if (server.listening) {
       const closed = once(server, 'close')
@@ -82,11 +86,12 @@ const startRelay = async (context: TestContext, socketPath: string): Promise<IEx
 }
 
 const startClient = async (
-  context: TestContext
+  context: TestContext,
+  browserApp: string | null = null
 ): Promise<{ client: BridgeClient; extension: IExtensionEnd; rejected: IRejectedEvent[] }> => {
   const dir = await mkdtemp(join(tmpdir(), 'misha-client-'))
   const socketPath = join(dir, 'bridge.sock')
-  const extension = await startRelay(context, socketPath)
+  const extension = await startRelay(context, socketPath, browserApp)
   const rejected: IRejectedEvent[] = []
   const client = new BridgeClient({
     socketPath,
@@ -178,5 +183,61 @@ describe('[client] Bridge client - status', () => {
 
     // Assert
     assert.deepEqual([snapshot, latest, gone], [STATUS, STATUS, undefined])
+  })
+})
+
+describe('[client] Bridge client - tab commands', () => {
+  it('should send a tab command and answer its checked result', async (context) => {
+    // Arrange
+    const { client, extension } = await startClient(context)
+
+    // Act
+    const answered = client.tab('closeTab', { tabId: 4 })
+    const request = await extension.next()
+    fromExtension(extension, { type: 'reply', id: 1, result: { tabId: 4 } })
+
+    // Assert
+    assert.deepEqual(request, { type: 'request', id: 1, method: 'closeTab', params: { tabId: 4 } })
+    assert.deepEqual(await answered, { tabId: 4 })
+  })
+
+  it("should refuse an answer that does not read as the method's result", async (context) => {
+    // Arrange
+    const { client, extension } = await startClient(context)
+
+    // Act
+    const answered = client.tab('closeTab', { tabId: 4 })
+    await extension.next()
+    fromExtension(extension, { type: 'reply', id: 1, result: { tabId: 'four' } })
+
+    // Assert
+    await assert.rejects(answered, { name: 'ZodError' })
+  })
+
+  it('should fail with the error the extension answered', async (context) => {
+    // Arrange
+    const { client, extension } = await startClient(context)
+
+    // Act
+    const answered = client.tab('snapshot', { scope: 'viewport', maxChars: 100 })
+    await extension.next()
+    fromExtension(extension, { type: 'reply', id: 1, error: 'Cannot access contents of the page' })
+
+    // Assert
+    await assert.rejects(answered, {
+      name: 'BridgeError',
+      message: 'The extension failed snapshot: Cannot access contents of the page',
+    })
+  })
+
+  it('should report the browser app the native host was started by', async (context) => {
+    // Arrange
+    const { client } = await startClient(context, '/Applications/Example Browser.app')
+
+    // Act
+    const browserApp = await client.browserApp()
+
+    // Assert
+    assert.equal(browserApp, '/Applications/Example Browser.app')
   })
 })

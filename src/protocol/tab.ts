@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 // The tab half of the protocol: what the browser tools ask the extension to do in any tab of the browser, each method
 // with its params and its result, as the Slack half declares its own (slack.ts). A page method runs a command inside
-// the tab's page (the extension's page-command.ts), the rest work through the browser's tab, window, download and
+// the tab's page (service-worker/page-command.ts), the rest work through the browser's tab, window, download and
 // network APIs. URLs and recorded requests leave the extension with their credentials redacted (the service worker's
 // request-redaction.ts), so no raw token, cookie or password reaches the native host.
 

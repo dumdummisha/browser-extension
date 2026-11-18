@@ -13,6 +13,7 @@ import {
   type TabInfo,
 } from '../protocol/tab.js'
 import { NetworkLog } from '../service-worker/network-log.js'
+import { runPageCommand, waitForQuietPage } from '../service-worker/page-command.js'
 import { redactUrl } from '../service-worker/request-redaction.js'
 import {
   DOWNLOAD_POLL_INTERVAL_MS,
@@ -23,7 +24,6 @@ import {
   SCREENSHOT_JPEG_QUALITY,
   SETTLE_TIMEOUT_MS,
 } from './config.js'
-import { runPageCommand, waitForQuietPage } from './page-command.js'
 
 // The tab commands of the service worker (protocol tab.ts), apart from its Slack transport: they share only the native
 // port, and a command that fails answers its own request with an error. Every URL they answer is redacted

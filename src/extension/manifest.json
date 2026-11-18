@@ -1,13 +1,21 @@
 {
   "manifest_version": 3,
   "name": "Misha Browser",
-  "description": "Misha's Slack transport: reads new messages in your signed-in Slack tab and makes allowlisted Slack calls there for the Misha app on this Mac, through a local native messaging host.",
+  "description": "Misha's browser bridge, through a local native messaging host on this Mac: reads new messages in your signed-in Slack tab and makes allowlisted Slack calls there for the Misha app, and lets the browser tools of misha-browser's MCP server read and drive your tabs.",
   "version": "0.1.0",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0dSZGPmCueNqXNI+P2U4AHXqaPXzJX+/1NDz6w2l5C+ZaDrJ0kJ6b5aL7q6bnJrfasIk0b5jgxkeIPj7jmF8oMkF3z7akjoiWR7/c8hEt8z2YyM5isVw16ZReggmWulfgUIRqkFlD+FT5QE7B0FRZqVdrAEHHSaZ0GWgcbfPv8zjBiFw+cFhJQOG3B+SQw/qdpebVYATyArZM58KzVVT28uDdtr4yNLeKwsUpTjVKe7SmhG7a2oDvxwFVSlZPU3b3EYK6KcTClb3Y6rN22zt2YNNDG3CVBvQ0z228YgADmjix225b6KcDBYfOXeEH3uYovM7EEfirA2ABIF5Dh2rZQIDAQAB",
   "minimum_chrome_version": "140",
   "background": { "service_worker": "background.js", "type": "module" },
-  "permissions": ["nativeMessaging", "scripting", "alarms", "unlimitedStorage"],
-  "host_permissions": ["https://app.slack.com/*"],
+  "permissions": [
+    "nativeMessaging",
+    "scripting",
+    "alarms",
+    "unlimitedStorage",
+    "tabs",
+    "webRequest",
+    "downloads"
+  ],
+  "host_permissions": ["<all_urls>"],
   "content_scripts": [
     {
       "matches": ["https://app.slack.com/*"],

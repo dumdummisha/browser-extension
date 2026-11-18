@@ -1,6 +1,6 @@
 /// <reference types="chrome" />
 import { z } from 'zod'
-import { type ExtensionFrame, type HostFrame, HostFrameSchema, NATIVE_HOST_NAME } from '../protocol/messages.js'
+import { type ExtensionFrame, HostFrameSchema, NATIVE_HOST_NAME } from '../protocol/messages.js'
 import {
   type CaptureHealth,
   chunkCount,
@@ -17,6 +17,7 @@ import {
   type SlackMessageFrame,
   type SlackStatus,
 } from '../protocol/slack.js'
+import { answerRequest } from '../service-worker/bridge-requests.js'
 import { Forwarder } from '../service-worker/forwarder.js'
 import { captureHealthOf, ObservedMessageSchema } from '../service-worker/observed-message.js'
 import { openPendingQueue, PendingQueueWriter } from '../service-worker/pending-queue-writer.js'
@@ -29,10 +30,11 @@ import {
   SlackPageResultSchema,
 } from '../service-worker/slack-page.js'
 import { CAPTURE_QUERY, RECONNECT_ALARM, RECONNECT_PERIOD_MINUTES, SLACK_ORIGIN, SLACK_TAB_URL } from './config.js'
+import { startTabTracking, TAB_HANDLERS } from './tab-commands.js'
 
-// The service worker: the native port to the host, the pending queue and its forwarding, the status, and the bridge
-// methods, each run in a Slack tab signed in as the account it names. What the page reports is data: it becomes events
-// and status, never a native command.
+// The service worker: the native port to the host, the pending queue and its forwarding, the status, the Slack bridge
+// methods, each run in a Slack tab signed in as the account it names, and the tab commands of the browser tools
+// (tab-commands.ts). What the page reports is data: it becomes events and status, never a native command.
 
 // zod compiles its parsers with new Function unless told not to, and an extension's CSP refuses that.
 z.config({ jitless: true })
@@ -41,7 +43,6 @@ type Handlers = {
   [TMethod in SlackBridgeMethod]: (params: unknown) => SlackBridgeResult<TMethod> | Promise<SlackBridgeResult<TMethod>>
 }
 
-type BridgeRequest = Extract<HostFrame, { type: 'request' }>
 type IdentifiedTab = chrome.tabs.Tab & { id: number }
 
 // Runs tasks one at a time, in the order they came: a failed one rejects its own promise and the next still runs.
@@ -208,7 +209,7 @@ const uploadParts = (chunks: ReadonlyMap<number, string> | undefined, byteLength
   return parts
 }
 
-const handlers: Handlers = {
+const slackHandlers: Handlers = {
   slackCall: (raw) => {
     const { account, method, params } = SLACK_BRIDGE_METHODS.slackCall.params.parse(raw)
 
@@ -291,23 +292,7 @@ const handlers: Handlers = {
   },
 }
 
-const isBridgeMethod = (method: string): method is SlackBridgeMethod => Object.hasOwn(handlers, method)
-
-const answer = async ({ id, method, params }: BridgeRequest): Promise<ExtensionFrame> => {
-  if (!isBridgeMethod(method)) {
-    return {
-      type: 'reply',
-      id,
-      error: `This extension does not know ${method}; it is older than its client. Reload it.`,
-    }
-  }
-
-  try {
-    return { type: 'reply', id, result: await handlers[method](params) }
-  } catch (error) {
-    return { type: 'reply', id, error: error instanceof Error ? error.message : String(error) }
-  }
-}
+const handlers = { ...slackHandlers, ...TAB_HANDLERS }
 
 const writer = new PendingQueueWriter(() => openPendingQueue(indexedDB), {
   onRestored: (events) => {
@@ -382,7 +367,7 @@ const onHostFrame = (message: unknown): void => {
   const frame = HostFrameSchema.parse(message)
   switch (frame.type) {
     case 'request':
-      void answer(frame).then(post)
+      void answerRequest(handlers, frame).then(post)
       return
     case 'ack':
       // Redelivery stops once the event is no longer pending: a held one at once, a stored one once its deletion
@@ -438,6 +423,7 @@ chrome.tabs.onUpdated.addListener((_tabId, change, tab) => {
   }
 })
 
+startTabTracking()
 void chrome.alarms.create(RECONNECT_ALARM, { periodInMinutes: RECONNECT_PERIOD_MINUTES })
 chrome.alarms.onAlarm.addListener(() => connect())
 void writer.recover()

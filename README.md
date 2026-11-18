@@ -8,17 +8,17 @@ The repository holds:
 - the Manifest V3 extension, in `src/extension/` and `src/service-worker/`. In a signed-in Slack tab it reads new messages from the page's own socket and makes allowlisted Web API calls, downloads and uploads with the session Slack's web client already has. The token and cookies never leave the page
 - the native host and its relay, in `src/host/`, which carry requests, replies, events and acks between the extension and processes on the same Mac through a socket only the user can open
 - a Node client for that socket, in `src/client/`
-- the browser tools (`tab_*`, in `src/tools/`), which read and drive the user's own browser through the extension, and the desktop tools (`macos_*`, in `src/desktop/`), which move the Mac's mouse, press its keys, capture its screen, bring apps to the front and convert media
+- the browser tools (`tab_*`, in `src/tools/`), which read and drive the user's own browser through the extension, and the desktop tools (`macos_*`, in `src/desktop/`), which move the Mac's mouse, press its keys, capture its screen, and bring apps to the front
 - a standalone MCP server, in `src/mcp/`, that serves both sets of tools over stdio
 
 Misha's app imports the protocol as `misha-browser/protocol` and the client as `misha-browser/client`. Node processes also get the framing helpers from `misha-browser/protocol/framing`. A Misha extension serves the tools through `misha-browser/modules`, which exports `browserModule` and `desktopModule`: each has a `create` that builds the module's tools and a `jsonSchema` that converts a tool's input with this package's zod, so the descriptions the model reads survive.
 
 ## The MCP server
 
-`dist/mcp/server.js` (the package's `misha-browser-mcp` bin) serves 27 tools to any MCP client, for the folder it was started in:
+`dist/mcp/server.js` (the package's `misha-browser-mcp` bin) serves 26 tools to any MCP client, for the folder it was started in:
 
 - browser: `tab_list`, `tab_switch`, `tab_open`, `tab_close`, `tab_read`, `tab_find`, `tab_wait`, `tab_screenshot`, `tab_network`, `tab_click`, `tab_drag`, `tab_type`, `tab_fill`, `tab_select_option`, `tab_press`, `tab_scroll`
-- desktop: `macos_mouse_move`, `macos_mouse_click`, `macos_mouse_current_position`, `macos_mouse_drag`, `macos_mouse_scroll`, `macos_keyboard_type`, `macos_keyboard_press`, `macos_screen_capture`, `macos_list_apps`, `macos_focus_app`, `macos_convert_video`
+- desktop: `macos_mouse_move`, `macos_mouse_click`, `macos_mouse_current_position`, `macos_mouse_drag`, `macos_mouse_scroll`, `macos_keyboard_type`, `macos_keyboard_press`, `macos_screen_capture`, `macos_list_apps`, `macos_focus_app`
 
 Each tool's description tells the model when to use it. A page reads as a compact outline (headings, visible text, and each control with a numbered ref, role, name and state) instead of HTML, and clicks, typing, key presses and scrolling are real input, so pages get the same events a person makes. After an action, the result lists what changed on the page. The tools run on macOS only; elsewhere they stay listed and each one says so when called.
 
@@ -55,22 +55,6 @@ The tools that move the mouse, press keys or capture the screen share one input 
 Grant both to the app that runs Claude Code or OpenCode (the terminal, the editor whose terminal you use, or the desktop app) in System Settings > Privacy & Security: turn the app on in each list, or add it with + if it is missing, then quit it completely and open it again. A running app keeps failing until it restarts.
 
 The browser tools that only read or work through the extension (`tab_list`, `tab_read`, `tab_find`, `tab_wait`, `tab_screenshot`, `tab_network`, `tab_open`, `tab_switch`, `tab_close`, `tab_select_option`), `macos_list_apps` and `macos_focus_app` need no permission. `tab_screenshot` captures through the extension, not the screen.
-
-`macos_convert_video` needs `ffmpeg` and `ffprobe` on `PATH` (or `FFMPEG_BIN` and `FFPROBE_BIN`). A model plans the ffmpeg arguments through `opencode run --agent vision`, so it also needs OpenCode (or `OPENCODE_BIN`) with a provider for the model and an agent named `vision` that has no tools, for example in `opencode.json`:
-
-```json
-{
-  "agents": {
-    "vision": {
-      "mode": "subagent",
-      "hidden": true,
-      "permissions": [{ "action": "*", "resource": "*", "effect": "deny" }]
-    }
-  }
-}
-```
-
-The tool checks the planned arguments against an allowlist of ffmpeg flags and filters before it runs ffmpeg, and writes the result next to the input. `CONVERT_FFMPEG_TIMEOUT_MS` bounds the ffmpeg run (30 minutes by default).
 
 ## Loading the extension and the native host
 

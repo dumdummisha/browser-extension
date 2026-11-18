@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { createConnection, type Socket } from 'node:net'
 import { Readable } from 'node:stream'
+import type { z } from 'zod'
 import { createLineReader, encodeLine } from '../protocol/framing.js'
 import { type ClientMessage, type RelayMessage, RelayMessageSchema } from '../protocol/messages.js'
 import {
@@ -16,10 +17,17 @@ import {
   type SlackMethod,
   type SlackStatus,
 } from '../protocol/slack.js'
+import {
+  TAB_BRIDGE_METHODS,
+  type TabBridgeMethod,
+  type TabBridgeParams,
+  type TabBridgeResult,
+} from '../protocol/tab.js'
 
-// The app's side of the relay's socket (src/host/relay.ts): Slack calls, file transfers, and, once it listens, the
-// extension's events and status. One connection carries all of it; while the client listens, it connects again after
-// the relay went away (the browser quit, the extension reloaded) and sends listen again, so it stays the listener.
+// A client of the relay's socket (src/host/relay.ts): the app's Slack calls, file transfers and, once it listens, the
+// extension's events and status, and the browser tools' tab commands. One connection carries all of it; while the
+// client listens, it connects again after the relay went away (the browser quit, the extension reloaded) and sends
+// listen again, so it stays the listener. A client that does not listen connects again on its next request.
 
 // The default request timeout: an upload's bytes go to Slack within one request.
 export const REQUEST_TIMEOUT_MS = 120_000
@@ -47,8 +55,10 @@ export interface IBridgeClientOptions {
   readonly onHandlerError: (event: SlackEvent, error: unknown) => void
 }
 
+type BridgeMethod = SlackBridgeMethod | TabBridgeMethod
+
 interface IPendingCall {
-  readonly method: SlackBridgeMethod
+  readonly method: BridgeMethod
   readonly resolve: (result: unknown) => void
   readonly reject: (error: Error) => void
   readonly timer: NodeJS.Timeout
@@ -56,8 +66,12 @@ interface IPendingCall {
 
 interface IConnection {
   readonly socket: Socket
+  // The browser's .app bundle, which the native host reads from its parent process; set by the relay's hello.
+  browserApp: string | null
   readonly calls: Map<number, IPendingCall>
 }
+
+const parseWith = <TSchema extends z.ZodType>(schema: TSchema, value: unknown): z.output<TSchema> => schema.parse(value)
 
 export class BridgeClient {
   private connection: Promise<IConnection> | null = null
@@ -136,6 +150,21 @@ export class BridgeClient {
     return slackUploadFinish.result.parse(await this.request('slackUploadFinish', params))
   }
 
+  // A tab command of the browser tools, with its result checked against the protocol.
+  public async tab<TMethod extends TabBridgeMethod>(
+    method: TMethod,
+    params: TabBridgeParams<TMethod>
+  ): Promise<TabBridgeResult<TMethod>> {
+    const { params: paramsSchema, result } = TAB_BRIDGE_METHODS[method]
+
+    return parseWith(result, await this.request(method, parseWith(paramsSchema, params)))
+  }
+
+  // The app a client brings to the front to raise the browser; null when the native host could not tell.
+  public async browserApp(): Promise<string | null> {
+    return (await this.connect()).browserApp
+  }
+
   public async close(): Promise<void> {
     this.isClosed = true
     this.handler = null
@@ -159,7 +188,7 @@ export class BridgeClient {
 
   // Resolves with the extension's result. Rejects when no answer came: the connection dropped, the call timed out, or
   // the extension answered an error; for a write, the outcome is then unknown.
-  private async request(method: SlackBridgeMethod, params: unknown): Promise<unknown> {
+  private async request(method: BridgeMethod, params: unknown): Promise<unknown> {
     const { socket, calls } = await this.connect()
     const id = this.nextId
     this.nextId += 1
@@ -206,12 +235,13 @@ export class BridgeClient {
   private open(onClose: () => void): Promise<IConnection> {
     return new Promise((resolve, reject) => {
       const socket = createConnection(this.options.socketPath)
-      const connection: IConnection = { socket, calls: new Map() }
+      const connection: IConnection = { socket, browserApp: null, calls: new Map() }
       const state: { isGreeted: boolean; failure?: Error } = { isGreeted: false }
       const readLines = createLineReader((raw) => {
         const message = RelayMessageSchema.parse(raw)
         if (message.type === 'hello' && !state.isGreeted) {
           state.isGreeted = true
+          connection.browserApp = message.browserApp
           resolve(connection)
           return
         }

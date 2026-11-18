@@ -185,6 +185,25 @@ describe('[service-worker] Request redaction - URLs and headers', () => {
     )
   })
 
+  it('should redact the opaque path of a Slack upload URL, which itself authorizes the upload', () => {
+    // Arrange
+    const grant = ['F0EXAMPLE', 'opaque', 'example', 'grant'].join('-')
+
+    // Act
+    const redacted = [
+      `https://files.slack.com/upload/v1/${grant}`,
+      `https://Files.Slack.com:443/upload/v1/${grant}/part?filename=report.txt`,
+      `https://files.slack.com/files-pri/T0EXAMPLE-F0EXAMPLE/report.txt`,
+    ].map(redactUrl)
+
+    // Assert
+    assert.deepEqual(redacted, [
+      'https://files.slack.com/upload/[redacted]',
+      'https://Files.Slack.com:443/upload/[redacted]?filename=report.txt',
+      'https://files.slack.com/files-pri/T0EXAMPLE-F0EXAMPLE/report.txt',
+    ])
+  })
+
   it('should keep a URL without credentials as it is', () => {
     // Act
     const redacted = redactUrl('https://app.example.com/reports/2026?page=2#summary')

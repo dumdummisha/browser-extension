@@ -2,8 +2,8 @@
 // request's URL, body and headers in the network log, and every URL a tab command answers (a tab's, a page's, a
 // download's). A body field (URL-encoded, JSON or multipart, a truncated body as far as it goes), query parameter or
 // header whose name says it holds a credential loses its value, and so does any value shaped like a known token or key;
-// the name stays, so the shape of an API stays readable. A URL also loses its userinfo. Pure, so the service worker and
-// its specs share it.
+// the name stays, so the shape of an API stays readable. A URL also loses its userinfo, and the path of a URL that is
+// itself an authorization. Pure, so the service worker and its specs share it.
 
 export const REDACTED_VALUE = '[redacted]'
 
@@ -106,6 +106,10 @@ const URL_QUERY_START = /[?#]/u
 // The userinfo of an absolute URL's authority, whatever it holds or encodes: up to the authority's last @, as the
 // browser parses it.
 const URL_USERINFO = /^(?<scheme>[a-z][\d+.a-z-]*:\/\/)[^/]*@/iu
+// URLs whose path grants what it names without a cookie or header, so no shape tells the grant apart: everything after
+// the prefix is redacted. Slack's file upload URL (files.getUploadURLExternal's upload_url) is
+// https://files.slack.com/upload/v1/<grant>.
+const CAPABILITY_URL_PREFIXES = [/^https:\/\/(?:[^/]*@)?files\.slack\.com(?::443)?\/upload\//iu]
 // A run of well-formed percent escapes in a path segment; a malformed escape is left as written.
 const PERCENT_ESCAPES = /(?:%[\dA-Fa-f]{2})+/gu
 // A whole value that is an absolute URL, such as a Referer header or a redirect field, is redacted as a URL.
@@ -150,12 +154,24 @@ export const redactUrl = (url: string): string => {
     `$<scheme>${REDACTED_VALUE}@`
   )
   const query = queryStart === -1 ? '' : url.slice(queryStart)
-  const redactedAddress = address
+
+  return `${redactAddress(address)}${query.replaceAll(URL_FIELD, (field) => redactFormField(field))}`
+}
+
+// A URL up to its query: an authorization URL loses everything after its prefix, any other URL each path segment
+// shaped like a secret.
+const redactAddress = (address: string): string => {
+  const capability = CAPABILITY_URL_PREFIXES.map((prefix) => prefix.exec(address)?.[0]).find(
+    (kept) => kept !== undefined
+  )
+  if (capability !== undefined) {
+    return `${capability}${REDACTED_VALUE}`
+  }
+
+  return address
     .split('/')
     .map((segment) => (isSecretShaped(segment) || isSecretShaped(percentDecoded(segment)) ? REDACTED_VALUE : segment))
     .join('/')
-
-  return `${redactedAddress}${query.replaceAll(URL_FIELD, (field) => redactFormField(field))}`
 }
 
 // A credential-named field loses its whole value. Any other value is redacted as a body of its own, so a JSON payload

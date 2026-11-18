@@ -20,7 +20,14 @@
     "./client": {
       "types": "./dist/client/index.d.ts",
       "default": "./dist/client/index.js"
+    },
+    "./modules": {
+      "types": "./dist/modules.d.ts",
+      "default": "./dist/modules.js"
     }
+  },
+  "bin": {
+    "misha-browser-mcp": "./dist/mcp/server.js"
   },
   "scripts": {
     "build": "tsc && node scripts/build-extension.js",

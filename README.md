@@ -8,10 +8,69 @@ The repository holds:
 - the Manifest V3 extension, in `src/extension/` and `src/service-worker/`. In a signed-in Slack tab it reads new messages from the page's own socket and makes allowlisted Web API calls, downloads and uploads with the session Slack's web client already has. The token and cookies never leave the page
 - the native host and its relay, in `src/host/`, which carry requests, replies, events and acks between the extension and processes on the same Mac through a socket only the user can open
 - a Node client for that socket, in `src/client/`
+- the browser tools (`tab_*`, in `src/tools/`), which read and drive the user's own browser through the extension, and the desktop tools (`macos_*`, in `src/desktop/`), which move the Mac's mouse, press its keys, capture its screen, bring apps to the front and convert media
+- a standalone MCP server, in `src/mcp/`, that serves both sets of tools over stdio
 
-The MCP server isn't written yet.
+Misha's app imports the protocol as `misha-browser/protocol` and the client as `misha-browser/client`. Node processes also get the framing helpers from `misha-browser/protocol/framing`. A Misha extension serves the tools through `misha-browser/modules`, which exports `browserModule` and `desktopModule`: each has a `create` that builds the module's tools and a `jsonSchema` that converts a tool's input with this package's zod, so the descriptions the model reads survive.
 
-Misha's app imports the protocol as `misha-browser/protocol` and the client as `misha-browser/client`. Node processes also get the framing helpers from `misha-browser/protocol/framing`.
+## The MCP server
+
+`dist/mcp/server.js` (the package's `misha-browser-mcp` bin) serves 27 tools to any MCP client, for the folder it was started in:
+
+- browser: `tab_list`, `tab_switch`, `tab_open`, `tab_close`, `tab_read`, `tab_find`, `tab_wait`, `tab_screenshot`, `tab_network`, `tab_click`, `tab_drag`, `tab_type`, `tab_fill`, `tab_select_option`, `tab_press`, `tab_scroll`
+- desktop: `macos_mouse_move`, `macos_mouse_click`, `macos_mouse_current_position`, `macos_mouse_drag`, `macos_mouse_scroll`, `macos_keyboard_type`, `macos_keyboard_press`, `macos_screen_capture`, `macos_list_apps`, `macos_focus_app`, `macos_convert_video`
+
+Each tool's description tells the model when to use it. A page reads as a compact outline (headings, visible text, and each control with a numbered ref, role, name and state) instead of HTML, and clicks, typing, key presses and scrolling are real input, so pages get the same events a person makes. After an action, the result lists what changed on the page. The tools run on macOS only; elsewhere they stay listed and each one says so when called.
+
+Build first (`pnpm install && pnpm run build`), then register the server with the absolute path of this checkout.
+
+Claude Code:
+
+```sh
+claude mcp add --scope user misha-browser -- node /absolute/path/to/misha-browser/dist/mcp/server.js
+```
+
+OpenCode 2, in `opencode.json`. `codemode: false` lists each tool by its own name instead of behind OpenCode's `execute` tool:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "misha-browser": {
+        "type": "local",
+        "command": ["node", "/absolute/path/to/misha-browser/dist/mcp/server.js"],
+        "codemode": false
+      }
+    }
+  }
+}
+```
+
+The browser tools need the extension and its native host, as below. `tab_network` lists the fetch and XHR requests a tab sent, with credentials redacted in the browser (see Security); it never writes a session anywhere.
+
+### macOS permissions
+
+The tools that move the mouse, press keys or capture the screen share one input session, which asks for two permissions when it starts: Accessibility, to post mouse and keyboard events, and Screen Recording (Screen & System Audio Recording on recent macOS), for the screen capture. Input fails without either. They are `tab_click`, `tab_drag`, `tab_type`, `tab_fill`, `tab_press`, `tab_scroll`, every `macos_mouse_*` and `macos_keyboard_*` tool, and `macos_screen_capture`. The Return that accepts a download's save dialog after a browser action goes through the same session.
+
+Grant both to the app that runs Claude Code or OpenCode (the terminal, the editor whose terminal you use, or the desktop app) in System Settings > Privacy & Security: turn the app on in each list, or add it with + if it is missing, then quit it completely and open it again. A running app keeps failing until it restarts.
+
+The browser tools that only read or work through the extension (`tab_list`, `tab_read`, `tab_find`, `tab_wait`, `tab_screenshot`, `tab_network`, `tab_open`, `tab_switch`, `tab_close`, `tab_select_option`), `macos_list_apps` and `macos_focus_app` need no permission. `tab_screenshot` captures through the extension, not the screen.
+
+`macos_convert_video` needs `ffmpeg` and `ffprobe` on `PATH` (or `FFMPEG_BIN` and `FFPROBE_BIN`). A model plans the ffmpeg arguments through `opencode run --agent vision`, so it also needs OpenCode (or `OPENCODE_BIN`) with a provider for the model and an agent named `vision` that has no tools, for example in `opencode.json`:
+
+```json
+{
+  "agents": {
+    "vision": {
+      "mode": "subagent",
+      "hidden": true,
+      "permissions": [{ "action": "*", "resource": "*", "effect": "deny" }]
+    }
+  }
+}
+```
+
+The tool checks the planned arguments against an allowlist of ffmpeg flags and filters before it runs ffmpeg, and writes the result next to the input. `CONVERT_FFMPEG_TIMEOUT_MS` bounds the ffmpeg run (30 minutes by default).
 
 ## Loading the extension and the native host
 
@@ -19,21 +78,34 @@ Both run on macOS, in Chrome or Brave.
 
 1. Build: `pnpm install && pnpm run build`. The unpacked extension lands in `dist/extension`.
 2. Install the native host: `pnpm run install-host`. It writes a launcher to `~/.misha/browser-bridge/native-host` and registers the host as `misha.browser_bridge` with Chrome, Brave or both, wherever a profile folder exists, so that only this extension can start it. The launcher names the current Node binary by its absolute path, so run it again after a Node upgrade. The installer makes `~/.misha/browser-bridge` accessible only to you (mode 700), and stops with an error when that folder or `~/.misha` is a symlink, when either belongs to another user (root may own `~/.misha`), when anyone else can write to `~/.misha`, or when an ACL on either has an entry that allows access (`ls -le` lists them, `chmod -N` removes them; entries that deny are fine).
-3. Open `brave://extensions` or `chrome://extensions`, turn on Developer mode, click "Load unpacked" and pick `dist/extension`. Its id is `lkibgdfhoikfdbkhdlnoiajfelcmohjj`, fixed by the public key in the manifest.
+3. Open `brave://extensions` or `chrome://extensions`, turn on Developer mode, click "Load unpacked" and pick `dist/extension`. Its id is `lkibgdfhoikfdbkhdlnoiajfelcmohjj`, fixed by the public key in the manifest. After a rebuild, reload it there.
 4. Reload any Slack tab that was already open. The extension reads Slack's socket from a script that has to run before Slack's own, so a tab opened earlier shows as signed in but not capturing until it reloads.
 
 Once the browser has started the host, clients connect to `~/.misha/browser-bridge/bridge.sock`.
 
+The extension asks the browser for these permissions, which an unpacked extension gets when it is loaded:
+
+| Permission                     | Used for                                                                                                                                              |
+| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `nativeMessaging`              | The connection to the native host                                                                                                                     |
+| `scripting`, `tabs`, all sites | Running the Slack commands in a Slack tab, listing tabs, and running the outline and page commands of the browser tools in any page                   |
+| `webRequest`                   | Following the fetch and XHR requests a browser action started, to wait for them, and recording them for `tab_network`; it never blocks or changes one |
+| `downloads`                    | Reporting the files a browser action downloaded and whether one waits for a place to save it                                                          |
+| `alarms`                       | Reconnecting to the native host when the connection drops                                                                                             |
+| `unlimitedStorage`             | The durable queue of Slack events waiting for the app's acknowledgement                                                                               |
+
 ## Security
 
-The extension runs in the user's signed-in Slack tab, alongside Slack's own code.
+The extension's Slack transport runs in the user's signed-in Slack tab, alongside Slack's own code.
 
 Scripts already running in the Slack page are out of scope: Slack's own code, or another extension's script in the page's world. Such a script already holds the user's session and token and can send them anywhere itself. The private channel between the observer and the relay, and the check that sends the token only to the workspace's address on Slack's domain, run on built-ins a page script could replace, and they are not hardened against that.
 
-The extension guarantees two things:
+The Slack transport guarantees two things:
 
-- Its own code never moves a credential into the extension, the native host, the app or a log. The token is read in the page only for the request a command makes, and goes only to the workspace's https address on Slack's domain. What leaves the page is the signed-in account (its ids and the workspace's name), Slack's answers, file bytes, whether Slack's socket is open, and new messages cut down to the fields the app reads. A command that fails in the page answers a fixed code, never an error message that could quote what the page holds.
+- Its own code never moves a credential out of the page into the extension, the native host, the app or a log. The token is read in the page only for the request a command makes, and goes only to the workspace's https address on Slack's domain. What leaves the page is the signed-in account (its ids and the workspace's name), Slack's answers, file bytes, whether Slack's socket is open, and new messages cut down to the fields the app reads. A command that fails in the page answers a fixed code, never an error message that could quote what the page holds.
 - Slack message content, which is remote data and never runs as script, can't trigger a command, an API call or an ack. A new message only ever becomes an event, keyed by the account its tab was signed in as when it came, and dropped if the tab has switched accounts since. Commands reach the extension only from the native host, and the relay passes an ack on only from the client that listens for events.
+
+The browser tools reach every site the browser has open, by design: they read and drive the user's tabs for the model. The browser hands the extension every fetch and XHR request a tab sends, Slack's included, and the network log keeps only its redacted form, so no credential it carries leaves the browser: a body field (URL-encoded, JSON or multipart), query parameter or header whose name holds a credential word (`token`, `password`, `secret`, `apikey`, `authorization`, `cookie` and others) shows as `[redacted]` with its name kept, and so does any value shaped like a known token, key or Bearer value. Every URL a tab command answers (a tab's, a page's, a download's) is redacted the same way. A page's outline is its visible text and controls as the page shows them, a password field's value included only as filled or empty.
 
 On the Mac, the socket that carries commands sits in a folder only the user can open (see the native host step above), and when two browsers start their hosts at once, the hosts take the socket over one at a time.
 

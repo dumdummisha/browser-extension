@@ -242,6 +242,16 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
     return `<${element.localName}${id}>${text === '' ? '' : ` "${text}"`}`
   }
 
+  // A frame without a src has no URL; one with an opaque origin (about:blank, a data: URL) shows only its scheme.
+  const frameOrigin = (src: string): string => {
+    const url = URL.parse(src)
+    if (url === null) {
+      return ''
+    }
+
+    return url.origin === 'null' ? url.protocol : url.origin
+  }
+
   // Leaves out the text of the control a label wraps, so a select is not named after its own options.
   const labelText = (label: HTMLLabelElement): string => {
     const { control } = label
@@ -574,10 +584,11 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
         return
       }
 
+      // An untitled frame is named by the origin it loads, since the rest of its URL can carry a credential.
       if (element instanceof HTMLIFrameElement) {
         if (!EXTENSION_FRAME_PREFIXES.some((prefix) => element.src.startsWith(prefix))) {
           flush()
-          push(`[frame] ${element.title || element.src}`)
+          push(`[frame] ${element.title || frameOrigin(element.src)}`)
         }
       } else if (!isTextSuppressed && element.alt.trim() !== '') {
         pending += ` (image: ${collapse(element.alt)})`

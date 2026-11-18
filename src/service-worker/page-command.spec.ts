@@ -4,6 +4,7 @@ import type { FieldState, PageCommand, PageSnapshot } from '../protocol/tab.js'
 import { runPageCommand } from './page-command.js'
 
 const OPAQUE_PASSWORD = ['opaque', 'example', 'password'].join('-')
+const OPAQUE_TOKEN = ['opaque', 'example', 'value'].join('-')
 
 // The least of the DOM the page command reads for a page of plain, visible elements: every element has a box, no
 // style hides it and no selector beyond its own tag matches it.
@@ -67,13 +68,21 @@ class FakeInput extends FakeElement {
   }
 }
 
+class FakeIFrame extends FakeElement {
+  public readonly title = ''
+
+  constructor(public readonly src: string) {
+    super('iframe')
+  }
+}
+
 class Unused extends FakeElement {}
 
 const DOM_GLOBALS = {
   Element: FakeElement,
   HTMLElement: FakeElement,
   HTMLInputElement: FakeInput,
-  HTMLIFrameElement: Unused,
+  HTMLIFrameElement: FakeIFrame,
   HTMLTextAreaElement: Unused,
   HTMLSelectElement: Unused,
   HTMLLabelElement: Unused,
@@ -157,5 +166,29 @@ describe('[service-worker] Page command - masked fields', () => {
 
     // Assert
     assert.deepEqual(field.content, { isMasked: false, value: 'person@example.test' })
+  })
+})
+
+describe('[service-worker] Page command - frames', () => {
+  it('should name an untitled frame by its origin alone in reads and searches', () => {
+    // Arrange
+    const src = `https://viewer:${OPAQUE_PASSWORD}@embed.example.test:8443/report/${OPAQUE_TOKEN}?access_token=${OPAQUE_TOKEN}#page`
+    showPage([new FakeIFrame(src), new FakeIFrame('about:blank')], null)
+
+    // Act
+    const lines = outline()
+    const byOrigin = run<{ matches: string[] }>({
+      method: 'find',
+      params: { query: 'embed.example', maxChars: 10_000, sectionLines: 5 },
+    })
+    const byToken = run<{ matches: string[] }>({
+      method: 'find',
+      params: { query: OPAQUE_TOKEN, maxChars: 10_000, sectionLines: 5 },
+    })
+
+    // Assert
+    assert.equal(lines, '[frame] https://embed.example.test:8443\n[frame] about:')
+    assert.deepEqual(byOrigin.matches, ['[frame] https://embed.example.test:8443'])
+    assert.deepEqual(byToken.matches, [])
   })
 })

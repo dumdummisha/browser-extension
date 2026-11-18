@@ -88,6 +88,7 @@ const PAGE_FAILURE_TEXT: Readonly<Record<SlackPageFailure, string>> = {
   'client-state-unreadable': "Slack's saved client state does not read",
   'no-api-session': "Slack's client keeps no API session for the workspace",
   'no-api-address': "Slack's client keeps no Slack API address for the workspace",
+  'no-client-query': "The tab lists no Web API call of Slack's client to copy; reload the Slack tab",
   'api-unreachable': "Slack's Web API could not be reached",
   'api-refused': "Slack's Web API refused the call",
   'api-no-answer': "Slack's Web API answered no JSON object with a boolean ok",

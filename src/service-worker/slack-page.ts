@@ -24,6 +24,7 @@ export type SlackPageCommand =
 // holds becomes one: the service worker words each code (background.ts).
 // - client-state-unreadable: Slack's saved client state is not JSON
 // - no-api-session, no-api-address: the saved state keeps no token, or no https address on a workspace's Slack host
+// - no-client-query: the tab lists no Web API call of Slack's client to copy the query of
 // - api-unreachable, api-refused, api-no-answer: a Web API call got no response, an HTTP status other than 2xx, or no
 //   JSON object with a boolean ok
 // - file-unreachable, file-refused, file-bytes-lost: a private file got no response, a status other than 2xx, or its
@@ -35,6 +36,7 @@ export const SLACK_PAGE_FAILURES = [
   'client-state-unreadable',
   'no-api-session',
   'no-api-address',
+  'no-client-query',
   'api-unreachable',
   'api-refused',
   'api-no-answer',
@@ -150,18 +152,54 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
 
     const apiUrl = new URL('/api/', base.origin)
 
+    // Slack's client calls the Web API with a query of its own (_x_id, _x_csid, slack_route, _x_version_ts and the rest),
+    // and Slack answers a call with cookies with credentialed CORS (the page's origin, allow-credentials) only when it
+    // carries that query; without it the answer is "*", which a call with cookies cannot read. So a call is the client's:
+    // the query of the client's latest Web API call in this tab, as the browser's resource timing lists it (its URL
+    // holds no token, which the client posts in the body), with a fresh _x_id and no retries.
+    const clientQuery = (): URLSearchParams => {
+      const latest = performance
+        .getEntriesByType('resource')
+        .map(({ name }) => URL.parse(name))
+        .filter(
+          (url): url is URL =>
+            url !== null &&
+            url.origin === apiUrl.origin &&
+            url.pathname.startsWith(apiUrl.pathname) &&
+            url.searchParams.has('slack_route')
+        )
+        .at(-1)
+      if (latest === undefined) {
+        throw new PageFailure('no-client-query')
+      }
+
+      const query = new URLSearchParams(latest.searchParams)
+      query.set('_x_id', `${crypto.randomUUID().slice(0, 8)}-${(Date.now() / 1000).toFixed(3)}`)
+      query.set('_x_num_retries', '0')
+
+      return query
+    }
+
     // Slack answers 200 with ok false for its own errors; anything else (another status, no JSON, no ok) is no answer.
     const callSlack = async (
       method: string,
       params: Readonly<Record<string, string>>
     ): Promise<{ readonly ok: boolean; readonly [field: string]: unknown }> => {
+      const url = new URL(method, apiUrl)
+      url.search = clientQuery().toString()
+      // A multipart body, as the client posts: the call's parameters, the token and the client's own fields.
+      const body = new FormData()
+      for (const [name, value] of Object.entries({
+        ...params,
+        token,
+        _x_mode: 'online',
+        _x_sonic: 'true',
+        _x_app_name: 'client',
+      })) {
+        body.append(name, value)
+      }
       const response = await guarded('api-unreachable', () =>
-        fetch(new URL(method, apiUrl), {
-          method: 'POST',
-          body: new URLSearchParams({ ...params, token }),
-          credentials: 'include',
-          redirect: 'error',
-        })
+        fetch(url, { method: 'POST', body, credentials: 'include', redirect: 'error' })
       )
       if (!response.ok) {
         throw new PageFailure('api-refused', response.status)

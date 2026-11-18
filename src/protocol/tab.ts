@@ -86,12 +86,20 @@ const PointerStateSchema = z.strictObject({
 
 export type PointerState = z.infer<typeof PointerStateSchema>
 
+// A masked field's value (a password) never leaves the page: it answers its length and a revision that the page counts
+// up each time it reads a changed value, so a caller can still tell when typing has settled.
+const FieldContentSchema = z.discriminatedUnion('isMasked', [
+  z.strictObject({ isMasked: z.literal(false), value: z.string() }),
+  z.strictObject({ isMasked: z.literal(true), length: CountSchema, revision: CountSchema }),
+])
+
+export type FieldContent = z.infer<typeof FieldContentSchema>
+
 // isMultiline: a text area or rich text editor, which takes line breaks; an input does not.
 const FieldStateSchema = z.strictObject({
   isFocused: z.boolean(),
   focusedElement: z.string(),
-  value: z.string(),
-  isMasked: z.boolean(),
+  content: FieldContentSchema,
   isMultiline: z.boolean(),
 })
 

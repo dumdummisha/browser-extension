@@ -1,11 +1,14 @@
 import { MarkdownBuilder } from '../module/markdown.js'
 import { formatBytes } from '../module/support.js'
-import type { Download, PageChanges, TabInfo, TabSnapshot } from '../protocol/tab.js'
+import type { Download, FieldContent, PageChanges, TabInfo, TabSnapshot } from '../protocol/tab.js'
 import type { IActionResult } from './browser-control.js'
 import { LISTED_CHANGES } from './config.js'
 
 export const formatTab = ({ tabId, title, url, status }: TabInfo): string =>
   `tab ${tabId}: ${title === '' ? '(untitled)' : title} - ${url}${status === 'complete' ? '' : ` (still ${status})`}`
+
+export const formatFieldContent = (content: FieldContent): string =>
+  content.isMasked ? `${content.length} hidden characters` : `"${content.value}"`
 
 export const formatSnapshot = ({
   tabId,

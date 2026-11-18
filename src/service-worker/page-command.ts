@@ -1,5 +1,6 @@
 import type {
   ClientPoint,
+  FieldContent,
   FieldState,
   PageCommand,
   PageOutcome,
@@ -17,6 +18,13 @@ interface IPageState {
   isTrackingPointer: boolean
   pointerSeq: number
   pointer: ClientPoint | null
+  maskedReads: WeakMap<Element, IMaskedRead>
+}
+
+// The value a masked field held when it was last read, and the revision that read answered.
+interface IMaskedRead {
+  value: string
+  revision: number
 }
 
 interface IFieldValue {
@@ -127,6 +135,7 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
     isTrackingPointer: false,
     pointerSeq: 0,
     pointer: null,
+    maskedReads: new WeakMap(),
   }
   const state = host.mishaTabState
 
@@ -334,6 +343,18 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
     }
 
     return null
+  }
+
+  const fieldContent = (element: Element, { value, isMasked }: IFieldValue): FieldContent => {
+    if (!isMasked) {
+      return { isMasked, value }
+    }
+
+    const last = state.maskedReads.get(element)
+    const revision = last === undefined ? 0 : last.revision + Number(last.value !== value)
+    state.maskedReads.set(element, { value, revision })
+
+    return { isMasked, length: value.length, revision }
   }
 
   const valueState = ({ value, isMasked }: IFieldValue): string => {
@@ -791,8 +812,7 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
     return {
       isFocused,
       focusedElement: active === null ? 'nothing' : brief(active),
-      value: fieldValue?.value ?? '',
-      isMasked: fieldValue?.isMasked ?? false,
+      content: fieldValue === null ? { isMasked: false, value: '' } : fieldContent(target, fieldValue),
       isMultiline: target instanceof HTMLTextAreaElement || (target instanceof HTMLElement && target.isContentEditable),
     }
   }

@@ -3,7 +3,7 @@ import type { IToolDefinition } from '../module/tool.js'
 import { PluginError } from '../module/tool.js'
 import type { BrowserControlService, ITypeResult } from './browser-control.js'
 import { REF_ARG_DESCRIPTION, TAB_ID_ARG_DESCRIPTION } from './config.js'
-import { formatAction } from './tab-format.js'
+import { formatAction, formatFieldContent } from './tab-format.js'
 
 const input = z.object({
   ref: z
@@ -71,7 +71,5 @@ const formatTyped = (ref: number | undefined, isSubmitting: boolean, { field, ac
     return `[PASS] Typed into element ${ref} and pressed Enter.\n${changes}`
   }
 
-  const value = field.isMasked ? `${field.value.length} hidden characters` : `"${field.value}"`
-
-  return `[PASS] Typed into element ${ref}, which now holds ${value}.`
+  return `[PASS] Typed into element ${ref}, which now holds ${formatFieldContent(field.content)}.`
 }

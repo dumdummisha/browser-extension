@@ -8,6 +8,7 @@ import { PluginError, requireMacOs } from '../module/tool.js'
 import type {
   ClientPoint,
   Download,
+  FieldContent,
   FieldState,
   NetworkRequest,
   PageChanges,
@@ -47,6 +48,7 @@ import {
   VIEWPORT_SNAPSHOT_MAX_CHARS,
   WAIT_POLL_INTERVAL_MS,
 } from './config.js'
+import { formatFieldContent } from './tab-format.js'
 import {
   estimatedViewportOffset,
   type IViewportOffset,
@@ -121,6 +123,7 @@ export interface IFillField {
   option?: string
 }
 
+// value is what the field holds as the result shows it: quoted text, or a masked field's length.
 export interface IFilledField {
   ref: number
   value: string
@@ -156,6 +159,16 @@ const viewportLayout = (tab: TabInfo, target: TargetPoint): string =>
 
 // The page reports the pointer in whole CSS pixels while the system moves it in points, so a landing a pixel off is on
 // the point.
+const isSameContent = (first: FieldContent, second: FieldContent): boolean => {
+  if (first.isMasked || second.isMasked) {
+    return first.isMasked && second.isMasked && first.revision === second.revision
+  }
+
+  return first.value === second.value
+}
+
+const isEmpty = (content: FieldContent): boolean => (content.isMasked ? content.length === 0 : content.value === '')
+
 const isAtPoint = (position: ClientPoint, target: ClientPoint): boolean =>
   Math.abs(position.clientX - target.clientX) <= POINT_LANDING_TOLERANCE_PX &&
   Math.abs(position.clientY - target.clientY) <= POINT_LANDING_TOLERANCE_PX
@@ -412,13 +425,12 @@ export class BrowserControlService {
     option: string | undefined
   ): Promise<string> => {
     if (option !== undefined) {
-      return (await this.call('selectOption', { tabId, ref, option })).label
+      return `"${(await this.call('selectOption', { tabId, ref, option })).label}"`
     }
 
     const tab = await this.enterText(tabId, ref, text ?? '', true)
-    const { value, isMasked } = await this.settledField(tab.tabId, ref)
 
-    return isMasked ? `${value.length} hidden characters` : value
+    return formatFieldContent((await this.settledField(tab.tabId, ref)).content)
   }
 
   // Nothing is clicked, so the focus the page already holds receives the text; line breaks go as Shift+Enter, as in a
@@ -683,10 +695,10 @@ export class BrowserControlService {
 
     await this.input.pressKey('Backspace', [])
 
-    const { value } = await this.settledField(tabId, ref)
-    if (value !== '') {
+    const { content } = await this.settledField(tabId, ref)
+    if (!isEmpty(content)) {
       throw new PluginError(
-        `Element ${ref} still holds "${value}" after selecting its content and pressing Backspace, so nothing was typed.`,
+        `Element ${ref} still holds ${formatFieldContent(content)} after selecting its content and pressing Backspace, so nothing was typed.`,
         'EXTERNAL_API_ERROR'
       )
     }
@@ -700,7 +712,7 @@ export class BrowserControlService {
     while (Date.now() < deadline) {
       await sleep(FIELD_SETTLE_INTERVAL_MS)
       const current = await this.call('field', { tabId, ref })
-      if (current.value === previous.value) {
+      if (isSameContent(current.content, previous.content)) {
         return current
       }
       previous = current

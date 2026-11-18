@@ -45,7 +45,7 @@ export const createFillTool = (browser: BrowserControlService): IToolDefinition<
     }
 
     const result = await browser.fill(tabId, fields, submitRef)
-    const filled = result.fields.map(({ ref, value }) => `- element ${ref}: "${value}"`)
+    const filled = result.fields.map(({ ref, value }) => `- element ${ref}: ${value}`)
     const submitted = result.action === null ? [] : [`Clicked element ${submitRef}.`, formatAction(result.action)]
 
     return ['[PASS] Filled the form.', ...filled, ...submitted].join('\n')

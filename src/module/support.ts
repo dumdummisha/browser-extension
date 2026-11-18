@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
+import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { errorMessage } from './tool.js'
@@ -30,8 +30,6 @@ export const tempPath = (prefix: string, extension: string): string => {
 
   return join(dir, `${prefix}-${randomUUID()}${extension}`)
 }
-
-export const hasContent = (path: string): boolean => existsSync(path) && statSync(path).size > 0
 
 // A file only this process made; a failed delete is reported and does not fail the call that made the file.
 export const removeTempFile = (path: string): void => {

@@ -37,7 +37,6 @@ const MACOS_TOOLS = [
   'macos_screen_capture',
   'macos_list_apps',
   'macos_focus_app',
-  'macos_convert_video',
 ]
 
 const echoInput = z.object({ text: z.string().describe('What to echo.') })

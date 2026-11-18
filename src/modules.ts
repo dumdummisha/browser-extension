@@ -1,5 +1,4 @@
 import { BridgeClient, RECONNECT_DELAY_MS } from './client/bridge-client.js'
-import { convertVideoTool } from './desktop/convert-video.tool.js'
 import { focusAppTool } from './desktop/focus-app.tool.js'
 import { InputControlService } from './desktop/input-control.js'
 import { createKeyboardPressTool } from './desktop/keyboard-press.tool.js'
@@ -75,7 +74,7 @@ export const browserModule: IModuleDefinition = {
   jsonSchema: zodJsonSchema,
 }
 
-// The macos_* tools: the mouse, keyboard and screen of the Mac, its running apps, and media conversion.
+// The macos_* tools: the mouse, keyboard and screen of the Mac, and its running apps.
 export const desktopModule: IModuleDefinition = {
   create: () => {
     const input = new InputControlService()
@@ -92,7 +91,6 @@ export const desktopModule: IModuleDefinition = {
         macos_screen_capture: createScreenCaptureTool(input),
         macos_list_apps: listAppsTool,
         macos_focus_app: focusAppTool,
-        macos_convert_video: convertVideoTool,
       },
     }
   },

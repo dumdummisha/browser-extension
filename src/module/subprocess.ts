@@ -1,10 +1,6 @@
 import { execFile, type ExecFileException } from 'node:child_process'
 import { isErrnoCode, PluginError } from './tool.js'
 
-// Tools print the reason for a failure last, after any banner or progress lines.
-const STDERR_DETAIL_LINES = 3
-const STACK_FRAME = /^at .*:\d+:\d+\)?$/u
-
 export interface IRunSubprocessOptions {
   readonly command: string
   readonly args: readonly string[]
@@ -65,14 +61,3 @@ const spawnError = (label: string, error: ExecFileException, notFoundHint: strin
   isErrnoCode(error, 'ENOENT') && notFoundHint !== undefined
     ? new PluginError(`${label} is not installed or not on PATH. ${notFoundHint}`, 'INTERNAL_ERROR', error)
     : new PluginError(`Failed to spawn ${label}: ${error.message}`, 'INTERNAL_ERROR', error)
-
-// The end of a failed command's stderr, for its error message. Stack frames ("at fn (file:1:1)") are left out: they
-// follow the exception message that says why, and three of them would push it out.
-export const stderrDetail = (stderr: string): string => {
-  const meaningful = stderr
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0 && !STACK_FRAME.test(line))
-
-  return meaningful.length === 0 ? '(no detail)' : `Details: ${meaningful.slice(-STDERR_DETAIL_LINES).join(' | ')}`
-}

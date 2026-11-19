@@ -1,15 +1,30 @@
 import assert from 'node:assert/strict'
 import { afterEach, describe, it } from 'node:test'
-import { answerRelays, OBSERVER_PORT_EVENT, RELAY_READY_EVENT, takeObserverPorts } from './capture-handshake.js'
+import {
+  answerRelays,
+  HELD_FRAMES_MAX,
+  holdFrames,
+  type IFrameHold,
+  OBSERVER_PORT_EVENT,
+  RELAY_READY_EVENT,
+  reportTaken,
+  takeObserverPorts,
+} from './capture-handshake.js'
 
 // A test that fails while waiting for a message fails at this timeout, and afterEach still closes its ports, so an open
 // port never keeps the run from ending.
 const TEST_OPTIONS = { timeout: 5_000 }
 
+const GREETING = { kind: 'socket', isSocketOpen: true }
+
 interface IMessageRecord {
-  readonly onMessage: (event: MessageEvent<unknown>) => void
+  readonly onMessage: (data: unknown, port: MessagePort) => void
   // Resolves with every message so far once there are count of them. A port delivers in the order of posting.
   readonly received: (count: number) => Promise<unknown[]>
+}
+
+interface IJoinedRelay extends IMessageRecord {
+  readonly port: MessagePort
 }
 
 // Ports a test opened, closed after it whatever its outcome. Closing either end of a channel closes both.
@@ -20,10 +35,10 @@ const recordMessages = (): IMessageRecord => {
   let wake = (): void => undefined
 
   return {
-    onMessage: (event) => {
-      messages.push(event.data)
-      if (event.currentTarget instanceof MessagePort && !openPorts.includes(event.currentTarget)) {
-        openPorts.push(event.currentTarget)
+    onMessage: (data, port) => {
+      messages.push(data)
+      if (!openPorts.includes(port)) {
+        openPorts.push(port)
       }
 
       wake()
@@ -42,7 +57,7 @@ const recordMessages = (): IMessageRecord => {
 
 // A relay as the observer meets it: dispatches the ready event on the document, and records what the one port it is
 // handed brings.
-const joinAsRelay = (document: EventTarget): IMessageRecord => {
+const joinAsRelay = (document: EventTarget): IJoinedRelay => {
   const ports: MessagePort[] = []
   const take = (event: Event): void => {
     if (event instanceof MessageEvent && event.ports[0] !== undefined) {
@@ -57,9 +72,19 @@ const joinAsRelay = (document: EventTarget): IMessageRecord => {
   const [port] = ports
   assert.ok(port !== undefined && ports.length === 1, 'the observer answers a ready event with exactly one port')
   const record = recordMessages()
-  port.onmessage = record.onMessage
+  port.onmessage = ({ data }: MessageEvent<unknown>) => {
+    record.onMessage(data, port)
+  }
 
-  return record
+  return { ...record, port }
+}
+
+// Every frame the hold holds, oldest first.
+const heldFrames = (hold: IFrameHold): object[] => {
+  const frames: object[] = []
+  hold.forEach((frame) => frames.push(frame))
+
+  return frames
 }
 
 afterEach(() => {
@@ -76,48 +101,137 @@ describe("[service-worker] Capture handshake - the observer's side", () => {
       // Arrange
       const document = new EventTarget()
       let isSocketOpen = false
-      const toRelays = answerRelays(document, () => ({ kind: 'socket', isSocketOpen }))
+      const relays = answerRelays(document, () => ({ kind: 'socket', isSocketOpen }), holdFrames(HELD_FRAMES_MAX))
       const first = joinAsRelay(document)
       isSocketOpen = true
-      toRelays({ kind: 'socket', isSocketOpen })
+      relays.postState({ kind: 'socket', isSocketOpen })
 
       // Act
       const second = joinAsRelay(document)
-      toRelays({ kind: 'frame', text: 'message 1' })
+      relays.postFrame({ kind: 'frame', text: 'message 1' })
 
       // Assert
       assert.deepEqual(await first.received(3), [
         { kind: 'socket', isSocketOpen: false },
         { kind: 'socket', isSocketOpen: true },
-        { kind: 'frame', text: 'message 1' },
+        { kind: 'frame', text: 'message 1', seq: 0 },
       ])
       assert.deepEqual(await second.received(2), [
         { kind: 'socket', isSocketOpen: true },
-        { kind: 'frame', text: 'message 1' },
+        { kind: 'frame', text: 'message 1', seq: 0 },
       ])
     }
   )
 
   it(
-    'should post nothing before the first relay asked, so its greeting is the first message it gets',
+    'should hold a frame posted before any relay asked, and post it to the first relay after its greeting',
     TEST_OPTIONS,
     async () => {
-      // Arrange
+      // Arrange - a state posted then reaches no one, and the greeting tells the relay the state as it stands
       const document = new EventTarget()
-      const toRelays = answerRelays(document, () => ({ kind: 'socket', isSocketOpen: true }))
-      toRelays({ kind: 'frame', text: 'message 0' })
+      const relays = answerRelays(document, () => GREETING, holdFrames(HELD_FRAMES_MAX))
+      relays.postState({ kind: 'socket', isSocketOpen: false })
+      relays.postFrame({ kind: 'frame', text: 'message 0' })
 
       // Act
       const relay = joinAsRelay(document)
-      toRelays({ kind: 'frame', text: 'message 1' })
+      relays.postFrame({ kind: 'frame', text: 'message 1' })
 
       // Assert
-      assert.deepEqual(await relay.received(2), [
-        { kind: 'socket', isSocketOpen: true },
-        { kind: 'frame', text: 'message 1' },
+      assert.deepEqual(await relay.received(3), [
+        GREETING,
+        { kind: 'frame', text: 'message 0', seq: 0 },
+        { kind: 'frame', text: 'message 1', seq: 1 },
       ])
     }
   )
+
+  it(
+    'should post a frame no relay reported taken to the relay that replaces the one it went to',
+    TEST_OPTIONS,
+    async () => {
+      // Arrange - the relay a reload cut off gets the frame and never reports it taken
+      const document = new EventTarget()
+      const relays = answerRelays(document, () => GREETING, holdFrames(HELD_FRAMES_MAX))
+      const cutOff = joinAsRelay(document)
+      relays.postFrame({ kind: 'frame', text: 'message 1' })
+      await cutOff.received(2)
+
+      // Act
+      const replacement = joinAsRelay(document)
+
+      // Assert
+      assert.deepEqual(await replacement.received(2), [GREETING, { kind: 'frame', text: 'message 1', seq: 0 }])
+    }
+  )
+
+  it('should stop holding a frame once a relay reports it taken', TEST_OPTIONS, async () => {
+    // Arrange - the hold tells the test when the observer read the report
+    const document = new EventTarget()
+    const hold = holdFrames(HELD_FRAMES_MAX)
+    const released = Promise.withResolvers<number>()
+    const relays = answerRelays(document, () => GREETING, {
+      ...hold,
+      release: (seq) => {
+        hold.release(seq)
+        released.resolve(seq)
+      },
+    })
+    const first = joinAsRelay(document)
+    relays.postFrame({ kind: 'frame', text: 'message 1' })
+    await first.received(2)
+
+    // Act
+    reportTaken(first.port, 0)
+    const releasedSeq = await released.promise
+    const later = joinAsRelay(document)
+    relays.postFrame({ kind: 'frame', text: 'message 2' })
+
+    // Assert
+    assert.equal(releasedSeq, 0)
+    assert.deepEqual(await later.received(2), [GREETING, { kind: 'frame', text: 'message 2', seq: 1 }])
+  })
+})
+
+describe('[service-worker] Capture handshake - the frame hold', () => {
+  it('should hold frames oldest first under increasing numbers, and drop the oldest once max are held', () => {
+    // Arrange
+    const hold = holdFrames(2)
+
+    // Act
+    const framed = ['message 0', 'message 1', 'message 2'].map((text) => hold.hold({ kind: 'frame', text }))
+
+    // Assert
+    assert.deepEqual(framed, [
+      { kind: 'frame', text: 'message 0', seq: 0 },
+      { kind: 'frame', text: 'message 1', seq: 1 },
+      { kind: 'frame', text: 'message 2', seq: 2 },
+    ])
+    assert.deepEqual(heldFrames(hold), [
+      { kind: 'frame', text: 'message 1', seq: 1 },
+      { kind: 'frame', text: 'message 2', seq: 2 },
+    ])
+  })
+
+  it('should stop holding a released frame, and change nothing for a number it holds no frame under', () => {
+    // Arrange
+    const hold = holdFrames(3)
+    for (const text of ['message 0', 'message 1', 'message 2']) {
+      hold.hold({ kind: 'frame', text })
+    }
+
+    // Act
+    hold.release(1)
+    hold.release(7)
+    hold.release(0)
+    hold.hold({ kind: 'frame', text: 'message 3' })
+
+    // Assert
+    assert.deepEqual(heldFrames(hold), [
+      { kind: 'frame', text: 'message 2', seq: 2 },
+      { kind: 'frame', text: 'message 3', seq: 3 },
+    ])
+  })
 })
 
 describe("[service-worker] Capture handshake - the relay's side", () => {
@@ -136,10 +250,10 @@ describe("[service-worker] Capture handshake - the relay's side", () => {
 
       // Act
       takeObserverPorts(document, relay.onMessage)
-      channel.port1.postMessage({ kind: 'socket', isSocketOpen: true })
+      channel.port1.postMessage(GREETING)
 
       // Assert
-      assert.deepEqual(await relay.received(1), [{ kind: 'socket', isSocketOpen: true }])
+      assert.deepEqual(await relay.received(1), [GREETING])
     }
   )
 
@@ -160,22 +274,16 @@ describe("[service-worker] Capture handshake - the relay's side", () => {
   it('should get a channel of its own from an observer that answered a relay before', TEST_OPTIONS, async () => {
     // Arrange - the relay that came with the page holds the observer's first channel
     const document = new EventTarget()
-    const toRelays = answerRelays(document, () => ({ kind: 'socket', isSocketOpen: true }))
+    const relays = answerRelays(document, () => GREETING, holdFrames(HELD_FRAMES_MAX))
     const first = joinAsRelay(document)
     const later = recordMessages()
 
     // Act
     takeObserverPorts(document, later.onMessage)
-    toRelays({ kind: 'frame', text: 'message 1' })
+    relays.postState({ kind: 'socket', isSocketOpen: false })
 
     // Assert
-    assert.deepEqual(await later.received(2), [
-      { kind: 'socket', isSocketOpen: true },
-      { kind: 'frame', text: 'message 1' },
-    ])
-    assert.deepEqual(await first.received(2), [
-      { kind: 'socket', isSocketOpen: true },
-      { kind: 'frame', text: 'message 1' },
-    ])
+    assert.deepEqual(await later.received(2), [GREETING, { kind: 'socket', isSocketOpen: false }])
+    assert.deepEqual(await first.received(2), [GREETING, { kind: 'socket', isSocketOpen: false }])
   })
 })

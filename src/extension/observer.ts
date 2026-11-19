@@ -1,4 +1,4 @@
-import { answerRelays } from '../service-worker/capture-handshake.js'
+import { answerRelays, HELD_FRAMES_MAX, holdFrames } from '../service-worker/capture-handshake.js'
 import { projectedMessageOf } from '../service-worker/message-projection.js'
 import { SLACK_CLIENT_PATH, SLACK_CLIENT_STATE_KEY, SLACK_SOCKET_HOSTNAME } from './config.js'
 
@@ -40,12 +40,13 @@ let openSockets = 0
 
 const socketState = (): object => ({ kind: 'socket', isSocketOpen: openSockets > 0 })
 
-// Every relay that asked gets the socket state as it stands, and then each change and each new message. A relay the
-// service worker injects after the extension reloaded asks while the socket is already open, and learns so at once.
-const toRelays = answerRelays(document, socketState)
+// Every relay that asked gets the socket state as it stands, every new message no relay reported taken yet, and then
+// each change and each new message. A relay the service worker injects after the extension reloaded asks while the
+// socket is already open, and learns so at once, along with the messages that came while no relay passed them on.
+const relays = answerRelays(document, socketState, holdFrames(HELD_FRAMES_MAX))
 
 const reportSocketState = (): void => {
-  toRelays(socketState())
+  relays.postState(socketState())
 }
 
 const matches = (pattern: RegExp, text: unknown): RegExpExecArray | null =>
@@ -113,7 +114,7 @@ const observe = (socket: WebSocket): void => {
 
     const userId = signedInUserOf(teamId)
     if (userId !== undefined) {
-      toRelays({ kind: 'frame', account: { teamId, userId }, frame })
+      relays.postFrame({ kind: 'frame', account: { teamId, userId }, frame })
     }
   })
 }

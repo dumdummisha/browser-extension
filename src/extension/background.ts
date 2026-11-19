@@ -427,8 +427,10 @@ const connect = (): void => {
   port = opened
 }
 
-// Only the relay in a Slack tab's top frame sends messages here.
-chrome.runtime.onMessage.addListener((message: unknown, sender) => {
+// Only the relay in a Slack tab's top frame sends messages here. A frame is answered once its admission ran, and only
+// then does the relay tell the page's observer that the frame was taken (capture-handshake.ts); until then the observer
+// holds it, so a frame this worker never took reaches the relay that replaces the tab's relay if the extension reloads.
+chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
   const tabId = sender.tab?.id
   const { documentId } = sender
   if (tabId === undefined || documentId === undefined || sender.origin !== SLACK_ORIGIN || sender.frameId !== 0) {
@@ -436,11 +438,16 @@ chrome.runtime.onMessage.addListener((message: unknown, sender) => {
   }
 
   const observed = ObservedMessageSchema.parse(message)
-  if (observed.kind === 'frame') {
-    void intake(() => admitFrame({ tabId, documentIds: [documentId] }, observed.account, observed.frame))
-  } else {
+  if (observed.kind === 'capture') {
     void pushStatus()
+    return false
   }
+
+  void intake(() => admitFrame({ tabId, documentIds: [documentId] }, observed.account, observed.frame)).then(() => {
+    sendResponse()
+  })
+
+  return true
 })
 
 chrome.tabs.onRemoved.addListener(() => {

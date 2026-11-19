@@ -1,4 +1,4 @@
-// The new messages the extension forwards, and the fields of one the app reads (misha-desktop inbound.ts), under Slack's
+// The new messages the extension forwards, and the fields of one the app reads (desktop inbound.ts), under Slack's
 // own names. slack.ts builds its message schemas from these. They live apart from it, without zod, so the extension's
 // observer can cut a frame down to them inside Slack's page, before anything of it leaves.
 

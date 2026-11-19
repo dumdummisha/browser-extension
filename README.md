@@ -130,5 +130,5 @@ pnpm run typecheck && pnpm run lint && pnpm run format:check && pnpm test
 
 ## Related repositories
 
-- [dumdummisha/misha](https://github.com/dumdummisha/misha): the documentation site at [docs.dumdummisha.ai](https://docs.dumdummisha.ai), including the Misha app's setup, privacy policy and architecture.
-- [dumdummisha/misha-downloads](https://github.com/dumdummisha/misha-downloads): reserved for signed Misha desktop builds and the update feed. No signed build is available yet.
+- [dumdummisha/docs](https://github.com/dumdummisha/docs): the documentation site at [docs.dumdummisha.ai](https://docs.dumdummisha.ai), including the Misha app's setup, privacy policy and architecture.
+- [dumdummisha/desktop-downloads](https://github.com/dumdummisha/desktop-downloads): reserved for signed Misha desktop builds and the update feed. No signed build is available yet.

@@ -21,6 +21,7 @@ import { answerRequest } from '../service-worker/bridge-requests.js'
 import { Forwarder } from '../service-worker/forwarder.js'
 import { captureHealthOf, ObservedMessageSchema } from '../service-worker/observed-message.js'
 import { openPendingQueue, PendingQueueWriter } from '../service-worker/pending-queue-writer.js'
+import { attachRelay, type IRelayScripting, probeRelay, RelayProbeSchema } from '../service-worker/relay-attachment.js'
 import { slackEventOf } from '../service-worker/slack-frame.js'
 import {
   runSlackPageCommand,
@@ -33,6 +34,7 @@ import {
   CAPTURE_QUERY,
   RECONNECT_ALARM,
   RECONNECT_PERIOD_MINUTES,
+  RELAY_RUNNING_KEY,
   RELAY_SCRIPT,
   SLACK_ORIGIN,
   SLACK_TAB_URL,
@@ -160,25 +162,36 @@ const captureOf = (tabId: number): Promise<CaptureHealth> =>
     (): CaptureHealth => ({ tabId, state: 'detached' })
   )
 
+// The relay's injection, bound to the top document the probe ran in (relay-attachment.ts). A tab whose page the
+// extension cannot script (still loading, an error page, a document that is gone) holds no document to probe, as for
+// identityOf.
+const relayScripting: IRelayScripting = {
+  probe: async (tabId) => {
+    const injections = await chrome.scripting
+      .executeScript({ target: { tabId }, world: 'ISOLATED', func: probeRelay, args: [RELAY_RUNNING_KEY] })
+      .catch(() => null)
+    const [injection] = injections ?? []
+    if (injection === undefined) {
+      return null
+    }
+
+    return { documentId: injection.documentId, probe: RelayProbeSchema.parse(injection.result) }
+  },
+  inject: async (tabId, documentId) => {
+    await chrome.scripting.executeScript({ target: { tabId, documentIds: [documentId] }, files: [RELAY_SCRIPT] })
+  },
+}
+
 // Chrome puts the manifest's content scripts only into documents that load after the extension did, and cuts the relay
 // of every open tab off from the extension once it reloads, updates or is turned off and on, which starts a new worker.
-// The observer a tab loaded with keeps watching Slack's socket, so each open Slack tab whose relay does not answer gets
-// a new one, which asks the observer for a channel of its own (capture-handshake.ts). A tab whose page loaded before
-// the extension did has no observer to answer, and stays detached until it reloads. A discarded tab holds no page, and
-// runs the manifest's scripts once it loads again.
+// The observer a tab loaded with keeps watching Slack's socket, so each open Slack page with no relay of this load of
+// the extension gets a new one, which asks the observer for a channel of its own (capture-handshake.ts). A page that
+// loaded before the extension did, or with an observer that answers only its first relay, gives the new relay no
+// channel, and stays detached until it reloads. A discarded tab holds no page, and runs the manifest's scripts once it
+// loads again.
 const attachRelays = async (): Promise<void> => {
   const tabs = (await slackTabs()).filter((tab) => !tab.discarded)
-  await Promise.all(
-    tabs.map(async ({ id }) => {
-      const hasRelay = await chrome.tabs.sendMessage(id, CAPTURE_QUERY).then(
-        () => true,
-        () => false
-      )
-      if (!hasRelay) {
-        await chrome.scripting.executeScript({ target: { tabId: id }, files: [RELAY_SCRIPT] })
-      }
-    })
-  )
+  await Promise.all(tabs.map(({ id }) => attachRelay(relayScripting, id, SLACK_ORIGIN)))
 }
 
 // Runs a command in a tab signed in as the account and in no other; null when there is none. Tabs are tried one at a

@@ -2,7 +2,7 @@
 import { z } from 'zod'
 import { reportTaken, takeObserverPorts } from '../service-worker/capture-handshake.js'
 import { type ObservedMessage, ObserverMessageSchema, type RelayCapture } from '../service-worker/observed-message.js'
-import { CAPTURE_QUERY, RELAY_RUNNING_KEY } from './config.js'
+import { CAPTURE_QUERY, RELAY_RUNNING_KEY, SLACK_ORIGIN } from './config.js'
 
 // The observer's half in the extension's isolated world. The manifest runs it at document_start, and the service worker
 // injects it into an open Slack tab whose relay it cannot reach, once the extension reloaded (background.ts). It takes a
@@ -66,10 +66,15 @@ const onObserverMessage = (data: unknown, port: MessagePort): void => {
 // One relay per document for each load of the extension: a tab that was still loading when the service worker injected
 // a relay runs the manifest's copy too, in this same isolated world, and the copy that runs second leaves. The isolated
 // world of an extension that reloaded is a new one, so a relay injected then never finds the mark of the one it
-// replaces.
+// replaces. The mark is left only once the relay took its channel, which it does only in a Slack page's top frame, and
+// the service worker reads it to tell whether a document still needs a relay (relay-attachment.ts).
 if (!Reflect.has(globalThis, RELAY_RUNNING_KEY)) {
+  takeObserverPorts(
+    { document, origin: location.origin, isTopFrame: window === window.top },
+    SLACK_ORIGIN,
+    onObserverMessage
+  )
   Reflect.set(globalThis, RELAY_RUNNING_KEY, true)
-  takeObserverPorts(document, onObserverMessage)
   chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
     if (message === CAPTURE_QUERY) {
       sendResponse({ isSocketOpen: isObservedSocketOpen, error: captureError } satisfies RelayCapture)

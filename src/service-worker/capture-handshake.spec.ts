@@ -5,6 +5,7 @@ import {
   HELD_FRAMES_MAX,
   holdFrames,
   type IFrameHold,
+  type IRelayPage,
   OBSERVER_PORT_EVENT,
   RELAY_READY_EVENT,
   reportTaken,
@@ -16,6 +17,9 @@ import {
 const TEST_OPTIONS = { timeout: 5_000 }
 
 const GREETING = { kind: 'socket', isSocketOpen: true }
+const SLACK_ORIGIN = 'https://app.slack.com'
+
+const slackPage = (document: EventTarget): IRelayPage => ({ document, origin: SLACK_ORIGIN, isTopFrame: true })
 
 interface IMessageRecord {
   readonly onMessage: (data: unknown, port: MessagePort) => void
@@ -249,7 +253,7 @@ describe("[service-worker] Capture handshake - the relay's side", () => {
       const relay = recordMessages()
 
       // Act
-      takeObserverPorts(document, relay.onMessage)
+      takeObserverPorts(slackPage(document), SLACK_ORIGIN, relay.onMessage)
       channel.port1.postMessage(GREETING)
 
       // Assert
@@ -257,12 +261,34 @@ describe("[service-worker] Capture handshake - the relay's side", () => {
     }
   )
 
+  it('should take no channel, and dispatch nothing, outside the top frame of a Slack page', () => {
+    // Arrange
+    const document = new EventTarget()
+    let readyEvents = 0
+    document.addEventListener(RELAY_READY_EVENT, () => {
+      readyEvents += 1
+    })
+    const offSlack = { document, origin: 'https://example.com', isTopFrame: true }
+    const slackSubframe = { document, origin: SLACK_ORIGIN, isTopFrame: false }
+
+    // Act + Assert
+    assert.throws(() => takeObserverPorts(offSlack, SLACK_ORIGIN, () => undefined), {
+      message:
+        'A relay takes a channel only in the top frame of https://app.slack.com, not in a top frame of https://example.com',
+    })
+    assert.throws(() => takeObserverPorts(slackSubframe, SLACK_ORIGIN, () => undefined), {
+      message:
+        'A relay takes a channel only in the top frame of https://app.slack.com, not in a subframe of https://app.slack.com',
+    })
+    assert.equal(readyEvents, 0)
+  })
+
   it('should leave a port offered after its ready event untaken', () => {
     // Arrange
     const document = new EventTarget()
     const channel = new MessageChannel()
     openPorts.push(channel.port1, channel.port2)
-    takeObserverPorts(document, () => undefined)
+    takeObserverPorts(slackPage(document), SLACK_ORIGIN, () => undefined)
 
     // Act
     document.dispatchEvent(new MessageEvent(OBSERVER_PORT_EVENT, { ports: [channel.port2] }))
@@ -279,7 +305,7 @@ describe("[service-worker] Capture handshake - the relay's side", () => {
     const later = recordMessages()
 
     // Act
-    takeObserverPorts(document, later.onMessage)
+    takeObserverPorts(slackPage(document), SLACK_ORIGIN, later.onMessage)
     relays.postState({ kind: 'socket', isSocketOpen: false })
 
     // Assert

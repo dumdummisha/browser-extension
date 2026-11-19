@@ -168,13 +168,30 @@ export const answerRelays = (document: EventTarget, greeting: () => object, hold
   }
 }
 
-// The relay's side, in the extension's isolated world, whose built-ins no page script can reach: dispatches the ready
-// event on document, and each message a port offered during that dispatch brings goes to onMessage with that port. A
-// port offered at any other time finds no listener.
+// The page a relay runs in, as the relay's isolated world sees it.
+export interface IRelayPage {
+  readonly document: EventTarget
+  readonly origin: string
+  readonly isTopFrame: boolean
+}
+
+// The relay's side, in the extension's isolated world, whose built-ins no page script can reach. It takes a channel
+// only from the observer of a page on slackOrigin, in its top frame, where the manifest and the service worker put
+// both, and throws anywhere else, before it dispatches anything. It dispatches the ready event on the page's document,
+// and each message a port offered during that dispatch brings goes to onMessage with that port. A port offered at any
+// other time finds no listener. A document keeps its origin for as long as it lives, and the relay goes with it.
 export const takeObserverPorts = (
-  document: EventTarget,
+  page: IRelayPage,
+  slackOrigin: string,
   onMessage: (data: unknown, port: MessagePort) => void
 ): void => {
+  if (page.origin !== slackOrigin || !page.isTopFrame) {
+    const frame = page.isTopFrame ? 'top frame' : 'subframe'
+    throw new Error(
+      `A relay takes a channel only in the top frame of ${slackOrigin}, not in a ${frame} of ${page.origin}`
+    )
+  }
+
   const takePort = (event: Event): void => {
     const [port] = event instanceof MessageEvent ? event.ports : []
     if (port !== undefined) {
@@ -184,9 +201,9 @@ export const takeObserverPorts = (
     }
   }
 
-  document.addEventListener(OBSERVER_PORT_EVENT, takePort)
-  document.dispatchEvent(new CustomEvent(RELAY_READY_EVENT))
-  document.removeEventListener(OBSERVER_PORT_EVENT, takePort)
+  page.document.addEventListener(OBSERVER_PORT_EVENT, takePort)
+  page.document.dispatchEvent(new CustomEvent(RELAY_READY_EVENT))
+  page.document.removeEventListener(OBSERVER_PORT_EVENT, takePort)
 }
 
 // The relay tells the observer, on the port the frame came on, that the service worker took the frame numbered seq.

@@ -32,6 +32,7 @@
   "scripts": {
     "build": "tsc && node scripts/build-extension.js",
     "install-host": "node dist/host/install.js",
+    "disclosures": "tsc && node dist/disclosures/generate.js",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint",
     "format": "oxfmt",
@@ -57,6 +58,7 @@
   },
   "files": [
     "dist",
-    "!dist/**/*.spec.*"
+    "!dist/**/*.spec.*",
+    "!dist/disclosures"
   ]
 }

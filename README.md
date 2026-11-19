@@ -62,27 +62,27 @@ Both run on macOS, in Chrome or Brave.
 
 1. Build: `pnpm install && pnpm run build`. The unpacked extension lands in `dist/extension`.
 2. Install the native host: `pnpm run install-host`. It writes a launcher to `~/.misha/browser-bridge/native-host` and registers the host as `misha.browser_bridge` with Chrome, Brave or both, wherever a profile folder exists, so that only this extension can start it. The launcher names the current Node binary by its absolute path, so run it again after a Node upgrade. The installer makes `~/.misha/browser-bridge` accessible only to you (mode 700), and stops with an error when that folder or `~/.misha` is a symlink, when either belongs to another user (root may own `~/.misha`), when anyone else can write to `~/.misha`, or when an ACL on either has an entry that allows access (`ls -le` lists them, `chmod -N` removes them; entries that deny are fine).
-3. Open `brave://extensions` or `chrome://extensions`, turn on Developer mode, click "Load unpacked" and pick `dist/extension`. Its id is `lkibgdfhoikfdbkhdlnoiajfelcmohjj`, fixed by the public key in the manifest. After a rebuild, reload it there.
-4. Reload any Slack tab that was already open. The extension reads Slack's socket from a script that has to run before Slack's own, so a tab opened earlier shows as signed in but not capturing until it reloads.
+3. Open `brave://extensions` or `chrome://extensions`, turn on Developer mode, click "Load unpacked" and pick `dist/extension`. Its id is `lkibgdfhoikfdbkhdlnoiajfelcmohjj`, fixed by the public key in the manifest. After a rebuild, reload it there. A Slack tab whose page loaded with this version's observer keeps capturing without a reload: the service worker gives the page a new relay, which takes a channel from the observer, along with any new message that came while no relay ran.
+4. Reload any Slack tab that was already open when you first loaded the extension. The extension reads Slack's socket from a script that has to run before Slack's own, so a tab opened earlier shows as signed in but not capturing until it reloads. The same holds once when you upgrade from a build whose observer predates sequenced frames (any build before commit `51b179f`): reload the extension, then reload each open Slack tab once, since its page still runs the old observer, which the new relay cannot read. From then on, reloading the extension needs no tab reload.
 
 Once the browser has started the host, clients connect to `~/.misha/browser-bridge/bridge.sock`.
 
 The extension asks the browser for these permissions, which an unpacked extension gets when it is loaded:
 
-| Permission                     | Used for                                                                                                                                              |
-| ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `nativeMessaging`              | The connection to the native host                                                                                                                     |
-| `scripting`, `tabs`, all sites | Running the Slack commands in a Slack tab, listing tabs, and running the outline and page commands of the browser tools in any page                   |
-| `webRequest`                   | Following the fetch and XHR requests a browser action started, to wait for them, and recording them for `tab_network`; it never blocks or changes one |
-| `downloads`                    | Reporting the downloads started anywhere in the browser since a browser action began, and whether one waits for a place to save it                    |
-| `alarms`                       | Reconnecting to the native host when the connection drops                                                                                             |
-| `unlimitedStorage`             | The durable queue of Slack events waiting for the app's acknowledgement                                                                               |
+| Permission                     | Used for                                                                                                                                                                                            |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `nativeMessaging`              | The connection to the native host                                                                                                                                                                   |
+| `scripting`, `tabs`, all sites | Running the Slack commands in a Slack tab, giving open Slack tabs a new relay after the extension reloads, listing tabs, and running the outline and page commands of the browser tools in any page |
+| `webRequest`                   | Following the fetch and XHR requests a browser action started, to wait for them, and recording them for `tab_network`; it never blocks or changes one                                               |
+| `downloads`                    | Reporting the downloads started anywhere in the browser since a browser action began, and whether one waits for a place to save it                                                                  |
+| `alarms`                       | Reconnecting to the native host when the connection drops                                                                                                                                           |
+| `unlimitedStorage`             | The durable queue of Slack events waiting for the app's acknowledgement                                                                                                                             |
 
 ## Security
 
 The extension's Slack transport runs in the user's signed-in Slack tab, alongside Slack's own code.
 
-Scripts already running in the Slack page are out of scope: Slack's own code, or another extension's script in the page's world. Such a script already holds the user's session and token and can send them anywhere itself. The private channel between the observer and the relay, and the check that sends the token only to the workspace's address on Slack's domain, run on built-ins a page script could replace, and they are not hardened against that.
+Scripts already running in the Slack page are out of scope: Slack's own code, or another extension's script in the page's world. Such a script already holds the user's session and token and can send them anywhere itself. The private channel between the observer and the relay, and the check that sends the token only to the workspace's address on Slack's domain, run on built-ins a page script could replace, and they are not hardened against that. The relay first takes its channel before any of the page's scripts run; a relay the service worker injects after the extension reloaded takes one while they run, so a page script could hand it a port of its own, whose messages the relay checks like any other and passes on only as events and status. The service worker injects that relay only into the top document it checked to be a Slack page, and the relay takes a channel only in the top frame of a page on `https://app.slack.com`.
 
 The Slack transport guarantees two things:
 

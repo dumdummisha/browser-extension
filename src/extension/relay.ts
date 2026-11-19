@@ -1,26 +1,46 @@
 /// <reference types="chrome" />
 import { z } from 'zod'
+import { reportTaken, takeObserverPorts } from '../service-worker/capture-handshake.js'
 import { type ObservedMessage, ObserverMessageSchema, type RelayCapture } from '../service-worker/observed-message.js'
-import { CAPTURE_QUERY, OBSERVER_PORT_EVENT, RELAY_READY_EVENT } from './config.js'
+import { CAPTURE_QUERY, RELAY_RUNNING_KEY, SLACK_ORIGIN } from './config.js'
 
-// The observer's half in the extension's isolated world. It takes the observer's end of their private channel once, at
-// document_start (config.ts), and nothing reaches it any other way. It checks every message on that channel: a new
-// message goes on to the service worker, and the socket state is kept, as a boolean, so a service worker that restarted
-// can ask for it. What does not read is kept as the capture's failure and reported, and nothing of it goes on.
+// The observer's half in the extension's isolated world. The manifest runs it at document_start, and the service worker
+// injects it into an open Slack tab whose relay it cannot reach, once the extension reloaded (background.ts). It takes a
+// channel from the observer through the document during its own handshake (capture-handshake.ts), and nothing reaches
+// it any other way. It checks every message on that channel: a new message goes on to the service worker, and once the
+// service worker took it, the relay tells the observer so, which then stops holding it. The socket state is kept, as a
+// boolean, so a service worker that restarted can ask for it. What does not read is kept as the capture's failure and
+// reported, and nothing of it goes on.
 
 // zod compiles its parsers with new Function unless told not to, and an extension's CSP refuses that.
 z.config({ jitless: true })
 
 // Null until the observer reported, which it does as soon as it handed over its port, so null means no observer here.
 let isObservedSocketOpen: boolean | null = null
-// What the observer sent that did not read. The capture stays failed until the page reloads.
+// What the observer sent that did not read. The capture stays failed for as long as this relay runs.
 let captureError: string | null = null
 
 const send = (message: ObservedMessage): void => {
   void chrome.runtime.sendMessage(message)
 }
 
-const onObserverMessage = ({ data }: MessageEvent<unknown>): void => {
+// Once the extension reloaded, this relay keeps running in its old world with chrome.runtime gone, or left without its
+// id, where its types say it is always there, so it reads them untyped.
+const isExtensionGone = (): boolean => {
+  const runtime: unknown = Reflect.get(chrome, 'runtime')
+
+  return typeof runtime !== 'object' || runtime === null || Reflect.get(runtime, 'id') === undefined
+}
+
+// A relay whose extension went away can pass nothing on, so it closes the channel the message came on, and the
+// observer's posts to it go nowhere from then on. The frames it did not pass on stay held by the observer, which posts
+// them to the relay that replaces this one.
+const onObserverMessage = (data: unknown, port: MessagePort): void => {
+  if (isExtensionGone()) {
+    port.close()
+    return
+  }
+
   const message = ObserverMessageSchema.safeParse(data)
   if (!message.success) {
     captureError = `The observer sent what does not read:\n${z.prettifyError(message.error)}`
@@ -28,8 +48,14 @@ const onObserverMessage = ({ data }: MessageEvent<unknown>): void => {
     return
   }
 
+  // The service worker answers a frame once its admission ran (background.ts). A frame it did not answer, because the
+  // extension went away meanwhile, stays held by the observer for the relay that replaces this one.
   if (message.data.kind === 'frame') {
-    send(message.data)
+    const { seq, ...observed } = message.data
+    void chrome.runtime.sendMessage(observed satisfies ObservedMessage).then(
+      () => reportTaken(port, seq),
+      () => undefined
+    )
     return
   }
 
@@ -37,21 +63,21 @@ const onObserverMessage = ({ data }: MessageEvent<unknown>): void => {
   send({ kind: 'capture' })
 }
 
-// Only the observer, listening since it ran just before this script, can answer during this dispatch. A port offered
-// at any later time, when the page's scripts may run, finds no listener.
-const takePort = (event: Event): void => {
-  const [port] = event instanceof MessageEvent ? event.ports : []
-  if (port !== undefined) {
-    port.onmessage = onObserverMessage
-  }
+// One relay per document for each load of the extension: a tab that was still loading when the service worker injected
+// a relay runs the manifest's copy too, in this same isolated world, and the copy that runs second leaves. The isolated
+// world of an extension that reloaded is a new one, so a relay injected then never finds the mark of the one it
+// replaces. The mark is left only once the relay took its channel, which it does only in a Slack page's top frame, and
+// the service worker reads it to tell whether a document still needs a relay (relay-attachment.ts).
+if (!Reflect.has(globalThis, RELAY_RUNNING_KEY)) {
+  takeObserverPorts(
+    { document, origin: location.origin, isTopFrame: window === window.top },
+    SLACK_ORIGIN,
+    onObserverMessage
+  )
+  Reflect.set(globalThis, RELAY_RUNNING_KEY, true)
+  chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+    if (message === CAPTURE_QUERY) {
+      sendResponse({ isSocketOpen: isObservedSocketOpen, error: captureError } satisfies RelayCapture)
+    }
+  })
 }
-
-document.addEventListener(OBSERVER_PORT_EVENT, takePort)
-document.dispatchEvent(new CustomEvent(RELAY_READY_EVENT))
-document.removeEventListener(OBSERVER_PORT_EVENT, takePort)
-
-chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
-  if (message === CAPTURE_QUERY) {
-    sendResponse({ isSocketOpen: isObservedSocketOpen, error: captureError } satisfies RelayCapture)
-  }
-})

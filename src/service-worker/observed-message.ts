@@ -12,10 +12,12 @@ const FrameMessageSchema = z.strictObject({
   frame: SlackMessageFrameSchema,
 })
 
-// What the observer posts the relay on their private channel: a new message, or whether it sees a socket open. The
-// observer runs in the page's world, so the relay checks each one before it keeps or passes on anything.
+// What the observer posts the relay on their private channel: a new message, under its number in the observer's
+// sequence, which the relay posts back once the service worker took it (capture-handshake.ts), or whether it sees a
+// socket open. The observer runs in the page's world, so the relay checks each one before it keeps or passes on
+// anything.
 export const ObserverMessageSchema = z.discriminatedUnion('kind', [
-  FrameMessageSchema,
+  FrameMessageSchema.extend({ seq: z.number().int().nonnegative() }),
   z.strictObject({ kind: z.literal('socket'), isSocketOpen: z.boolean() }),
 ])
 

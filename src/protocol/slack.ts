@@ -96,10 +96,11 @@ export const SlackIdentitySchema = SlackAccountSchema.extend({
   teamName: z.string(),
 })
 
-// A tab's capture. detached: no observer reports in it (a tab opened before the extension loaded, which captures once
-// it reloads). attached: its observer reports, and isSocketOpen says whether it sees Slack's socket open. failed: what
-// the tab's capture produced did not read (a frame whose fields Slack moved, or its relay's answer), so its messages may
-// be lost until it reloads or the extension does; error says what did not read.
+// A tab's capture. detached: no observer reports in it (a tab opened before the extension loaded, or one whose page
+// runs an older build's observer, which answers only its first relay; either captures once it reloads). attached: its
+// observer reports, and isSocketOpen says whether it sees Slack's socket open. failed: what the tab's capture produced
+// did not read (a frame whose fields Slack moved, or its relay's answer), so its messages may be lost until it reloads
+// or the extension does; error says what did not read.
 export const CaptureHealthSchema = z.discriminatedUnion('state', [
   z.strictObject({ tabId: TabIdSchema, state: z.literal('detached') }),
   z.strictObject({ tabId: TabIdSchema, state: z.literal('attached'), isSocketOpen: z.boolean() }),

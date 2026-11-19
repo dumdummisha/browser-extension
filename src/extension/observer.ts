@@ -1,31 +1,25 @@
+import { answerRelays } from '../service-worker/capture-handshake.js'
 import { projectedMessageOf } from '../service-worker/message-projection.js'
-import {
-  OBSERVER_PORT_EVENT,
-  RELAY_READY_EVENT,
-  SLACK_CLIENT_PATH,
-  SLACK_CLIENT_STATE_KEY,
-  SLACK_SOCKET_HOSTNAME,
-} from './config.js'
+import { SLACK_CLIENT_PATH, SLACK_CLIENT_STATE_KEY, SLACK_SOCKET_HOSTNAME } from './config.js'
 
 // Runs in the page's own world at document_start, before Slack's scripts, so it wraps WebSocket before Slack opens its
 // socket. It only reads: it sends nothing on the socket, and never passes the socket's URL on, since the URL carries a
-// token. It hands the extension's relay one end of a private channel (config.ts), and passes on it only what it takes
-// from Slack's socket itself: whether a socket is open, and each new message cut down to the fields the app reads, with
-// the account the tab showed when it came.
+// token. It hands each relay of the extension one end of a private channel (capture-handshake.ts), and passes on them
+// only what it takes from Slack's socket itself: whether a socket is open, and each new message cut down to the fields
+// the app reads, with the account the tab showed when it came.
 //
 // Threat model (README, Security): scripts already running in the page, Slack's own or another extension's in this
 // world, are out of scope, since such a script already holds the session and token and can send them anywhere itself.
 // The guarantees are that the extension's own code never moves a credential out of the page, and that Slack message
 // content, remote data that never runs as script, reaches the relay only as a cut-down message that becomes an event,
-// never as a command, an API call or an ack. The built-ins taken at load (here and in message-projection.ts) and the
-// isTrusted check keep what the observer reads the same when the page's scripts later replace a built-in or dispatch
-// events of their own; they are not a boundary against such a script.
+// never as a command, an API call or an ack. The built-ins taken at load (here, in message-projection.ts and in
+// capture-handshake.ts) and the isTrusted check keep what the observer reads the same when the page's scripts later
+// replace a built-in or dispatch events of their own; they are not a boundary against such a script.
 const { apply, construct } = Reflect
 const { getOwnPropertyDescriptor } = Object
 const NativeUrl = URL
 const execPattern = RegExp.prototype.exec
 const listen = EventTarget.prototype.addEventListener
-const postToPort = MessagePort.prototype.postMessage
 const storedItem = Storage.prototype.getItem
 const parseJson = JSON.parse
 
@@ -42,21 +36,16 @@ const messageData = getterOf(MessageEvent.prototype, 'data')
 const urlProtocol = getterOf(URL.prototype, 'protocol')
 const urlHostname = getterOf(URL.prototype, 'hostname')
 
-const channel = new MessageChannel()
-// Set once the relay holds the other end. Nothing is posted before, so nothing piles up in a port nobody reads.
-let isHandedOver = false
 let openSockets = 0
 
-// channel.port1 goes through MessageChannel's prototype on every post, so a page script that replaced that getter could
-// take the port. Page scripts are out of scope (above), so this is not hardened against that.
-const toRelay = (message: object): void => {
-  if (isHandedOver) {
-    apply(postToPort, channel.port1, [message])
-  }
-}
+const socketState = (): object => ({ kind: 'socket', isSocketOpen: openSockets > 0 })
+
+// Every relay that asked gets the socket state as it stands, and then each change and each new message. A relay the
+// service worker injects after the extension reloaded asks while the socket is already open, and learns so at once.
+const toRelays = answerRelays(document, socketState)
 
 const reportSocketState = (): void => {
-  toRelay({ kind: 'socket', isSocketOpen: openSockets > 0 })
+  toRelays(socketState())
 }
 
 const matches = (pattern: RegExp, text: unknown): RegExpExecArray | null =>
@@ -124,7 +113,7 @@ const observe = (socket: WebSocket): void => {
 
     const userId = signedInUserOf(teamId)
     if (userId !== undefined) {
-      toRelay({ kind: 'frame', account: { teamId, userId }, frame })
+      toRelays({ kind: 'frame', account: { teamId, userId }, frame })
     }
   })
 }
@@ -150,15 +139,3 @@ window.WebSocket = new Proxy(window.WebSocket, {
     return socket
   },
 })
-
-// The relay dispatches RELAY_READY_EVENT right after this script runs, before the page's scripts, and takes the port
-// while it does (config.ts). Only the first ready event is answered.
-document.addEventListener(
-  RELAY_READY_EVENT,
-  () => {
-    document.dispatchEvent(new MessageEvent(OBSERVER_PORT_EVENT, { ports: [channel.port2] }))
-    isHandedOver = true
-    reportSocketState()
-  },
-  { once: true }
-)

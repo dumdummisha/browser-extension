@@ -29,7 +29,14 @@ import {
   type SlackPageResult,
   SlackPageResultSchema,
 } from '../service-worker/slack-page.js'
-import { CAPTURE_QUERY, RECONNECT_ALARM, RECONNECT_PERIOD_MINUTES, SLACK_ORIGIN, SLACK_TAB_URL } from './config.js'
+import {
+  CAPTURE_QUERY,
+  RECONNECT_ALARM,
+  RECONNECT_PERIOD_MINUTES,
+  RELAY_SCRIPT,
+  SLACK_ORIGIN,
+  SLACK_TAB_URL,
+} from './config.js'
 import { startTabTracking, TAB_HANDLERS } from './tab-commands.js'
 
 // The service worker: the native port to the host, the pending queue and its forwarding, the status, the Slack bridge
@@ -145,12 +152,34 @@ const identityOf = async (target: chrome.scripting.InjectionTarget): Promise<Sla
   return result.identity === null ? null : SlackIdentitySchema.parse({ ...result.identity, tabId: target.tabId })
 }
 
-// A tab opened before the extension loaded has no relay to answer, and its observer is not attached until it reloads.
+// A tab with no relay to answer is detached: one whose page loaded before the extension did, or one this worker has not
+// given a new relay yet since the extension reloaded (attachRelays).
 const captureOf = (tabId: number): Promise<CaptureHealth> =>
   chrome.tabs.sendMessage(tabId, CAPTURE_QUERY).then(
     (answer: unknown) => captureHealthOf(tabId, answer),
     (): CaptureHealth => ({ tabId, state: 'detached' })
   )
+
+// Chrome puts the manifest's content scripts only into documents that load after the extension did, and cuts the relay
+// of every open tab off from the extension once it reloads, updates or is turned off and on, which starts a new worker.
+// The observer a tab loaded with keeps watching Slack's socket, so each open Slack tab whose relay does not answer gets
+// a new one, which asks the observer for a channel of its own (capture-handshake.ts). A tab whose page loaded before
+// the extension did has no observer to answer, and stays detached until it reloads. A discarded tab holds no page, and
+// runs the manifest's scripts once it loads again.
+const attachRelays = async (): Promise<void> => {
+  const tabs = (await slackTabs()).filter((tab) => !tab.discarded)
+  await Promise.all(
+    tabs.map(async ({ id }) => {
+      const hasRelay = await chrome.tabs.sendMessage(id, CAPTURE_QUERY).then(
+        () => true,
+        () => false
+      )
+      if (!hasRelay) {
+        await chrome.scripting.executeScript({ target: { tabId: id }, files: [RELAY_SCRIPT] })
+      }
+    })
+  )
+}
 
 // Runs a command in a tab signed in as the account and in no other; null when there is none. Tabs are tried one at a
 // time, so a write goes out at most once: a tab whose user changed since its identity was read answers other-account
@@ -427,4 +456,5 @@ startTabTracking()
 void chrome.alarms.create(RECONNECT_ALARM, { periodInMinutes: RECONNECT_PERIOD_MINUTES })
 chrome.alarms.onAlarm.addListener(() => connect())
 void writer.recover()
+void attachRelays()
 connect()

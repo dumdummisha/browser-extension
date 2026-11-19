@@ -34,7 +34,7 @@ const postToPort = MessagePort.prototype.postMessage
 // The observer's side: answers every relay's ready event on document with a channel of its own, and posts greeting()
 // to the new relay alone, so a relay that comes later learns what the observer already knows. Returns what posts a
 // message to every relay answered so far; before the first one, it posts nothing, so nothing piles up in a port nobody
-// reads. A relay whose extension went away never reads its port again, and posts to it go nowhere.
+// reads. A relay whose extension went away closes its port on the next message (relay.ts), and posts to it go nowhere.
 export const answerRelays = (document: EventTarget, greeting: () => object): ((message: object) => void) => {
   const relays = create(null) as Record<number, MessagePort>
   let relayCount = 0

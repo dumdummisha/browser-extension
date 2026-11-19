@@ -23,8 +23,26 @@ const send = (message: ObservedMessage): void => {
   void chrome.runtime.sendMessage(message)
 }
 
-const onObserverMessage = ({ data }: MessageEvent<unknown>): void => {
-  const message = ObserverMessageSchema.safeParse(data)
+// Once the extension reloaded, this relay keeps running in its old world with chrome.runtime gone, or left without its
+// id, where its types say it is always there, so it reads them untyped.
+const isExtensionGone = (): boolean => {
+  const runtime: unknown = Reflect.get(chrome, 'runtime')
+
+  return typeof runtime !== 'object' || runtime === null || Reflect.get(runtime, 'id') === undefined
+}
+
+// A relay whose extension went away can pass nothing on, so it closes the channel the message came on, and the
+// observer's posts to it go nowhere from then on. The relay that replaced it has a channel of its own.
+const onObserverMessage = (event: MessageEvent<unknown>): void => {
+  if (isExtensionGone()) {
+    if (event.currentTarget instanceof MessagePort) {
+      event.currentTarget.close()
+    }
+
+    return
+  }
+
+  const message = ObserverMessageSchema.safeParse(event.data)
   if (!message.success) {
     captureError = `The observer sent what does not read:\n${z.prettifyError(message.error)}`
     send({ kind: 'capture' })

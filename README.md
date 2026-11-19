@@ -1,6 +1,39 @@
 # misha-browser
 
-Browser extension and MCP server for browser and desktop control, with Misha's Slack transport. Apache-2.0.
+<img src="https://docs.dumdummisha.ai/logo.svg" alt="The Dumdum Misha mascot" width="72" height="72">
+
+**Connect local AI agents to your signed-in browser.** The Misha Browser extension and its native host, a small program that connects the extension to processes on your Mac, let a local agent read and act in the browser you already use, and carry Slack to the Misha app. The same package has browser and desktop tools that Claude Code, OpenCode or any other MCP client can use through a standalone server, without the Misha app.
+
+- **Setting up the Misha app?** Follow [Get started](https://docs.dumdummisha.ai/start/get-started) in the docs. Misha's Set up page checks the extension and installs the native host, and you don't need the build steps below.
+- **Using the tools in your own agent?** Build this repository and register [the MCP server](#the-mcp-server). This route needs neither the private Misha app nor an invite.
+
+Status: macOS only, in Chrome or Brave. You load the extension unpacked from a build of this repository; it has no Chrome Web Store listing yet. Apache-2.0.
+
+## How it connects
+
+```text
+signed-in tab        Slack, or any page an agent reads or acts on
+  |                  scripts the extension runs in the tab
+service worker       the extension's background process
+  |                  native messaging
+native host          on your Mac, with its relay
+  |                  ~/.misha/browser-bridge/bridge.sock, a socket only you can open
+Misha app            Slack messages in, replies out
+or the MCP server    the tab_* tools
+```
+
+The desktop tools (`macos_*`) don't go through the browser: the MCP server moves the mouse, presses keys and captures the screen itself, through macOS. [How Misha works](https://docs.dumdummisha.ai/understand/how-it-works#without-a-slack-app) explains how the Misha app uses this path for Slack.
+
+## Security in short
+
+- The extension has access to all sites. When an agent asks, it reads pages and clicks and types in your tabs through your signed-in sessions, as you.
+- While it runs, it records every tab's fetch and XHR requests, not only during a tool call. It redacts credentials by name and pattern, which misses an opaque credential under an ordinary name.
+- Any program running as you on the Mac can connect to the native host's socket and drive the browser through it.
+- The tools that move the mouse, press keys or capture the screen need Accessibility and Screen Recording for the app that runs your agent. See [macOS permissions](#macos-permissions).
+
+[Browser permissions](https://docs.dumdummisha.ai/reference/permissions) explains each permission and its limits, and the [privacy policy](https://docs.dumdummisha.ai/privacy) covers where the data goes. The full detail is under [Security](#security) below.
+
+## What this repository holds
 
 The repository holds:
 
@@ -54,7 +87,7 @@ The tools that move the mouse, press keys or capture the screen share one input 
 
 Grant both to the app that runs Claude Code or OpenCode (the terminal, the editor whose terminal you use, or the desktop app) in System Settings > Privacy & Security: turn the app on in each list, or add it with + if it is missing, then quit it completely and open it again. A running app keeps failing until it restarts.
 
-The browser tools that only read or work through the extension (`tab_list`, `tab_read`, `tab_find`, `tab_wait`, `tab_screenshot`, `tab_network`, `tab_open`, `tab_switch`, `tab_close`, `tab_select_option`), `macos_list_apps` and `macos_focus_app` need no permission. `tab_screenshot` captures through the extension, not the screen.
+The browser tools that only read or work through the extension (`tab_list`, `tab_read`, `tab_find`, `tab_wait`, `tab_screenshot`, `tab_network`, `tab_open`, `tab_switch`, `tab_close`), `macos_list_apps` and `macos_focus_app` need no permission. `tab_screenshot` captures through the extension, not the screen. `tab_select_option` sets the option through the extension, but when the change starts a download that waits in the browser's save dialog, the Return that accepts it goes through the input session, so that call needs both permissions too.
 
 ## Loading the extension and the native host
 
@@ -94,3 +127,8 @@ Node 24 and pnpm 11:
 pnpm install
 pnpm run typecheck && pnpm run lint && pnpm run format:check && pnpm test
 ```
+
+## Related repositories
+
+- [dumdummisha/misha](https://github.com/dumdummisha/misha): the documentation site at [docs.dumdummisha.ai](https://docs.dumdummisha.ai), including the Misha app's setup, privacy policy and architecture.
+- [dumdummisha/misha-downloads](https://github.com/dumdummisha/misha-downloads): reserved for signed Misha desktop builds and the update feed. No signed build is available yet.

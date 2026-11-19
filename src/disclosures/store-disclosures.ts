@@ -88,17 +88,25 @@ export const StoreDisclosuresSchema = z.strictObject({
 export type StoreDisclosures = z.infer<typeof StoreDisclosuresSchema>
 type Disclosure = z.infer<typeof DisclosureSchema>
 
-// The manifest's declarations the disclosures account for; the rest of the manifest is not read here.
-const ContentScriptSchema = z.object({
+// The manifest's declarations the disclosures account for. A declaration form the disclosures have no text for (optional
+// permissions, and a content script's other scope fields such as match_about_blank, exclude_matches or globs) fails the
+// parse, so it cannot reach the store text undisclosed; the rest of the manifest grants nothing and is not read here.
+const ContentScriptSchema = z.strictObject({
   matches: z.array(TextSchema).min(1),
   js: z.array(TextSchema).min(1),
   run_at: z.enum(['document_start', 'document_end', 'document_idle']).default('document_idle'),
   world: z.enum(['ISOLATED', 'MAIN']).default('ISOLATED'),
+  all_frames: z.boolean().default(false),
 })
+
+const undisclosed = (field: string): z.ZodOptional<z.ZodNever> =>
+  z.never({ error: `The disclosures cover no ${field}; disclose them before declaring them` }).optional()
 
 export const ExtensionManifestSchema = z.object({
   permissions: z.array(TextSchema),
   host_permissions: z.array(TextSchema),
+  optional_permissions: undisclosed('optional_permissions'),
+  optional_host_permissions: undisclosed('optional_host_permissions'),
   content_scripts: z.array(ContentScriptSchema),
 })
 
@@ -180,8 +188,8 @@ const disclosureSection = (heading: string, disclosure: Disclosure, declaration:
   ]
 }
 
-const contentScriptDeclaration = ({ matches, run_at: runAt, world }: ContentScript): string =>
-  `Declared on ${codeList(matches)}, from ${code(runAt)}, in ${WORLD_TEXT[world]}.`
+const contentScriptDeclaration = ({ matches, run_at: runAt, world, all_frames: allFrames }: ContentScript): string =>
+  `Declared on ${codeList(matches)}, from ${code(runAt)}, in ${WORLD_TEXT[world]}, ${allFrames ? 'in every frame' : 'in the top frame only'}.`
 
 // docs/store-permissions.md, as Markdown blocks joined by blank lines. Permissions, host permissions and content scripts
 // follow the manifest's order.

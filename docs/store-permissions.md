@@ -140,7 +140,7 @@ Each section is written to be pasted into the store's justification field for th
 
 ### Content script `observer.js`
 
-Declared on `https://app.slack.com/*`, from `document_start`, in the page's own world.
+Declared on `https://app.slack.com/*`, from `document_start`, in the page's own world, in the top frame only.
 
 **Capability:** Watches Slack's own real-time socket. It passes each new message to the relay, cut down to the fields the Misha app reads (listed under Slack transport limits), with the account the tab showed when it came, and reports whether the socket is open. It reads the signed-in user's id from Slack's saved client state to key each message.
 
@@ -157,7 +157,7 @@ Declared on `https://app.slack.com/*`, from `document_start`, in the page's own 
 
 ### Content script `relay.js`
 
-Declared on `https://app.slack.com/*`, from `document_start`, in the extension's isolated world.
+Declared on `https://app.slack.com/*`, from `document_start`, in the extension's isolated world, in the top frame only.
 
 **Capability:** Takes a private channel from the observer, checks every message on it against the protocol's shapes, and forwards new messages and the socket's state to the service worker.
 

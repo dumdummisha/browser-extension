@@ -31,7 +31,7 @@ import { slackEventOf } from '../service-worker/slack-frame.js'
 import { type PacedSend, paceGapMs, SlackPace } from '../service-worker/slack-pace.js'
 import {
   isAnsweredBySlack,
-  isSentToSlack,
+  isNothingSent,
   runSlackPageCommand,
   type SlackPageCommand,
   type SlackPageFailure,
@@ -244,19 +244,20 @@ interface IPageRequest {
 // injection. While it runs, the observer takes the request it sends as Misha's, never as one of the client's, and checks
 // it once the command settled.
 // The command is handed to the page with nothing asynchronous before it, so the pace's check that its caller still
-// waits comes right before the hand-off (slack-pace.ts). sent: tells the pace the request went out to Slack.
+// waits comes right before the hand-off, from which the pace counts the request as sent (slack-pace.ts). unsent: tells
+// the pace that the page's result, read, shows nothing went out to Slack.
 const requestInPage = async (
   page: ISlackPage,
   { key, isKeyUnique, command }: IPageRequest,
-  sent: () => void
+  unsent: () => void
 ): Promise<SlackPageResult> => {
   const release = clientObserver.exclude(page, key, isKeyUnique)
   let isAnswered = false
   try {
     const { answered } = await injected({ tabId: page.tabId, documentIds: [page.documentId] }, command)
     const result = readPageResult(page.tabId, answered)
-    if (isSentToSlack(result)) {
-      sent()
+    if (isNothingSent(result)) {
+      unsent()
     }
 
     isAnswered = isAnsweredBySlack(result)
@@ -280,7 +281,7 @@ const inSlackTab = async (
   requestFor: (page: ISlackPage) => IPageRequest
 ): Promise<{ readonly page: ISlackPage; readonly result: SlackPageResult } | null> => {
   for (const page of await signedInPages(account)) {
-    const result = await send((sent) => requestInPage(page, requestFor(page), sent))
+    const result = await send((unsent) => requestInPage(page, requestFor(page), unsent))
     if (result.kind !== 'other-account') {
       return { page, result }
     }
@@ -410,7 +411,7 @@ const uploadToSlack = (
       isKeyUnique: false,
       command: { kind: 'upload', account, uploadUrl: href, filename, chunks, deadline },
     }
-    const uploaded = await send((sent) => requestInPage(answered.page, bytesRequest, sent))
+    const uploaded = await send((unsent) => requestInPage(answered.page, bytesRequest, unsent))
 
     return preparedUploadOf(uploaded, ticket.fileId)
   })

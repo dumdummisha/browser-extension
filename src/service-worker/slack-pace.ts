@@ -20,8 +20,9 @@ export const paceGapMs = (random: () => number): number => {
 }
 
 // Sends one request to Slack in a turn of the pace (SlackPace). request must hand its command to the page with nothing
-// asynchronous before the hand-off, and calls sent once the page shows its request went out to Slack.
-export type PacedSend = <TResult>(request: (sent: () => void) => Promise<TResult>) => Promise<TResult>
+// asynchronous before the hand-off, from which the request counts as sent, and calls unsent only when the page's
+// result, read, shows that nothing went out to Slack.
+export type PacedSend = <TResult>(request: (unsent: () => void) => Promise<TResult>) => Promise<TResult>
 
 // Waits ms, or less once signal aborts.
 const pause = (ms: number, signal: AbortSignal): Promise<void> =>
@@ -37,8 +38,10 @@ const pause = (ms: number, signal: AbortSignal): Promise<void> =>
 
 // Slack's requests at a person's pace, one queue per workspace: a workspace's turns run one at a time in the order
 // they came, and each request a turn sends waits until a fresh gap (drawGapMs) has passed since the workspace's
-// previous request to Slack ended, or goes at once when it has passed already; an attempt that sent nothing (a page
-// signed in as another account, a failure before the fetch) leaves no gap behind. Whether the caller still waits is
+// previous request to Slack ended, or goes at once when it has passed already. A request handed to the page leaves a
+// gap behind unless its result shows that nothing went out (a page signed in as another account, a failure before the
+// fetch); one that failed or whose result did not read after the hand-off may have gone out, so it leaves one, and is
+// never sent again. Whether the caller still waits is
 // checked before the turn, at the end of the gap and so right before the request hands its command to the page, which
 // is the send boundary, after every asynchronous step of the turn (finding the page, an upload's ticket). A request
 // whose caller gave up by then is dropped; one whose deadline would pass before its gap ends is dropped at once. A
@@ -68,7 +71,7 @@ export class SlackPace {
   private async send<TResult>(
     teamId: string,
     abandonment: IAbandonment,
-    request: (sent: () => void) => Promise<TResult>
+    request: (unsent: () => void) => Promise<TResult>
   ): Promise<TResult> {
     throwIfAbandoned(abandonment)
     const now = Date.now()
@@ -79,10 +82,10 @@ export class SlackPace {
       throwIfAbandoned(abandonment)
     }
 
-    const attempt = { isSent: false }
+    const attempt = { isSent: true }
     try {
       return await request(() => {
-        attempt.isSent = true
+        attempt.isSent = false
       })
     } finally {
       if (attempt.isSent) {

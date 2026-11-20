@@ -103,10 +103,11 @@ const ANSWERED_FAILURES: ReadonlySet<SlackPageFailure> = new Set([
   'file-bytes-lost',
 ])
 
-// Whether a command's result shows its fetch call was made, so its request may have reached Slack. A failure the page
-// could not name (uncaught) counts as sent.
-export const isSentToSlack = (result: SlackPageResult): boolean =>
-  result.kind === 'failed' ? !UNSENT_FAILURES.has(result.failure) : isSlackAnswer(result)
+// Whether a command's result shows that nothing went out to Slack: the page was signed in as another account, or the
+// command failed before its fetch call. Any other result, a failure the page could not name (uncaught) included, may
+// follow a request that reached Slack.
+export const isNothingSent = (result: SlackPageResult): boolean =>
+  result.kind === 'other-account' || (result.kind === 'failed' && UNSENT_FAILURES.has(result.failure))
 
 // Whether a command's result proves Slack answered its request: with its answer, a file's bytes, the upload URL's
 // status, or a status or body that did not read.

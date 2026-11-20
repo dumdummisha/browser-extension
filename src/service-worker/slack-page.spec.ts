@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { describe, it, type TestContext } from 'node:test'
 import {
   isAnsweredBySlack,
-  isSentToSlack,
+  isNothingSent,
   runSlackPageCommand,
   type SlackPageCommand,
   type SlackPageResult,
@@ -311,7 +311,7 @@ describe('[service-worker] Slack page - failures', () => {
 })
 
 describe('[service-worker] Slack page - what a result shows', () => {
-  it('should tell a request that went out to Slack from one that did not, and one Slack answered', () => {
+  it('should tell a result that shows nothing went out to Slack, and one Slack answered', () => {
     // Arrange
     const results: SlackPageResult[] = [
       { kind: 'answer', answer: { ok: false, error: 'ratelimited' } },
@@ -325,18 +325,18 @@ describe('[service-worker] Slack page - what a result shows', () => {
     ]
 
     // Act
-    const shown = results.map((result) => [isSentToSlack(result), isAnsweredBySlack(result)])
+    const shown = results.map((result) => [isNothingSent(result), isAnsweredBySlack(result)])
 
     // Assert
     assert.deepEqual(shown, [
-      [true, true],
-      [true, true],
-      [false, false],
-      [false, false],
-      [false, false],
+      [false, true],
+      [false, true],
       [true, false],
-      [true, true],
       [true, false],
+      [true, false],
+      [false, false],
+      [false, true],
+      [false, false],
     ])
   })
 })

@@ -38,7 +38,7 @@
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "test": "pnpm run build && node --test 'dist/**/*.spec.js'",
-    "prepare": "tsc"
+    "prepare": "pnpm run build"
   },
   "packageManager": "pnpm@11.11.0",
   "dependencies": {

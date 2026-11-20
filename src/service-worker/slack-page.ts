@@ -30,7 +30,7 @@ export type SlackPageCommand =
 //   JSON object with a boolean ok
 // - file-unreachable, file-refused, file-bytes-lost: a private file got no response, a status other than 2xx, or its
 //   bytes did not arrive
-// - upload-unreachable: the upload URL got no response
+// - upload-unreachable: the upload URL got no response, or answered a redirect, which is refused
 // - uncaught: any other error
 export const SLACK_PAGE_FAILURES = [
   'client-state-unreadable',
@@ -228,11 +228,14 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
     }
 
     // The bytes of Slack's external upload, to the upload URL files.getUploadURLExternal answered. Nothing is shared yet.
-    // A multipart body needs no preflight, and the upload URL itself grants the upload, so no cookies go with it.
+    // A multipart body needs no preflight, and the upload URL itself grants the upload, so no cookies go with it. A
+    // redirect is refused, so the bytes go out in this one request and to this one address.
     const upload = async (uploadUrl: string, filename: string, chunks: readonly string[]): Promise<SlackPageResult> => {
       const body = new FormData()
       body.append('filename', new Blob(chunks.map((chunk) => Uint8Array.fromBase64(chunk))), filename)
-      const posted = await guarded('upload-unreachable', () => fetch(uploadUrl, { method: 'POST', body }))
+      const posted = await guarded('upload-unreachable', () =>
+        fetch(uploadUrl, { method: 'POST', body, redirect: 'error' })
+      )
 
       return posted.ok ? { kind: 'uploaded' } : { kind: 'upload-refused', status: posted.status }
     }

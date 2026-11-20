@@ -106,7 +106,7 @@ const PAGE_FAILURE_TEXT: Readonly<Record<SlackPageFailure, string>> = {
   'file-unreachable': 'Slack could not be reached for the file',
   'file-refused': 'Slack refused the file',
   'file-bytes-lost': "The file's bytes did not arrive",
-  'upload-unreachable': 'The upload URL could not be reached',
+  'upload-unreachable': 'The upload URL could not be reached or answered a redirect',
   'uncaught': 'The command failed in the page',
 }
 

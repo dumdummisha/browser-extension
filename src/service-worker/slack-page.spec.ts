@@ -158,7 +158,7 @@ describe('[service-worker] Slack page - uploads', () => {
     chunks: [Buffer.from('made-up ').toString('base64'), Buffer.from('notes').toString('base64')],
   }
 
-  it('should post the bytes to the upload URL it is given, as one multipart file, without cookies', async (context) => {
+  it('should post the bytes to the upload URL it is given, as one multipart file, without cookies or redirects', async (context) => {
     // Arrange
     openSlackPage(context, () => savedConfig('https://example.slack.com/'))
     decodeBase64InPage(context)
@@ -171,7 +171,7 @@ describe('[service-worker] Slack page - uploads', () => {
     assert.deepEqual(result, { kind: 'uploaded' })
     const [url, init] = fetched.mock.calls[0]?.arguments ?? []
     const file = init?.body instanceof FormData ? init.body.get('filename') : null
-    assert.deepEqual([url, init?.method, init?.credentials], [UPLOAD_URL, 'POST', undefined])
+    assert.deepEqual([url, init?.method, init?.credentials, init?.redirect], [UPLOAD_URL, 'POST', undefined, 'error'])
     assert.ok(file instanceof File)
     assert.deepEqual([file.name, await file.text()], ['notes.txt', 'made-up notes'])
   })
@@ -187,6 +187,19 @@ describe('[service-worker] Slack page - uploads', () => {
 
     // Assert
     assert.deepEqual(result, { kind: 'upload-refused', status: 413 })
+  })
+
+  it('should answer a failure code when the upload URL redirects, which fetch refuses', async (context) => {
+    // Arrange
+    openSlackPage(context, () => savedConfig('https://example.slack.com/'))
+    decodeBase64InPage(context)
+    context.mock.method(globalThis, 'fetch', () => Promise.reject(new TypeError('Failed to fetch')))
+
+    // Act
+    const result = await runSlackPageCommand(UPLOAD)
+
+    // Assert
+    assert.deepEqual(result, { kind: 'failed', failure: 'upload-unreachable', status: null })
   })
 })
 

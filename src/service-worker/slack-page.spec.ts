@@ -202,7 +202,7 @@ describe('[service-worker] Slack page - uploads', () => {
 })
 
 describe('[service-worker] Slack page - deadlines', () => {
-  it("should send nothing of a command handed over in time but run once its deadline passed (a delayed injection), for a call, a download and an upload's bytes", async (context) => {
+  it("should send nothing of a command that runs once its deadline passed, for a call, a download and an upload's bytes", async (context) => {
     // Arrange
     openSlackPage(context, () => savedConfig('https://example.slack.com/'))
     decodeBase64InPage(context)

@@ -19,8 +19,9 @@ export const paceGapMs = (random: () => number): number => {
   return gap
 }
 
-// Sends one request to Slack in a turn of the pace (SlackPace).
-export type PacedSend = <TResult>(request: () => Promise<TResult>) => Promise<TResult>
+// Sends one request to Slack in a turn of the pace (SlackPace). request must hand its command to the page with nothing
+// asynchronous before the hand-off, and calls sent once the page shows its request went out to Slack.
+export type PacedSend = <TResult>(request: (sent: () => void) => Promise<TResult>) => Promise<TResult>
 
 // Waits ms, or less once signal aborts.
 const pause = (ms: number, signal: AbortSignal): Promise<void> =>
@@ -36,9 +37,12 @@ const pause = (ms: number, signal: AbortSignal): Promise<void> =>
 
 // Slack's requests at a person's pace, one queue per workspace: a workspace's turns run one at a time in the order
 // they came, and each request a turn sends waits until a fresh gap (drawGapMs) has passed since the workspace's
-// previous request ended, or goes at once when it has passed already. A request whose caller gave up is dropped, never
-// sent late: before its turn, during its gap, or between two requests of one turn (an upload's ticket and its bytes).
-// One whose deadline would pass before its gap ends is dropped at once.
+// previous request to Slack ended, or goes at once when it has passed already; an attempt that sent nothing (a page
+// signed in as another account, a failure before the fetch) leaves no gap behind. Whether the caller still waits is
+// checked before the turn, at the end of the gap and so right before the request hands its command to the page, which
+// is the send boundary, after every asynchronous step of the turn (finding the page, an upload's ticket). A request
+// whose caller gave up by then is dropped; one whose deadline would pass before its gap ends is dropped at once. A
+// cancel after the hand-off is too late; the page checks only the deadline once more, right before its fetch.
 export class SlackPace {
   private readonly queues = new Map<string, ReturnType<typeof serially>>()
   private readonly lastEnds = new Map<string, number>()
@@ -64,7 +68,7 @@ export class SlackPace {
   private async send<TResult>(
     teamId: string,
     abandonment: IAbandonment,
-    request: () => Promise<TResult>
+    request: (sent: () => void) => Promise<TResult>
   ): Promise<TResult> {
     throwIfAbandoned(abandonment)
     const now = Date.now()
@@ -75,10 +79,15 @@ export class SlackPace {
       throwIfAbandoned(abandonment)
     }
 
+    const attempt = { isSent: false }
     try {
-      return await request()
+      return await request(() => {
+        attempt.isSent = true
+      })
     } finally {
-      this.lastEnds.set(teamId, Date.now())
+      if (attempt.isSent) {
+        this.lastEnds.set(teamId, Date.now())
+      }
     }
   }
 }

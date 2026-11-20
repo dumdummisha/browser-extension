@@ -17,14 +17,17 @@ const mockClock = (context: TestContext): void => {
   context.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: NOW })
 }
 
-// A request to Slack that records when it went out and answers at once, or after durationMs on the mocked clock.
-const recorder = (durationMs = 0): { readonly sentAt: number[]; readonly request: () => Promise<void> } => {
+// A request to Slack that goes out, records when, and answers at once, or after durationMs on the mocked clock.
+const recorder = (
+  durationMs = 0
+): { readonly sentAt: number[]; readonly request: (sent: () => void) => Promise<void> } => {
   const sentAt: number[] = []
 
   return {
     sentAt,
-    request: () => {
+    request: (sent) => {
       sentAt.push(Date.now())
+      sent()
 
       return durationMs === 0 ? Promise.resolve() : new Promise((resolve) => setTimeout(resolve, durationMs))
     },
@@ -149,6 +152,20 @@ describe('[service-worker] Slack pace - turns', () => {
     assert.deepEqual(sentAt, [NOW, NOW + 5_000])
   })
 
+  it('should leave no gap behind an attempt that sent nothing, such as a page signed in as another account', async (context) => {
+    // Arrange
+    mockClock(context)
+    const pace = new SlackPace(() => GAP_MS)
+    const { sentAt, request } = recorder()
+    await pace.turn('T0EXAMPLE1', wanted(), (send) => send(() => Promise.resolve()))
+
+    // Act
+    await pace.turn('T0EXAMPLE1', wanted(), (send) => send(request))
+
+    // Assert
+    assert.deepEqual(sentAt, [NOW])
+  })
+
   it('should keep the queue going after a request failed', async (context) => {
     // Arrange
     mockClock(context)
@@ -156,7 +173,13 @@ describe('[service-worker] Slack pace - turns', () => {
     const { sentAt, request } = recorder()
 
     // Act
-    const failed = pace.turn('T0EXAMPLE1', wanted(), (send) => send(() => Promise.reject(new Error('Tab 12 closed'))))
+    const failed = pace.turn('T0EXAMPLE1', wanted(), (send) =>
+      send((sent) => {
+        sent()
+
+        return Promise.reject(new Error('Tab 12 closed'))
+      })
+    )
     const next = pace.turn('T0EXAMPLE1', wanted(), (send) => send(request))
     await assert.rejects(failed, { message: 'Tab 12 closed' })
     await tick(context, GAP_MS)
@@ -190,6 +213,29 @@ describe('[service-worker] Slack pace - callers that gave up', () => {
 
     // Assert
     assert.deepEqual(sentAt, [NOW])
+  })
+
+  it('should hand nothing over when the caller cancelled while the turn found its page', async (context) => {
+    // Arrange
+    mockClock(context)
+    const pace = new SlackPace(() => GAP_MS)
+    const { sentAt, request } = recorder()
+    const controller = new AbortController()
+    const pageFound = Promise.withResolvers<undefined>()
+
+    // Act
+    const turn = pace.turn('T0EXAMPLE1', { deadline: LATER, signal: controller.signal }, async (send) => {
+      await pageFound.promise
+      await send(request)
+    })
+    const rejected = assert.rejects(turn, GAVE_UP)
+    await settled()
+    controller.abort()
+    pageFound.resolve(undefined)
+    await rejected
+
+    // Assert
+    assert.deepEqual(sentAt, [])
   })
 
   it('should send nothing of a request cancelled during its gap, and stop waiting at once', async (context) => {

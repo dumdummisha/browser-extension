@@ -31,6 +31,7 @@ import { slackEventOf } from '../service-worker/slack-frame.js'
 import { type PacedSend, paceGapMs, SlackPace } from '../service-worker/slack-pace.js'
 import {
   isAnsweredBySlack,
+  isSentToSlack,
   runSlackPageCommand,
   type SlackPageCommand,
   type SlackPageFailure,
@@ -128,9 +129,9 @@ const PAGE_FAILURE_TEXT: Readonly<Record<SlackPageFailure, string>> = {
   'uncaught': 'The command failed in the page',
 }
 
-// What the command answered, checked. Every error here is worded by the service worker: a failure from its code and
-// status, and an answer that does not read with a fixed message, since zod's would quote the keys the answer holds.
-const pageResultOf = (tabId: number, command: SlackPageCommand, answered: unknown): SlackPageResult => {
+// What the command answered, read, a failure included. Every error here is worded by the service worker: an answer
+// that does not read gets a fixed message, since zod's would quote the keys the answer holds.
+const readPageResult = (tabId: number, answered: unknown): SlackPageResult => {
   if (answered === undefined) {
     throw new Error(`The Slack page in tab ${tabId} answered nothing`)
   }
@@ -140,13 +141,18 @@ const pageResultOf = (tabId: number, command: SlackPageCommand, answered: unknow
     throw new Error(`The Slack page in tab ${tabId} answered what does not read`)
   }
 
-  if (result.data.kind === 'failed') {
-    const { failure, status } = result.data
+  return result.data
+}
+
+// The result, unless it is a failure, which becomes an error worded from its code and status.
+const unlessFailed = (tabId: number, command: SlackPageCommand, result: SlackPageResult): SlackPageResult => {
+  if (result.kind === 'failed') {
+    const { failure, status } = result
     const refusal = status === null ? '' : ` (HTTP ${status})`
     throw new Error(`The Slack page in tab ${tabId} failed ${command.kind}: ${PAGE_FAILURE_TEXT[failure]}${refusal}`)
   }
 
-  return result.data
+  return result
 }
 
 const unexpected = (result: SlackPageResult): Error => new Error(`The Slack page answered ${result.kind}`)
@@ -163,7 +169,7 @@ const identityRead = async (
     return null
   }
 
-  const result = pageResultOf(target.tabId, command, injection.answered)
+  const result = unlessFailed(target.tabId, command, readPageResult(target.tabId, injection.answered))
   if (result.kind !== 'identity') {
     throw unexpected(result)
   }
@@ -237,18 +243,25 @@ interface IPageRequest {
 // Runs the request's command in the page's document and in no other: one the tab has navigated to since fails the
 // injection. While it runs, the observer takes the request it sends as Misha's, never as one of the client's, and checks
 // it once the command settled.
+// The command is handed to the page with nothing asynchronous before it, so the pace's check that its caller still
+// waits comes right before the hand-off (slack-pace.ts). sent: tells the pace the request went out to Slack.
 const requestInPage = async (
   page: ISlackPage,
-  { key, isKeyUnique, command }: IPageRequest
+  { key, isKeyUnique, command }: IPageRequest,
+  sent: () => void
 ): Promise<SlackPageResult> => {
   const release = clientObserver.exclude(page, key, isKeyUnique)
   let isAnswered = false
   try {
     const { answered } = await injected({ tabId: page.tabId, documentIds: [page.documentId] }, command)
-    const result = pageResultOf(page.tabId, command, answered)
+    const result = readPageResult(page.tabId, answered)
+    if (isSentToSlack(result)) {
+      sent()
+    }
+
     isAnswered = isAnsweredBySlack(result)
 
-    return result
+    return unlessFailed(page.tabId, command, result)
   } finally {
     release(isAnswered)
   }
@@ -258,15 +271,16 @@ const requestInPage = async (
 // when there is none. Pages are tried one at a time, so a write goes out at most once: a page whose user changed since
 // its identity was read answers other-account without sending anything, and the next one is tried, while a page that
 // fails during the command fails the call, since the command may have reached Slack. Each request goes out through
-// send, at the pace of its turn, and only while its caller still waits, which the page checks against the deadline once
-// more right before the request leaves. The request is built as it goes, so its id is fresh and its query the latest.
+// send, at the pace of its turn, and is handed to the page only while its caller still waits; the page checks the
+// deadline once more right before its fetch. The request is built as it goes, so its id is fresh and its query the
+// latest.
 const inSlackTab = async (
   account: SlackAccount,
   send: PacedSend,
   requestFor: (page: ISlackPage) => IPageRequest
 ): Promise<{ readonly page: ISlackPage; readonly result: SlackPageResult } | null> => {
   for (const page of await signedInPages(account)) {
-    const result = await send(() => requestInPage(page, requestFor(page)))
+    const result = await send((sent) => requestInPage(page, requestFor(page), sent))
     if (result.kind !== 'other-account') {
       return { page, result }
     }
@@ -396,7 +410,7 @@ const uploadToSlack = (
       isKeyUnique: false,
       command: { kind: 'upload', account, uploadUrl: href, filename, chunks, deadline },
     }
-    const uploaded = await send(() => requestInPage(answered.page, bytesRequest))
+    const uploaded = await send((sent) => requestInPage(answered.page, bytesRequest, sent))
 
     return preparedUploadOf(uploaded, ticket.fileId)
   })

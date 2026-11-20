@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import { describe, it, type TestContext } from 'node:test'
 import {
+  isAnsweredBySlack,
+  isSentToSlack,
   runSlackPageCommand,
   type SlackPageCommand,
   type SlackPageResult,
@@ -200,7 +202,7 @@ describe('[service-worker] Slack page - uploads', () => {
 })
 
 describe('[service-worker] Slack page - deadlines', () => {
-  it("should send nothing once the caller's deadline passed, for a call, a download and an upload's bytes", async (context) => {
+  it("should send nothing of a command handed over in time but run once its deadline passed (a delayed injection), for a call, a download and an upload's bytes", async (context) => {
     // Arrange
     openSlackPage(context, () => savedConfig('https://example.slack.com/'))
     decodeBase64InPage(context)
@@ -305,5 +307,36 @@ describe('[service-worker] Slack page - failures', () => {
       results,
       answers.map(() => false)
     )
+  })
+})
+
+describe('[service-worker] Slack page - what a result shows', () => {
+  it('should tell a request that went out to Slack from one that did not, and one Slack answered', () => {
+    // Arrange
+    const results: SlackPageResult[] = [
+      { kind: 'answer', answer: { ok: false, error: 'ratelimited' } },
+      { kind: 'upload-refused', status: 413 },
+      { kind: 'other-account' },
+      { kind: 'failed', failure: 'no-client-query', status: null },
+      { kind: 'failed', failure: 'deadline-passed', status: null },
+      { kind: 'failed', failure: 'api-unreachable', status: null },
+      { kind: 'failed', failure: 'api-refused', status: 429 },
+      { kind: 'failed', failure: 'uncaught', status: null },
+    ]
+
+    // Act
+    const shown = results.map((result) => [isSentToSlack(result), isAnsweredBySlack(result)])
+
+    // Assert
+    assert.deepEqual(shown, [
+      [true, true],
+      [true, true],
+      [false, false],
+      [false, false],
+      [false, false],
+      [true, false],
+      [true, true],
+      [true, false],
+    ])
   })
 })

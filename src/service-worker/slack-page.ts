@@ -84,10 +84,34 @@ export const SlackPageResultSchema = z.discriminatedUnion('kind', [
 
 export type SlackPageResult = z.infer<typeof SlackPageResultSchema>
 
-// Whether a command's result proves its request reached Slack: Slack answered it, with its answer, a file's bytes or
-// the upload URL's status.
-export const isAnsweredBySlack = ({ kind }: SlackPageResult): boolean =>
+const isSlackAnswer = ({ kind }: SlackPageResult): boolean =>
   kind === 'answer' || kind === 'file' || kind === 'uploaded' || kind === 'upload-refused'
+
+// The failures that come before the command's fetch call, so nothing went out to Slack, and those that come after
+// Slack answered it, with a status or a body that did not read.
+const UNSENT_FAILURES: ReadonlySet<SlackPageFailure> = new Set([
+  'client-state-unreadable',
+  'no-api-session',
+  'no-api-address',
+  'no-client-query',
+  'deadline-passed',
+])
+const ANSWERED_FAILURES: ReadonlySet<SlackPageFailure> = new Set([
+  'api-refused',
+  'api-no-answer',
+  'file-refused',
+  'file-bytes-lost',
+])
+
+// Whether a command's result shows its fetch call was made, so its request may have reached Slack. A failure the page
+// could not name (uncaught) counts as sent.
+export const isSentToSlack = (result: SlackPageResult): boolean =>
+  result.kind === 'failed' ? !UNSENT_FAILURES.has(result.failure) : isSlackAnswer(result)
+
+// Whether a command's result proves Slack answered its request: with its answer, a file's bytes, the upload URL's
+// status, or a status or body that did not read.
+export const isAnsweredBySlack = (result: SlackPageResult): boolean =>
+  result.kind === 'failed' ? ANSWERED_FAILURES.has(result.failure) : isSlackAnswer(result)
 
 // chrome.scripting serializes this function into the page, so it uses nothing from the module's scope. The signed-in
 // account is the workspace the tab shows (/client/<team>) and that workspace's user in the client's saved state. The

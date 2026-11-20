@@ -108,7 +108,8 @@ export class BridgeClient {
   }
 
   // signal, on this and the other Slack methods: aborting it abandons the call, and only that call. It rejects at once,
-  // and the extension sends nothing more of it to Slack; what it already sent stays sent.
+  // and once the cancel reaches the extension, nothing more of the call is handed to a Slack page; what was already
+  // handed over still goes out.
   public async call(
     account: SlackAccount,
     method: SlackMethod,

@@ -18,8 +18,8 @@ export const NATIVE_HOST_NAME = 'misha.browser_bridge'
 const RequestIdSchema = z.number().int()
 
 // method stays a string on the wire, so an extension older than its client can name what it does not know. deadline:
-// when the client stops waiting for the reply, in milliseconds since the epoch on this Mac's clock; the extension sends
-// nothing of a request to Slack once it has passed.
+// when the client stops waiting for the reply, in milliseconds since the epoch on this Mac's clock; once it has passed,
+// the extension hands nothing of the request to a Slack page, and the page fetches nothing.
 const RequestSchema = z.strictObject({
   type: z.literal('request'),
   id: RequestIdSchema,
@@ -28,7 +28,8 @@ const RequestSchema = z.strictObject({
   deadline: z.number().int().positive(),
 })
 // A request whose caller gave up before its deadline: from a client, which abandoned it, and from the relay, for each
-// request of a client whose connection closed. The extension then sends nothing more of it to Slack.
+// request of a client whose connection closed. The extension then hands nothing more of it to a Slack page; a command
+// already handed to the page still goes out, as a fetch already started would.
 const CancelSchema = z.strictObject({ type: z.literal('cancel'), id: RequestIdSchema })
 const ReplyResultSchema = z.strictObject({ type: z.literal('reply'), id: RequestIdSchema, result: z.unknown() })
 const ReplyErrorSchema = z.strictObject({ type: z.literal('reply'), id: RequestIdSchema, error: z.string() })

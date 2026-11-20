@@ -42,6 +42,9 @@ export interface ISentRequest {
 // request that carried its key in that page has ended.
 interface IExclusion extends ISlackPage {
   readonly key: string
+  // Whether only Misha's request can carry the key: a Web API call's fresh request id, unlike a file's address, which
+  // the client may fetch too.
+  readonly isKeyUnique: boolean
   // Requests that carried the key, counted as they start: a second one makes the command's request ambiguous for good.
   starts: number
   // The shape of the request that carried the key, once its headers were sent.
@@ -92,11 +95,12 @@ export class SlackClientObserver {
   ) {}
 
   // Takes the requests carrying key in page as Misha's until the returned function runs, which the command that sends
-  // them calls once it settled, with whether its result proves its request reached Slack.
-  public exclude(page: ISlackPage, key: string): (isAnswered: boolean) => void {
+  // them calls once it settled, with whether its result proves Slack answered its request.
+  public exclude(page: ISlackPage, key: string, isKeyUnique: boolean): (isAnswered: boolean) => void {
     const exclusion: IExclusion = {
       ...page,
       key,
+      isKeyUnique,
       starts: 0,
       shape: null,
       inFlight: 0,
@@ -208,10 +212,11 @@ export class SlackClientObserver {
     this.settleIfDone(exclusion)
   }
 
-  // Once the command settled and its requests ended, its request's shape is Misha's only when the command reached Slack
-  // and exactly one request carried its key.
-  private settleIfDone({ isReleased, inFlight, isAnswered, starts, shape }: IExclusion): void {
-    if (!isReleased || inFlight > 0 || !isAnswered || starts !== 1 || shape === null) {
+  // Once the command settled and its requests ended, its request's shape is Misha's only when exactly one request
+  // carried its key, and either only Misha's request can carry it, so the shape counts whatever Slack answered (a call
+  // CORS refused or answered 429 included), or Slack answered the command.
+  private settleIfDone({ isReleased, inFlight, isKeyUnique, isAnswered, starts, shape }: IExclusion): void {
+    if (!isReleased || inFlight > 0 || !(isKeyUnique || isAnswered) || starts !== 1 || shape === null) {
       return
     }
 

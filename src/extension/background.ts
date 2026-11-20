@@ -229,14 +229,19 @@ const signedInPages = async (account: SlackAccount): Promise<ISlackPage[]> => {
 // A command for a page, and what its request is known by while it runs (slack-request-shape.ts requestKeyOf).
 interface IPageRequest {
   readonly key: string
+  // Whether only this request can carry the key: a Web API call's fresh request id, not a file's address.
+  readonly isKeyUnique: boolean
   readonly command: SlackPageCommand
 }
 
 // Runs the request's command in the page's document and in no other: one the tab has navigated to since fails the
 // injection. While it runs, the observer takes the request it sends as Misha's, never as one of the client's, and checks
 // it once the command settled.
-const requestInPage = async (page: ISlackPage, { key, command }: IPageRequest): Promise<SlackPageResult> => {
-  const release = clientObserver.exclude(page, key)
+const requestInPage = async (
+  page: ISlackPage,
+  { key, isKeyUnique, command }: IPageRequest
+): Promise<SlackPageResult> => {
+  const release = clientObserver.exclude(page, key, isKeyUnique)
   let isAnswered = false
   try {
     const { answered } = await injected({ tabId: page.tabId, documentIds: [page.documentId] }, command)
@@ -287,7 +292,7 @@ const callRequest =
       ])
     )
 
-    return { key: requestId, command: { kind: 'call', account, method, params, queries, deadline } }
+    return { key: requestId, isKeyUnique: true, command: { kind: 'call', account, method, params, queries, deadline } }
   }
 
 const answerOf = (result: SlackPageResult): SlackAnswer => {
@@ -388,6 +393,7 @@ const uploadToSlack = (
     const { filename } = params
     const bytesRequest: IPageRequest = {
       key: href,
+      isKeyUnique: false,
       command: { kind: 'upload', account, uploadUrl: href, filename, chunks, deadline },
     }
     const uploaded = await send(() => requestInPage(answered.page, bytesRequest))
@@ -406,6 +412,7 @@ const slackHandlers: Handlers = {
     const answered = await pace.turn(account.teamId, abandonment, (send) =>
       inSlackTab(account, send, () => ({
         key: new URL(url).href,
+        isKeyUnique: false,
         command: { kind: 'download', account, url, deadline: abandonment.deadline },
       }))
     )

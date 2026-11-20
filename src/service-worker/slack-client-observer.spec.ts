@@ -101,7 +101,8 @@ const sent = (observer: SlackClientObserver, request: IStartedRequest, headers =
 
 // A command of Misha's in a page: its request carries key, and the command settles once it was sent.
 const mishaSent = (observer: SlackClientObserver, request: IStartedRequest, key: string, isAnswered = true): void => {
-  const release = observer.exclude({ tabId: request.tabId, documentId: request.documentId ?? '' }, key)
+  const isKeyUnique = !key.startsWith('https://')
+  const release = observer.exclude({ tabId: request.tabId, documentId: request.documentId ?? '' }, key, isKeyUnique)
   sent(observer, request)
   release(isAnswered)
 }
@@ -161,7 +162,7 @@ describe('[service-worker] Slack client observer - borrowed query', () => {
   it("should lend nothing from a request carrying a running command's key in its page, but lend it in another page", () => {
     // Arrange
     const { observer } = observe()
-    observer.exclude(PAGE, '0f1e2d3c-1794900000.100')
+    observer.exclude(PAGE, '0f1e2d3c-1794900000.100', true)
 
     // Act
     observer.requestStarted(started(CLIENT_COUNTS, { requestId: 'request-1' }))
@@ -174,7 +175,7 @@ describe('[service-worker] Slack client observer - borrowed query', () => {
   it("should take a request as the client's again once the command released its key", () => {
     // Arrange
     const { observer } = observe()
-    const release = observer.exclude(PAGE, '0f1e2d3c-1794900000.100')
+    const release = observer.exclude(PAGE, '0f1e2d3c-1794900000.100', true)
 
     // Act
     release(false)
@@ -232,7 +233,7 @@ describe('[service-worker] Slack client observer - transport check', () => {
     sent(observer, clientPost('client-1'))
 
     // Act
-    const release = observer.exclude(PAGE, MISHA_ID)
+    const release = observer.exclude(PAGE, MISHA_ID, true)
     sent(observer, mishaPost('misha-1'), mishaHeaders)
     release(true)
 
@@ -258,7 +259,7 @@ describe('[service-worker] Slack client observer - transport check', () => {
     })
 
     // Act
-    const release = observer.exclude(PAGE, MISHA_ID)
+    const release = observer.exclude(PAGE, MISHA_ID, true)
     sent(observer, misha, mishaHeaders)
     release(true)
 
@@ -349,7 +350,7 @@ describe('[service-worker] Slack client observer - transport check', () => {
     // Arrange
     const { observer } = observe()
     sent(observer, clientPost('client-1'))
-    const release = observer.exclude(PAGE, MISHA_ID)
+    const release = observer.exclude(PAGE, MISHA_ID, true)
     observer.requestStarted(mishaPost('misha-1'))
 
     // Act
@@ -361,19 +362,35 @@ describe('[service-worker] Slack client observer - transport check', () => {
     assert.deepEqual([beforeHeaders, observer.parity()], [[], [{ operation: 'chat.postMessage', state: 'matches' }]])
   })
 
-  it('should take nothing from a command whose request ended before its headers, or that did not reach Slack', () => {
+  it('should take nothing from a request that ended before its headers, or a download Slack did not answer', () => {
     // Arrange
     const { observer } = observe()
-    const failed = observer.exclude(PAGE, MISHA_ID)
+    const failed = observer.exclude(PAGE, MISHA_ID, true)
     observer.requestStarted(mishaPost('misha-1'))
     observer.requestEnded('misha-1')
     failed(true)
 
     // Act
-    mishaSent(observer, mishaPost('misha-2'), MISHA_ID, false)
+    mishaSent(observer, fileGet('misha-2'), FILE_URL, false)
 
     // Assert
     assert.deepEqual(observer.parity(), [])
+  })
+
+  it('should check a Web API call that sent its headers whatever Slack answered, a refusal or no answer included', () => {
+    // Arrange
+    const { observer } = observe()
+    mishaSent(observer, mishaPost('misha-1'), MISHA_ID, false)
+    const unanswered = observer.parity()
+
+    // Act
+    sent(observer, clientPost('client-1'))
+
+    // Assert
+    assert.deepEqual(
+      [unanswered, observer.parity()],
+      [[{ operation: 'chat.postMessage', state: 'unchecked' }], [{ operation: 'chat.postMessage', state: 'matches' }]]
+    )
   })
 })
 
@@ -381,7 +398,7 @@ describe('[service-worker] Slack client observer - same-address collisions', () 
   it("should take no shape and no reference when the client fetched the file first while Misha's download ran", () => {
     // Arrange
     const { observer } = observe()
-    const release = observer.exclude(PAGE, FILE_URL)
+    const release = observer.exclude(PAGE, FILE_URL, false)
 
     // Act
     sent(observer, fileGet('client-1'))
@@ -397,7 +414,7 @@ describe('[service-worker] Slack client observer - same-address collisions', () 
   it("should take no shape when only the client fetched the file while Misha's download did not reach Slack", () => {
     // Arrange
     const { observer } = observe()
-    const release = observer.exclude(PAGE, FILE_URL)
+    const release = observer.exclude(PAGE, FILE_URL, false)
 
     // Act
     sent(observer, fileGet('client-1'))
@@ -436,7 +453,7 @@ describe('[service-worker] Slack client observer - requests that send no headers
     it(`should take no shape and no reference when two requests carried the key and one sent no headers, ${order}`, () => {
       // Arrange
       const { observer } = observe()
-      const release = observer.exclude(PAGE, FILE_URL)
+      const release = observer.exclude(PAGE, FILE_URL, false)
       observer.requestStarted(fileGet(first))
       observer.requestStarted(fileGet(second))
 

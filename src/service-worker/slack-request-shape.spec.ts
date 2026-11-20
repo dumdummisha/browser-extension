@@ -3,11 +3,11 @@ import { describe, it } from 'node:test'
 import {
   borrowedQueryOf,
   borrowedQueryString,
-  differencesOf,
   freshRequestId,
   headerFieldsOf,
   type IRequestShape,
   operationOf,
+  parityOf,
   requestKeyOf,
   startedShapeOf,
 } from './slack-request-shape.js'
@@ -291,10 +291,14 @@ describe('[service-worker] Slack request shape - differences', () => {
     ])
 
     // Act
-    const differences = differencesOf(client, misha)
+    const parity = parityOf(client, misha)
 
     // Assert
-    assert.deepEqual(differences, [{ part: 'header', name: 'user-agent', kind: 'value' }])
+    assert.deepEqual(parity, {
+      operation: 'download',
+      state: 'differs',
+      differences: [{ part: 'header', name: 'user-agent', kind: 'value' }],
+    })
   })
 })
 

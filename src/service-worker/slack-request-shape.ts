@@ -1,4 +1,9 @@
-import { type ParityDifference, type SlackOperation, SlackOperationSchema } from '../protocol/slack.js'
+import {
+  type OperationParity,
+  type ParityDifference,
+  type SlackOperation,
+  SlackOperationSchema,
+} from '../protocol/slack.js'
 import { VALUE_SHAPES } from './request-redaction.js'
 
 // What the service worker reads from a request a Slack page sends, as Chrome's webRequest reports it: a safe
@@ -294,16 +299,23 @@ const fieldDifferences = (part: ParityDifference['part'], client: Fields, misha:
 
 const isReadBody = (body: IStartedShape['body']): body is Fields => body !== null && body !== UNREADABLE_BODY
 
-// How a request of Misha's differs from the client's request for the same operation, by name only. A value that is
-// not of its form (null) differs from one that is.
-export const differencesOf = (client: IRequestShape, misha: IRequestShape): ParityDifference[] => [
-  ...(client.method === misha.method ? [] : [METHOD_DIFFERENCE]),
-  ...fieldDifferences('header', client.headers, misha.headers),
-  ...(client.query === null || misha.query === null ? [] : fieldDifferences('query', client.query, misha.query)),
-  ...(isReadBody(client.body) && isReadBody(misha.body) ? fieldDifferences('body', client.body, misha.body) : []),
-]
+// How a request of Misha's compares with the client's request for the same operation, by name only: differs, with
+// each difference, or else matches when the check could read every part it compares in both requests, and unchecked
+// when it could not (a body Chrome handed over as raw bytes). A value that is not of its form (null) differs from one
+// that is.
+export const parityOf = (client: IRequestShape, misha: IRequestShape): OperationParity => {
+  const { operation } = misha
+  const differences = [
+    ...(client.method === misha.method ? [] : [METHOD_DIFFERENCE]),
+    ...fieldDifferences('header', client.headers, misha.headers),
+    ...(client.query === null || misha.query === null ? [] : fieldDifferences('query', client.query, misha.query)),
+    ...(isReadBody(client.body) && isReadBody(misha.body) ? fieldDifferences('body', client.body, misha.body) : []),
+  ]
+  if (differences.length > 0) {
+    return { operation, state: 'differs', differences }
+  }
 
-// Whether the check could read every part it compares in both requests; a body Chrome handed over as raw bytes it
-// could not.
-export const isFullyRead = (client: IRequestShape, misha: IRequestShape): boolean =>
-  client.body !== UNREADABLE_BODY && misha.body !== UNREADABLE_BODY
+  const isFullyRead = client.body !== UNREADABLE_BODY && misha.body !== UNREADABLE_BODY
+
+  return { operation, state: isFullyRead ? 'matches' : 'unchecked' }
+}

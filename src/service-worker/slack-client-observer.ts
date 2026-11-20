@@ -2,13 +2,12 @@ import type { OperationParity, SlackOperation } from '../protocol/slack.js'
 import {
   type BorrowedQuery,
   borrowedQueryOf,
-  differencesOf,
   headerFieldsOf,
-  isFullyRead,
   type IRequestBody,
   type IRequestHeader,
   type IRequestShape,
   type IStartedShape,
+  parityOf,
   requestKeyOf,
   startedShapeOf,
 } from './slack-request-shape.js'
@@ -250,14 +249,7 @@ export class SlackClientObserver {
   }
 
   private check(client: IRequestShape, misha: IRequestShape): void {
-    const { operation } = misha
-    const differences = differencesOf(client, misha)
-    if (differences.length > 0) {
-      this.results.set(operation, { operation, state: 'differs', differences })
-    } else {
-      this.results.set(operation, { operation, state: isFullyRead(client, misha) ? 'matches' : 'unchecked' })
-    }
-
+    this.results.set(misha.operation, parityOf(client, misha))
     this.onChange()
   }
 }

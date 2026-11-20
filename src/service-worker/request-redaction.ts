@@ -185,7 +185,7 @@ const isCredentialName = (name: string): boolean => {
   return CREDENTIAL_NAME_PARTS.some((part) => normalized.includes(part))
 }
 
-const isSecretShaped = (text: string): boolean => VALUE_SHAPES.some((pattern) => pattern.test(text))
+export const isSecretShaped = (text: string): boolean => VALUE_SHAPES.some((pattern) => pattern.test(text))
 
 // Decodes without throwing: bytes that are not valid UTF-8 become replacement characters.
 const percentDecoded = (segment: string): string =>

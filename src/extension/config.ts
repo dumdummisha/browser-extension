@@ -6,6 +6,10 @@ export const RECONNECT_PERIOD_MINUTES = 0.5
 export const SLACK_ORIGIN = 'https://app.slack.com'
 export const SLACK_TAB_URL = `${SLACK_ORIGIN}/*`
 
+// The requests the Slack transport observes Slack's client send: Web API calls on the workspaces' hosts, private files
+// and upload URLs on files.slack.com.
+export const SLACK_REQUEST_URLS = ['https://*.slack.com/*']
+
 // Slack's real-time socket (wss-primary.slack.com, opened by the page's own scripts on the main thread).
 export const SLACK_SOCKET_HOSTNAME = /^wss-[a-z]+\.slack\.com$/u
 

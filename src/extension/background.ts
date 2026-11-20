@@ -23,6 +23,7 @@ import { Forwarder } from '../service-worker/forwarder.js'
 import { captureHealthOf, ObservedMessageSchema } from '../service-worker/observed-message.js'
 import { openPendingQueue, PendingQueueWriter } from '../service-worker/pending-queue-writer.js'
 import { attachRelay, type IRelayScripting, probeRelay, RelayProbeSchema } from '../service-worker/relay-attachment.js'
+import { type ISlackPage, SlackClientObserver } from '../service-worker/slack-client-observer.js'
 import { slackEventOf } from '../service-worker/slack-frame.js'
 import {
   runSlackPageCommand,
@@ -31,6 +32,7 @@ import {
   type SlackPageResult,
   SlackPageResultSchema,
 } from '../service-worker/slack-page.js'
+import { borrowedQueryString, freshRequestId } from '../service-worker/slack-request-shape.js'
 import {
   CAPTURE_QUERY,
   RECONNECT_ALARM,
@@ -38,6 +40,7 @@ import {
   RELAY_RUNNING_KEY,
   RELAY_SCRIPT,
   SLACK_ORIGIN,
+  SLACK_REQUEST_URLS,
   SLACK_TAB_URL,
 } from './config.js'
 import { startTabTracking, TAB_HANDLERS } from './tab-commands.js'
@@ -78,19 +81,30 @@ const post = (frame: ExtensionFrame): void => {
 const downloads = new Map<string, Uint8Array>()
 const uploads = new Map<string, Map<number, string>>()
 
+// What Slack's client sends from its own pages, beside the requests the transport sends there.
+const clientObserver = new SlackClientObserver(SLACK_ORIGIN)
+const SLACK_REQUESTS: chrome.webRequest.RequestFilter = { urls: SLACK_REQUEST_URLS, types: ['xmlhttprequest'] }
+
 const slackTabs = async (): Promise<IdentifiedTab[]> =>
   (await chrome.tabs.query({ url: SLACK_TAB_URL })).filter((tab): tab is IdentifiedTab => tab.id !== undefined)
 
-// What the command answered in the target's page, unchecked; undefined when it answered nothing.
-const injected = async (target: chrome.scripting.InjectionTarget, command: SlackPageCommand): Promise<unknown> => {
+// What the command answered in the target's page, unchecked (undefined when it answered nothing), and the document it
+// ran in.
+const injected = async (
+  target: chrome.scripting.InjectionTarget,
+  command: SlackPageCommand
+): Promise<{ readonly documentId: string; readonly answered: unknown }> => {
   const [injection] = await chrome.scripting.executeScript({
     target,
     world: 'MAIN',
     func: runSlackPageCommand,
     args: [command],
   })
+  if (injection === undefined) {
+    throw new Error(`The Slack page in tab ${target.tabId} ran nothing`)
+  }
 
-  return injection?.result
+  return { documentId: injection.documentId, answered: injection.result }
 }
 
 // What each failure code of a Slack page says (slack-page.ts SLACK_PAGE_FAILURES). Worded here, so no error quotes the
@@ -99,7 +113,8 @@ const PAGE_FAILURE_TEXT: Readonly<Record<SlackPageFailure, string>> = {
   'client-state-unreadable': "Slack's saved client state does not read",
   'no-api-session': "Slack's client keeps no API session for the workspace",
   'no-api-address': "Slack's client keeps no Slack API address for the workspace",
-  'no-client-query': "The tab lists no Web API call of Slack's client to copy; reload the Slack tab",
+  'no-client-query':
+    "The extension has seen no Web API call of Slack's own client in this page since it started; use Slack in the tab, or reload it",
   'api-unreachable': "Slack's Web API could not be reached",
   'api-refused': "Slack's Web API refused the call",
   'api-no-answer': "Slack's Web API answered no JSON object with a boolean ok",
@@ -131,28 +146,40 @@ const pageResultOf = (tabId: number, command: SlackPageCommand, answered: unknow
   return result.data
 }
 
-const runInPage = async (tabId: number, command: SlackPageCommand): Promise<SlackPageResult> =>
-  pageResultOf(tabId, command, await injected({ tabId }, command))
+// Runs the command in the page's document and in no other: one the tab has navigated to since fails the injection.
+const runInPage = async (page: ISlackPage, command: SlackPageCommand): Promise<SlackPageResult> => {
+  const { answered } = await injected({ tabId: page.tabId, documentIds: [page.documentId] }, command)
+
+  return pageResultOf(page.tabId, command, answered)
+}
 
 const unexpected = (result: SlackPageResult): Error => new Error(`The Slack page answered ${result.kind}`)
 
-// Who the target's page is signed in as, from Slack's client state: only the ids and the workspace's name leave the
-// page. A page the extension cannot script (discarded, still loading, an error page, a document that is gone) shows no
-// account; an answer that does not read is an error.
-const identityOf = async (target: chrome.scripting.InjectionTarget): Promise<SlackIdentity | null> => {
+// Who the target's page is signed in as, from Slack's client state, and the document that was read in: only the ids
+// and the workspace's name leave the page. A page the extension cannot script (discarded, still loading, an error page,
+// a document that is gone) shows no account; an answer that does not read is an error.
+const identityRead = async (
+  target: chrome.scripting.InjectionTarget
+): Promise<{ readonly page: ISlackPage; readonly identity: SlackIdentity | null } | null> => {
   const command: SlackPageCommand = { kind: 'identity' }
-  const answered = await injected(target, command).catch(() => null)
-  if (answered === null) {
+  const injection = await injected(target, command).catch(() => null)
+  if (injection === null) {
     return null
   }
 
-  const result = pageResultOf(target.tabId, command, answered)
+  const result = pageResultOf(target.tabId, command, injection.answered)
   if (result.kind !== 'identity') {
     throw unexpected(result)
   }
 
-  return result.identity === null ? null : SlackIdentitySchema.parse({ ...result.identity, tabId: target.tabId })
+  const identity =
+    result.identity === null ? null : SlackIdentitySchema.parse({ ...result.identity, tabId: target.tabId })
+
+  return { page: { tabId: target.tabId, documentId: injection.documentId }, identity }
 }
+
+const identityOf = async (target: chrome.scripting.InjectionTarget): Promise<SlackIdentity | null> =>
+  (await identityRead(target))?.identity ?? null
 
 // A tab with no relay to answer is detached: one whose page loaded before the extension did, or one this worker has not
 // given a new relay yet since the extension reloaded (attachRelays).
@@ -194,28 +221,61 @@ const attachRelays = async (): Promise<void> => {
   await Promise.all(tabs.map(({ id }) => attachRelay(relayScripting, id, SLACK_ORIGIN)))
 }
 
-// Runs a command in a tab signed in as the account and in no other, and answers the tab with what it answered; null
-// when there is none. Tabs are tried one at a time, so a write goes out at most once: a tab whose user changed since
-// its identity was read answers other-account without sending anything, and the next one is tried, while a tab that
+// The pages signed in as the account, each in the document its identity was read in.
+const signedInPages = async (account: SlackAccount): Promise<ISlackPage[]> => {
+  const reads = await Promise.all((await slackTabs()).map(({ id }) => identityRead({ tabId: id })))
+
+  return reads.flatMap((read) =>
+    read?.identity?.teamId === account.teamId && read.identity.userId === account.userId ? [read.page] : []
+  )
+}
+
+// A command for a page, and what its request is known by while it runs (slack-request-shape.ts requestKeyOf).
+interface IPageRequest {
+  readonly key: string
+  readonly command: SlackPageCommand
+}
+
+// Runs the request's command in the page. While it runs, the observer takes the request it sends as Misha's, never as
+// one of the client's.
+const requestInPage = async (page: ISlackPage, { key, command }: IPageRequest): Promise<SlackPageResult> => {
+  const release = clientObserver.exclude(page, key)
+  try {
+    return await runInPage(page, command)
+  } finally {
+    release()
+  }
+}
+
+// Runs a request in a page signed in as the account and in no other, and answers the page with what it answered; null
+// when there is none. Pages are tried one at a time, so a write goes out at most once: a page whose user changed since
+// its identity was read answers other-account without sending anything, and the next one is tried, while a page that
 // fails during the command fails the call, since the command may have reached Slack.
 const inSlackTab = async (
   account: SlackAccount,
-  command: SlackPageCommand
-): Promise<{ readonly tabId: number; readonly result: SlackPageResult } | null> => {
-  const tabs = await slackTabs()
-  const identities = await Promise.all(tabs.map(({ id }) => identityOf({ tabId: id })))
-  const signedIn = tabs.filter(
-    (_tab, index) => identities[index]?.teamId === account.teamId && identities[index].userId === account.userId
-  )
-  for (const tab of signedIn) {
-    const result = await runInPage(tab.id, command)
+  requestFor: (page: ISlackPage) => IPageRequest
+): Promise<{ readonly page: ISlackPage; readonly result: SlackPageResult } | null> => {
+  for (const page of await signedInPages(account)) {
+    const result = await requestInPage(page, requestFor(page))
     if (result.kind !== 'other-account') {
-      return { tabId: tab.id, result }
+      return { page, result }
     }
   }
 
   return null
 }
+
+// A Web API call in a page: a fresh request id, and for each workspace API the query its client lent the transport.
+const callRequest =
+  (account: SlackAccount, method: string, params: Readonly<Record<string, string>>) =>
+  (page: ISlackPage): IPageRequest => {
+    const requestId = freshRequestId()
+    const queries = new Map(
+      [...clientObserver.clientQueries(page)].map(([origin, query]) => [origin, borrowedQueryString(query, requestId)])
+    )
+
+    return { key: requestId, command: { kind: 'call', account, method, params, queries: Object.fromEntries(queries) } }
+  }
 
 const answerOf = (result: SlackPageResult): SlackAnswer => {
   if (result.kind !== 'answer') {
@@ -230,7 +290,7 @@ const callSlack = async (
   method: string,
   params: Readonly<Record<string, string>>
 ): Promise<SlackAnswer> => {
-  const answered = await inSlackTab(account, { kind: 'call', account, method, params })
+  const answered = await inSlackTab(account, callRequest(account, method, params))
 
   return answered === null ? { ok: false, error: NO_SLACK_TAB_ERROR } : answerOf(answered.result)
 }
@@ -258,17 +318,18 @@ const uploadParts = (chunks: ReadonlyMap<number, string> | undefined, byteLength
 // The upload URL and the file's id files.getUploadURLExternal answered, or the error it refused the upload with.
 const uploadTicketOf = (
   answer: SlackAnswer
-): { readonly uploadUrl: string; readonly fileId: string } | { readonly error: string } => {
+): { readonly uploadUrl: URL; readonly fileId: string } | { readonly error: string } => {
   if (!answer.ok && typeof answer.error === 'string') {
     return { error: answer.error }
   }
 
   const { upload_url: uploadUrl, file_id: fileId } = answer
-  if (!answer.ok || typeof uploadUrl !== 'string' || typeof fileId !== 'string') {
+  const parsed = typeof uploadUrl === 'string' ? URL.parse(uploadUrl) : null
+  if (!answer.ok || parsed === null || typeof fileId !== 'string') {
     throw new Error('files.getUploadURLExternal answered neither an upload URL with a file id nor an error')
   }
 
-  return { uploadUrl, fileId }
+  return { uploadUrl: parsed, fileId }
 }
 
 const preparedUploadOf = (uploaded: SlackPageResult, fileId: string): PreparedUpload => {
@@ -295,7 +356,10 @@ const slackHandlers: Handlers = {
   },
   slackDownload: async (raw) => {
     const { account, url } = SLACK_BRIDGE_METHODS.slackDownload.params.parse(raw)
-    const answered = await inSlackTab(account, { kind: 'download', account, url })
+    const answered = await inSlackTab(account, () => ({
+      key: new URL(url).href,
+      command: { kind: 'download', account, url },
+    }))
     if (answered === null) {
       throw new Error(`${NO_SLACK_TAB_ERROR}: no open Slack tab is signed in as ${slackAccountId(account)}`)
     }
@@ -344,7 +408,7 @@ const slackHandlers: Handlers = {
     }
 
     const params = { filename, length: String(byteLength) }
-    const answered = await inSlackTab(account, { kind: 'call', account, method: 'files.getUploadURLExternal', params })
+    const answered = await inSlackTab(account, callRequest(account, 'files.getUploadURLExternal', params))
     if (answered === null) {
       return { ok: false, error: NO_SLACK_TAB_ERROR }
     }
@@ -354,11 +418,14 @@ const slackHandlers: Handlers = {
       return { ok: false, error: ticket.error }
     }
 
-    // The bytes go from the tab that took the ticket; a tab that changed users since sends nothing.
-    const { uploadUrl, fileId } = ticket
-    const uploaded = await runInPage(answered.tabId, { kind: 'upload', account, uploadUrl, filename, chunks: parts })
+    // The bytes go from the page that took the ticket; a page whose user changed since sends nothing.
+    const { href } = ticket.uploadUrl
+    const uploaded = await requestInPage(answered.page, {
+      key: href,
+      command: { kind: 'upload', account, uploadUrl: href, filename, chunks: parts },
+    })
 
-    return preparedUploadOf(uploaded, fileId)
+    return preparedUploadOf(uploaded, ticket.fileId)
   },
   slackUploadFinish: (raw) => {
     const { account, fileId, title, channel, threadTs, initialComment } =
@@ -508,7 +575,12 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
   return true
 })
 
-chrome.tabs.onRemoved.addListener(() => {
+// The listener registers when the service worker starts, as Chrome needs it to wake the worker.
+chrome.webRequest.onBeforeRequest.addListener((details) => {
+  clientObserver.requestStarted(details)
+}, SLACK_REQUESTS)
+chrome.tabs.onRemoved.addListener((tabId) => {
+  clientObserver.forget(tabId)
   void pushStatus()
 })
 chrome.tabs.onUpdated.addListener((_tabId, change, tab) => {

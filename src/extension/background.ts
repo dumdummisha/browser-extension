@@ -149,13 +149,6 @@ const pageResultOf = (tabId: number, command: SlackPageCommand, answered: unknow
   return result.data
 }
 
-// Runs the command in the page's document and in no other: one the tab has navigated to since fails the injection.
-const runInPage = async (page: ISlackPage, command: SlackPageCommand): Promise<SlackPageResult> => {
-  const { answered } = await injected({ tabId: page.tabId, documentIds: [page.documentId] }, command)
-
-  return pageResultOf(page.tabId, command, answered)
-}
-
 const unexpected = (result: SlackPageResult): Error => new Error(`The Slack page answered ${result.kind}`)
 
 // Who the target's page is signed in as, from Slack's client state, and the document that was read in: only the ids
@@ -239,13 +232,15 @@ interface IPageRequest {
   readonly command: SlackPageCommand
 }
 
-// Runs the request's command in the page. While it runs, the observer takes the request it sends as Misha's, never as
-// one of the client's, and checks it once the command settled.
+// Runs the request's command in the page's document and in no other: one the tab has navigated to since fails the
+// injection. While it runs, the observer takes the request it sends as Misha's, never as one of the client's, and checks
+// it once the command settled.
 const requestInPage = async (page: ISlackPage, { key, command }: IPageRequest): Promise<SlackPageResult> => {
   const release = clientObserver.exclude(page, key)
   let isAnswered = false
   try {
-    const result = await runInPage(page, command)
+    const { answered } = await injected({ tabId: page.tabId, documentIds: [page.documentId] }, command)
+    const result = pageResultOf(page.tabId, command, answered)
     isAnswered = isAnsweredBySlack(result)
 
     return result
@@ -285,14 +280,14 @@ const callRequest =
   ) =>
   (page: ISlackPage): IPageRequest => {
     const requestId = freshRequestId()
-    const queries = new Map(
-      [...clientObserver.clientQueries(page)].map(([origin, query]) => [origin, borrowedQueryString(query, requestId)])
+    const queries = Object.fromEntries(
+      [...clientObserver.clientQueries(page)].map(([origin, query]): [string, string] => [
+        origin,
+        borrowedQueryString(query, requestId),
+      ])
     )
 
-    return {
-      key: requestId,
-      command: { kind: 'call', account, method, params, queries: Object.fromEntries(queries), deadline },
-    }
+    return { key: requestId, command: { kind: 'call', account, method, params, queries, deadline } }
   }
 
 const answerOf = (result: SlackPageResult): SlackAnswer => {

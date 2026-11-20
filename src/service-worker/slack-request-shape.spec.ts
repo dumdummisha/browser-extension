@@ -297,3 +297,56 @@ describe('[service-worker] Slack request shape - differences', () => {
     assert.deepEqual(differences, [{ part: 'header', name: 'user-agent', kind: 'value' }])
   })
 })
+
+describe('[service-worker] Slack request shape - secret shapes', () => {
+  const TOKEN = 'xoxc-0000-made-up-token'
+  const AWS_KEY = 'AKIAABCDEFGHIJKLMNOP'
+  const SECRETS = ['xoxc-0000', 'AKIAABCD', 'akiaabcd']
+
+  it('should keep no name holding a secret: glued to a prefix, or in another letter case', () => {
+    // Arrange
+    const url = new URL(`https://example.slack.com/api/chat.postMessage?_x_id=0f1e2d3c-1794900000.100&_x_${TOKEN}=1`)
+    const body = { formData: { [`_x_${TOKEN}`]: ['1'], _x_mode: ['online'] } }
+    const headers = [
+      { name: AWS_KEY, value: '1' },
+      { name: AWS_KEY.toLowerCase(), value: '1' },
+      { name: `x-${TOKEN}`, value: '1' },
+      { name: 'Accept', value: '*/*' },
+    ]
+
+    // Act
+    const shape = startedShapeOf('POST', url, body)
+    const fields = headerFieldsOf(headers)
+
+    // Assert
+    assert.ok(shape !== null && shape.query !== null && shape.body !== null)
+    const kept = JSON.stringify([[...shape.query], [...shape.body], [...fields]])
+    assert.deepEqual(
+      [[...shape.query], [...shape.body], [...fields]],
+      [[], [['_x_mode', 'online']], [['accept', '*/*']]]
+    )
+    assert.ok(SECRETS.every((secret) => !kept.includes(secret)))
+  })
+
+  it('should keep no value holding a secret, the content type included', () => {
+    // Arrange
+    const headers = [
+      { name: 'Content-Type', value: `application/${TOKEN}` },
+      { name: 'User-Agent', value: `Example/1.0_${TOKEN}` },
+      { name: 'Accept-Language', value: `en_${AWS_KEY}` },
+    ]
+
+    // Act
+    const fields = headerFieldsOf(headers)
+
+    // Assert
+    assert.deepEqual(
+      [...fields],
+      [
+        ['content-type', null],
+        ['user-agent', null],
+        ['accept-language', null],
+      ]
+    )
+  })
+})

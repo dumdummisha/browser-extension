@@ -303,6 +303,36 @@ describe('[service-worker] Slack client observer - transport check', () => {
     assert.ok(!JSON.stringify(parity).includes(secretName))
   })
 
+  it('should emit no name holding a secret glued to a prefix or in another letter case, nor such a value', () => {
+    // Arrange
+    const { observer } = observe()
+    const glued = `_x_${TOKEN}`
+    const awsKey = 'AKIAABCDEFGHIJKLMNOP'
+    const client = clientPost('client-1', {
+      url: `${clientPost('').url}&${glued}=1`,
+      requestBody: { formData: { [glued]: ['1'], _x_mode: ['online'], _x_sonic: ['true'], _x_app_name: ['client'] } },
+    })
+    sent(observer, client, [
+      ...HEADERS.filter(({ name }) => name !== 'Content-Type'),
+      { name: 'Content-Type', value: `application/${TOKEN}` },
+      { name: awsKey.toLowerCase(), value: '1' },
+    ])
+
+    // Act
+    mishaSent(observer, mishaPost('misha-1'), MISHA_ID)
+
+    // Assert
+    const status = JSON.stringify(observer.parity())
+    assert.ok([TOKEN, 'akiaabcd', 'AKIAABCD'].every((secret) => !status.includes(secret)))
+    assert.deepEqual(observer.parity(), [
+      {
+        operation: 'chat.postMessage',
+        state: 'differs',
+        differences: [{ part: 'header', name: 'content-type', kind: 'value' }],
+      },
+    ])
+  })
+
   it("should never take Misha's request as the client's reference, in its page, while its command runs", () => {
     // Arrange
     const { observer } = observe()

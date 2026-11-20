@@ -25,6 +25,7 @@ import { Forwarder } from '../service-worker/forwarder.js'
 import { captureHealthOf, ObservedMessageSchema } from '../service-worker/observed-message.js'
 import { openPendingQueue, PendingQueueWriter } from '../service-worker/pending-queue-writer.js'
 import { attachRelay, type IRelayScripting, probeRelay, RelayProbeSchema } from '../service-worker/relay-attachment.js'
+import { serially } from '../service-worker/serially.js'
 import { type ISlackPage, SlackClientObserver } from '../service-worker/slack-client-observer.js'
 import { slackEventOf } from '../service-worker/slack-frame.js'
 import {
@@ -63,18 +64,6 @@ type Handlers = {
 }
 
 type IdentifiedTab = chrome.tabs.Tab & { id: number }
-
-// Runs tasks one at a time, in the order they came: a failed one rejects its own promise and the next still runs.
-const serially = (): (<TResult>(task: () => Promise<TResult>) => Promise<TResult>) => {
-  let tail: Promise<unknown> = Promise.resolve()
-
-  return (task) => {
-    const next = tail.then(task)
-    tail = next.catch(() => undefined)
-
-    return next
-  }
-}
 
 let port: chrome.runtime.Port | null = null
 

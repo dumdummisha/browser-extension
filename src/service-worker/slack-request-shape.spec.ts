@@ -213,7 +213,7 @@ describe('[service-worker] Slack request shape - what the check keeps', () => {
     assert.ok([TOKEN, MESSAGE, 'confidential', 'xoxb-', 'webapp_message_send'].every((value) => !kept.includes(value)))
   })
 
-  it('should compare no body Chrome did not read as form fields, and find no fields in a call with no body', () => {
+  it('should mark a body Chrome handed over as raw bytes unreadable, and find no fields in a call with no body', () => {
     // Arrange
     const url = new URL('https://example.slack.com/api/users.info?_x_id=0f1e2d3c-1794900000.100')
 
@@ -222,7 +222,7 @@ describe('[service-worker] Slack request shape - what the check keeps', () => {
     const none = startedShapeOf('GET', url, undefined)
 
     // Assert
-    assert.deepEqual([raw?.body, [...(none?.body ?? [])]], [null, []])
+    assert.deepEqual([raw?.body, [...(none?.body ?? [])]], ['unreadable', []])
   })
 
   it("should keep neither the query nor the body of a file's address, so no upload grant", () => {

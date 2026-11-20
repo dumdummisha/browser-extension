@@ -4,6 +4,7 @@ import {
   borrowedQueryOf,
   differencesOf,
   headerFieldsOf,
+  isFullyRead,
   type IRequestBody,
   type IRequestHeader,
   type IRequestShape,
@@ -251,10 +252,12 @@ export class SlackClientObserver {
   private check(client: IRequestShape, misha: IRequestShape): void {
     const { operation } = misha
     const differences = differencesOf(client, misha)
-    this.results.set(
-      operation,
-      differences.length === 0 ? { operation, state: 'matches' } : { operation, state: 'differs', differences }
-    )
+    if (differences.length > 0) {
+      this.results.set(operation, { operation, state: 'differs', differences })
+    } else {
+      this.results.set(operation, { operation, state: isFullyRead(client, misha) ? 'matches' : 'unchecked' })
+    }
+
     this.onChange()
   }
 }

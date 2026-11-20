@@ -469,3 +469,44 @@ describe('[service-worker] Slack client observer - requests that send no headers
     })
   }
 })
+
+describe('[service-worker] Slack client observer - bodies it cannot read', () => {
+  it('should leave an operation unchecked, never matching, when a body came as raw bytes, keeping none of it', () => {
+    // Arrange
+    const { observer } = observe()
+    const raw = { raw: [{ bytes: new TextEncoder().encode(`token=${TOKEN}&text=${MESSAGE}&_x_mode=offline`).buffer }] }
+    sent(observer, clientPost('client-1', { requestBody: raw }))
+
+    // Act
+    mishaSent(observer, mishaPost('misha-1'), MISHA_ID)
+
+    // Assert
+    const parity = observer.parity()
+    assert.deepEqual(parity, [{ operation: 'chat.postMessage', state: 'unchecked' }])
+    assert.ok([...SECRETS, 'offline'].every((secret) => !JSON.stringify(parity).includes(secret)))
+  })
+
+  it('should still report the differences of the parts it could read', () => {
+    // Arrange
+    const { observer } = observe()
+    sent(observer, clientPost('client-1', { requestBody: { raw: [] } }))
+
+    // Act
+    const release = observer.exclude(PAGE, MISHA_ID, true)
+    sent(
+      observer,
+      mishaPost('misha-1'),
+      HEADERS.filter(({ name }) => name !== 'Accept')
+    )
+    release(true)
+
+    // Assert
+    assert.deepEqual(observer.parity(), [
+      {
+        operation: 'chat.postMessage',
+        state: 'differs',
+        differences: [{ part: 'header', name: 'accept', kind: 'missing' }],
+      },
+    ])
+  })
+})

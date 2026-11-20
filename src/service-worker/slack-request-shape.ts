@@ -83,6 +83,8 @@ const BODY_VALUE_FORMS: Readonly<Record<string, RegExp>> = {
 
 const METHOD_DIFFERENCE: ParityDifference = { part: 'request', name: 'method', kind: 'value' }
 
+export const UNREADABLE_BODY = 'unreadable'
+
 // The client's query as the transport borrows it, in the client's order: each borrowed field with its value, and the
 // request's own fields by name only (a null value), filled for each request.
 export type BorrowedQuery = readonly (readonly [name: string, value: string | null])[]
@@ -92,12 +94,13 @@ type Fields = ReadonlyMap<string, string | null>
 
 // What the check keeps of a request when it starts: its operation, its HTTP method (null when not of its form), and
 // the query field names and _x_ body fields of a Web API call. null for a part that is not compared: a file's query and
-// body, or a body Chrome did not read as form fields.
+// body. UNREADABLE_BODY for a body Chrome handed over as raw bytes rather than form fields, whose fields the check does
+// not read, so a comparison with it cannot match.
 export interface IStartedShape {
   readonly operation: SlackOperation
   readonly method: string | null
   readonly query: Fields | null
-  readonly body: Fields | null
+  readonly body: Fields | typeof UNREADABLE_BODY | null
 }
 
 // The same once its headers were sent.
@@ -108,6 +111,8 @@ export interface IRequestShape extends IStartedShape {
 // A request body as webRequest reports it, in the fields the check reads.
 export interface IRequestBody {
   readonly formData?: Readonly<Record<string, readonly (string | ArrayBuffer)[]>>
+  // The body as raw bytes, when Chrome did not read it as form fields; the check reads none of it.
+  readonly raw?: readonly unknown[]
 }
 
 // A request header as webRequest reports it.
@@ -211,14 +216,14 @@ const queryFieldsOf = (url: URL): Fields =>
       .map((name): [string, null] => [name, null])
   )
 
-// No body (a GET) has no fields; a body Chrome did not read as form fields is not compared.
-const bodyFieldsOf = (body: IRequestBody | undefined): Fields | null => {
+// No body (a GET) has no fields.
+const bodyFieldsOf = (body: IRequestBody | undefined): Fields | typeof UNREADABLE_BODY => {
   if (body === undefined) {
     return new Map()
   }
 
   if (body.formData === undefined) {
-    return null
+    return UNREADABLE_BODY
   }
 
   return new Map(
@@ -288,11 +293,18 @@ const fieldDifferences = (part: ParityDifference['part'], client: Fields, misha:
       return client.get(name) === misha.get(name) ? [] : [{ part, name, kind: 'value' }]
     })
 
+const isReadBody = (body: IStartedShape['body']): body is Fields => body !== null && body !== UNREADABLE_BODY
+
 // How a request of Misha's differs from the client's request for the same operation, by name only. A value that is
 // not of its form (null) differs from one that is.
 export const differencesOf = (client: IRequestShape, misha: IRequestShape): ParityDifference[] => [
   ...(client.method === misha.method ? [] : [METHOD_DIFFERENCE]),
   ...fieldDifferences('header', client.headers, misha.headers),
   ...(client.query === null || misha.query === null ? [] : fieldDifferences('query', client.query, misha.query)),
-  ...(client.body === null || misha.body === null ? [] : fieldDifferences('body', client.body, misha.body)),
+  ...(isReadBody(client.body) && isReadBody(misha.body) ? fieldDifferences('body', client.body, misha.body) : []),
 ]
+
+// Whether the check could read every part it compares in both requests; a body Chrome handed over as raw bytes it
+// could not.
+export const isFullyRead = (client: IRequestShape, misha: IRequestShape): boolean =>
+  client.body !== UNREADABLE_BODY && misha.body !== UNREADABLE_BODY

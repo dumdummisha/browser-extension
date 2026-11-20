@@ -191,7 +191,9 @@ export const ParityDifferenceSchema = z.strictObject({
 })
 
 // How the transport's first request of an operation since the service worker started compares with the client's:
-// unchecked while the client has not been seen sending that operation, then matches or differs, which stays.
+// unchecked while the client has not been seen sending that operation, then matches or differs, which stays. A
+// comparison that found no difference but could not read a part (a body Chrome handed over as raw bytes) stays
+// unchecked, never matches.
 export const OperationParitySchema = z.discriminatedUnion('state', [
   z.strictObject({ operation: SlackOperationSchema, state: z.literal('unchecked') }),
   z.strictObject({ operation: SlackOperationSchema, state: z.literal('matches') }),

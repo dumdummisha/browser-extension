@@ -20,7 +20,7 @@ import {
   type SlackStatus,
   type SlackUploadMethod,
 } from '../protocol/slack.js'
-import { answerRequest, type IAbandonment, throwIfAbandoned } from '../service-worker/bridge-requests.js'
+import { answerRequest, type IAbandonment } from '../service-worker/bridge-requests.js'
 import { Forwarder } from '../service-worker/forwarder.js'
 import { captureHealthOf, ObservedMessageSchema } from '../service-worker/observed-message.js'
 import { openPendingQueue, PendingQueueWriter } from '../service-worker/pending-queue-writer.js'
@@ -28,6 +28,7 @@ import { attachRelay, type IRelayScripting, probeRelay, RelayProbeSchema } from 
 import { serially } from '../service-worker/serially.js'
 import { type ISlackPage, SlackClientObserver } from '../service-worker/slack-client-observer.js'
 import { slackEventOf } from '../service-worker/slack-frame.js'
+import { type PacedSend, paceGapMs, SlackPace } from '../service-worker/slack-pace.js'
 import {
   isAnsweredBySlack,
   runSlackPageCommand,
@@ -50,8 +51,9 @@ import {
 import { startTabTracking, TAB_HANDLERS } from './tab-commands.js'
 
 // The service worker: the native port to the host, the pending queue and its forwarding, the status, the Slack bridge
-// methods, each run in a Slack tab signed in as the account it names, and the tab commands of the browser tools
-// (tab-commands.ts). What the page reports is data: it becomes events and status, never a native command.
+// methods, each run in a Slack tab signed in as the account it names and at a person's pace (slack-pace.ts), and the
+// tab commands of the browser tools (tab-commands.ts). What the page reports is data: it becomes events and status,
+// never a native command.
 
 // zod compiles its parsers with new Function unless told not to, and an extension's CSP refuses that.
 z.config({ jitless: true })
@@ -75,6 +77,9 @@ const post = (frame: ExtensionFrame): void => {
 // and an upload's pushed chunks until it is prepared. A service worker restart drops them, and the app starts over.
 const downloads = new Map<string, Uint8Array>()
 const uploads = new Map<string, Map<number, string>>()
+
+// Every request the transport sends Slack, at a person's pace.
+const pace = new SlackPace(() => paceGapMs(Math.random))
 
 // What Slack's client sends from its own pages, beside the requests the transport sends there.
 const clientObserver = new SlackClientObserver(SLACK_ORIGIN, () => {
@@ -252,16 +257,16 @@ const requestInPage = async (page: ISlackPage, { key, command }: IPageRequest): 
 // Runs a request in a page signed in as the account and in no other, and answers the page with what it answered; null
 // when there is none. Pages are tried one at a time, so a write goes out at most once: a page whose user changed since
 // its identity was read answers other-account without sending anything, and the next one is tried, while a page that
-// fails during the command fails the call, since the command may have reached Slack. Nothing more is sent once the
-// caller gave up, which the page checks against the deadline once more right before its request leaves.
+// fails during the command fails the call, since the command may have reached Slack. Each request goes out through
+// send, at the pace of its turn, and only while its caller still waits, which the page checks against the deadline once
+// more right before the request leaves. The request is built as it goes, so its id is fresh and its query the latest.
 const inSlackTab = async (
   account: SlackAccount,
-  abandonment: IAbandonment,
+  send: PacedSend,
   requestFor: (page: ISlackPage) => IPageRequest
 ): Promise<{ readonly page: ISlackPage; readonly result: SlackPageResult } | null> => {
   for (const page of await signedInPages(account)) {
-    throwIfAbandoned(abandonment)
-    const result = await requestInPage(page, requestFor(page))
+    const result = await send(() => requestInPage(page, requestFor(page)))
     if (result.kind !== 'other-account') {
       return { page, result }
     }
@@ -298,16 +303,17 @@ const answerOf = (result: SlackPageResult): SlackAnswer => {
   return result.answer
 }
 
-const callSlack = async (
+const callSlack = (
   account: SlackAccount,
   method: SlackMethod | SlackUploadMethod,
   params: Readonly<Record<string, string>>,
   abandonment: IAbandonment
-): Promise<SlackAnswer> => {
-  const answered = await inSlackTab(account, abandonment, callRequest(account, method, params, abandonment.deadline))
+): Promise<SlackAnswer> =>
+  pace.turn(account.teamId, abandonment, async (send) => {
+    const answered = await inSlackTab(account, send, callRequest(account, method, params, abandonment.deadline))
 
-  return answered === null ? { ok: false, error: NO_SLACK_TAB_ERROR } : answerOf(answered.result)
-}
+    return answered === null ? { ok: false, error: NO_SLACK_TAB_ERROR } : answerOf(answered.result)
+  })
 
 // The pushed chunks of an upload in order, or null when they do not add up to byteLength bytes.
 const uploadParts = (chunks: ReadonlyMap<number, string> | undefined, byteLength: number): string[] | null => {
@@ -362,6 +368,38 @@ const preparedUploadOf = (uploaded: SlackPageResult, fileId: string): PreparedUp
   return { ok: true, fileId }
 }
 
+// An upload's two stages in one turn of the pace: the upload URL, then, a gap later, the bytes, from the page that took
+// the ticket; a page whose user changed since sends nothing.
+const uploadToSlack = (
+  account: SlackAccount,
+  params: { readonly filename: string; readonly length: string },
+  chunks: readonly string[],
+  abandonment: IAbandonment
+): Promise<PreparedUpload> =>
+  pace.turn(account.teamId, abandonment, async (send) => {
+    const { deadline } = abandonment
+    const ticketRequest = callRequest(account, 'files.getUploadURLExternal', params, deadline)
+    const answered = await inSlackTab(account, send, ticketRequest)
+    if (answered === null) {
+      return { ok: false, error: NO_SLACK_TAB_ERROR }
+    }
+
+    const ticket = uploadTicketOf(answerOf(answered.result))
+    if ('error' in ticket) {
+      return { ok: false, error: ticket.error }
+    }
+
+    const { href } = ticket.uploadUrl
+    const { filename } = params
+    const bytesRequest: IPageRequest = {
+      key: href,
+      command: { kind: 'upload', account, uploadUrl: href, filename, chunks, deadline },
+    }
+    const uploaded = await send(() => requestInPage(answered.page, bytesRequest))
+
+    return preparedUploadOf(uploaded, ticket.fileId)
+  })
+
 const slackHandlers: Handlers = {
   slackCall: (raw, abandonment) => {
     const { account, method, params } = SLACK_BRIDGE_METHODS.slackCall.params.parse(raw)
@@ -370,10 +408,12 @@ const slackHandlers: Handlers = {
   },
   slackDownload: async (raw, abandonment) => {
     const { account, url } = SLACK_BRIDGE_METHODS.slackDownload.params.parse(raw)
-    const answered = await inSlackTab(account, abandonment, () => ({
-      key: new URL(url).href,
-      command: { kind: 'download', account, url, deadline: abandonment.deadline },
-    }))
+    const answered = await pace.turn(account.teamId, abandonment, (send) =>
+      inSlackTab(account, send, () => ({
+        key: new URL(url).href,
+        command: { kind: 'download', account, url, deadline: abandonment.deadline },
+      }))
+    )
     if (answered === null) {
       throw new Error(`${NO_SLACK_TAB_ERROR}: no open Slack tab is signed in as ${slackAccountId(account)}`)
     }
@@ -421,28 +461,7 @@ const slackHandlers: Handlers = {
       return { ok: false, error: `The chunks pushed for upload ${uploadId} do not add up to ${byteLength} bytes` }
     }
 
-    const params = { filename, length: String(byteLength) }
-    const { deadline } = abandonment
-    const ticketRequest = callRequest(account, 'files.getUploadURLExternal', params, deadline)
-    const answered = await inSlackTab(account, abandonment, ticketRequest)
-    if (answered === null) {
-      return { ok: false, error: NO_SLACK_TAB_ERROR }
-    }
-
-    const ticket = uploadTicketOf(answerOf(answered.result))
-    if ('error' in ticket) {
-      return { ok: false, error: ticket.error }
-    }
-
-    // The bytes go from the page that took the ticket; a page whose user changed since sends nothing.
-    const { href } = ticket.uploadUrl
-    throwIfAbandoned(abandonment)
-    const uploaded = await requestInPage(answered.page, {
-      key: href,
-      command: { kind: 'upload', account, uploadUrl: href, filename, chunks: parts, deadline },
-    })
-
-    return preparedUploadOf(uploaded, ticket.fileId)
+    return uploadToSlack(account, { filename, length: String(byteLength) }, parts, abandonment)
   },
   slackUploadFinish: (raw, abandonment) => {
     const { account, fileId, title, channel, threadTs, initialComment } =

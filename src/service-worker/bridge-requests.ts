@@ -12,9 +12,9 @@ export interface IAbandonment {
 
 export type RequestHandler = (params: unknown, abandonment: IAbandonment) => unknown
 
-// Throws once the caller has given up, so nothing more of the request is sent.
-export const throwIfAbandoned = ({ deadline, signal }: IAbandonment): void => {
-  if (signal.aborted || Date.now() >= deadline) {
+// Throws once the caller has given up, or will have by at, so nothing more of the request is sent.
+export const throwIfAbandoned = ({ deadline, signal }: IAbandonment, at = Date.now()): void => {
+  if (signal.aborted || at >= deadline) {
     throw new Error('The caller gave up on the request before it was sent, so it was not sent')
   }
 }

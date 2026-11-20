@@ -16,7 +16,9 @@ import {
   type SlackIdentity,
   SlackIdentitySchema,
   type SlackMessageFrame,
+  type SlackMethod,
   type SlackStatus,
+  type SlackUploadMethod,
 } from '../protocol/slack.js'
 import { answerRequest } from '../service-worker/bridge-requests.js'
 import { Forwarder } from '../service-worker/forwarder.js'
@@ -26,6 +28,7 @@ import { attachRelay, type IRelayScripting, probeRelay, RelayProbeSchema } from 
 import { type ISlackPage, SlackClientObserver } from '../service-worker/slack-client-observer.js'
 import { slackEventOf } from '../service-worker/slack-frame.js'
 import {
+  isAnsweredBySlack,
   runSlackPageCommand,
   type SlackPageCommand,
   type SlackPageFailure,
@@ -82,7 +85,9 @@ const downloads = new Map<string, Uint8Array>()
 const uploads = new Map<string, Map<number, string>>()
 
 // What Slack's client sends from its own pages, beside the requests the transport sends there.
-const clientObserver = new SlackClientObserver(SLACK_ORIGIN)
+const clientObserver = new SlackClientObserver(SLACK_ORIGIN, () => {
+  void pushStatus()
+})
 const SLACK_REQUESTS: chrome.webRequest.RequestFilter = { urls: SLACK_REQUEST_URLS, types: ['xmlhttprequest'] }
 
 const slackTabs = async (): Promise<IdentifiedTab[]> =>
@@ -237,13 +242,17 @@ interface IPageRequest {
 }
 
 // Runs the request's command in the page. While it runs, the observer takes the request it sends as Misha's, never as
-// one of the client's.
+// one of the client's, and checks it once the command settled.
 const requestInPage = async (page: ISlackPage, { key, command }: IPageRequest): Promise<SlackPageResult> => {
   const release = clientObserver.exclude(page, key)
+  let isAnswered = false
   try {
-    return await runInPage(page, command)
+    const result = await runInPage(page, command)
+    isAnswered = isAnsweredBySlack(result)
+
+    return result
   } finally {
-    release()
+    release(isAnswered)
   }
 }
 
@@ -267,7 +276,7 @@ const inSlackTab = async (
 
 // A Web API call in a page: a fresh request id, and for each workspace API the query its client lent the transport.
 const callRequest =
-  (account: SlackAccount, method: string, params: Readonly<Record<string, string>>) =>
+  (account: SlackAccount, method: SlackMethod | SlackUploadMethod, params: Readonly<Record<string, string>>) =>
   (page: ISlackPage): IPageRequest => {
     const requestId = freshRequestId()
     const queries = new Map(
@@ -287,7 +296,7 @@ const answerOf = (result: SlackPageResult): SlackAnswer => {
 
 const callSlack = async (
   account: SlackAccount,
-  method: string,
+  method: SlackMethod | SlackUploadMethod,
   params: Readonly<Record<string, string>>
 ): Promise<SlackAnswer> => {
   const answered = await inSlackTab(account, callRequest(account, method, params))
@@ -469,6 +478,7 @@ const statusSnapshot = async (): Promise<SlackStatus> => {
     identities: identities.filter((identity) => identity !== null),
     captures,
     queue: writer.health(),
+    parity: clientObserver.parity(),
   }
 }
 
@@ -575,9 +585,28 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
   return true
 })
 
-// The listener registers when the service worker starts, as Chrome needs it to wake the worker.
-chrome.webRequest.onBeforeRequest.addListener((details) => {
-  clientObserver.requestStarted(details)
+// The listeners register when the service worker starts, as Chrome needs them to wake the worker. Chrome hands each
+// request's body and headers (the token and the cookie among them) to the listeners, which keep only what the
+// observer's rules keep (slack-request-shape.ts). extraHeaders adds the headers the browser sets itself.
+chrome.webRequest.onBeforeRequest.addListener(
+  (details) => {
+    clientObserver.requestStarted(details)
+  },
+  SLACK_REQUESTS,
+  ['requestBody']
+)
+chrome.webRequest.onSendHeaders.addListener(
+  (details) => {
+    clientObserver.headersSent(details)
+  },
+  SLACK_REQUESTS,
+  ['requestHeaders', 'extraHeaders']
+)
+chrome.webRequest.onCompleted.addListener(({ requestId }) => {
+  clientObserver.requestEnded(requestId)
+}, SLACK_REQUESTS)
+chrome.webRequest.onErrorOccurred.addListener(({ requestId }) => {
+  clientObserver.requestEnded(requestId)
 }, SLACK_REQUESTS)
 chrome.tabs.onRemoved.addListener((tabId) => {
   clientObserver.forget(tabId)

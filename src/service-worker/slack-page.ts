@@ -79,6 +79,11 @@ export const SlackPageResultSchema = z.discriminatedUnion('kind', [
 
 export type SlackPageResult = z.infer<typeof SlackPageResultSchema>
 
+// Whether a command's result proves its request reached Slack: Slack answered it, with its answer, a file's bytes or
+// the upload URL's status.
+export const isAnsweredBySlack = ({ kind }: SlackPageResult): boolean =>
+  kind === 'answer' || kind === 'file' || kind === 'uploaded' || kind === 'upload-refused'
+
 // chrome.scripting serializes this function into the page, so it uses nothing from the module's scope. The signed-in
 // account is the workspace the tab shows (/client/<team>) and that workspace's user in the client's saved state. The
 // token is read here for the request the command makes and never leaves: the function answers only ids, Slack's

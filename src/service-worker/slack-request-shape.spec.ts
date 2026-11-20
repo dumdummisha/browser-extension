@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { borrowedQueryOf, borrowedQueryString, freshRequestId, requestKeyOf } from './slack-request-shape.js'
+import {
+  borrowedQueryOf,
+  borrowedQueryString,
+  differencesOf,
+  freshRequestId,
+  headerFieldsOf,
+  type IRequestShape,
+  operationOf,
+  requestKeyOf,
+  startedShapeOf,
+} from './slack-request-shape.js'
 
 // A Web API call of Slack's client, as webRequest reports it, with made-up values: client.counts, a method the
 // transport never calls itself.
@@ -118,5 +128,172 @@ describe('[service-worker] Slack request shape - request keys', () => {
       null,
       null,
     ])
+  })
+})
+
+describe('[service-worker] Slack request shape - operations', () => {
+  it('should know the Web API methods the transport calls, both upload stages, downloads and upload bytes, and nothing else', () => {
+    // Arrange
+    const requests: readonly (readonly [string, string])[] = [
+      ['POST', 'https://example.slack.com/api/chat.postMessage'],
+      ['POST', 'https://example.enterprise.slack.com/api/files.getUploadURLExternal'],
+      ['POST', 'https://example.slack.com/api/files.completeUploadExternal'],
+      ['POST', 'https://example.slack.com/api/client.counts'],
+      ['GET', 'https://files.slack.com/files-pri/T0EXAMPLE1-F0EXAMPLE1/notes.txt'],
+      ['POST', 'https://files.slack.com/upload/v1/example-grant'],
+      ['GET', 'https://files.slack.com/upload/v1/example-grant'],
+      ['POST', 'https://files.slack.com/files-pri/T0EXAMPLE1-F0EXAMPLE1/notes.txt'],
+      ['GET', 'https://slack.example.com/files-pri/T0EXAMPLE1-F0EXAMPLE1/notes.txt'],
+    ]
+
+    // Act
+    const operations = requests.map(([method, url]) => operationOf(method, new URL(url)))
+
+    // Assert
+    assert.deepEqual(operations, [
+      'chat.postMessage',
+      'files.getUploadURLExternal',
+      'files.completeUploadExternal',
+      null,
+      'download',
+      'upload',
+      null,
+      null,
+      null,
+    ])
+  })
+})
+
+describe('[service-worker] Slack request shape - what the check keeps', () => {
+  const TOKEN = 'xoxc-0000-made-up-token'
+  const MESSAGE = 'a made-up private message'
+
+  it("should keep a Web API call's query names and the client's own body fields, with only the listed values", () => {
+    // Arrange
+    const url = new URL(
+      'https://example.slack.com/api/chat.postMessage?_x_id=0f1e2d3c-1794900000.100&_x_reason=send&slack_route=T0EXAMPLE1&query=confidential&xoxb-2222-made-up-key=1'
+    )
+    const body = {
+      formData: {
+        channel: ['C0EXAMPLE1'],
+        text: [MESSAGE],
+        token: [TOKEN],
+        _x_id: ['0f1e2d3c-1794900000.100'],
+        _x_reason: ['webapp_message_send'],
+        _x_mode: ['online'],
+        _x_sonic: ['not a boolean'],
+        _x_app_name: ['client'],
+        _x_draft: [MESSAGE],
+      },
+    }
+
+    // Act
+    const shape = startedShapeOf('POST', url, body)
+
+    // Assert
+    assert.ok(shape !== null && shape.query !== null && shape.body !== null)
+    const kept = JSON.stringify([shape.method, [...shape.query], [...shape.body]])
+    assert.deepEqual(
+      [shape.operation, shape.method, [...shape.query], [...shape.body]],
+      [
+        'chat.postMessage',
+        'POST',
+        [
+          ['slack_route', null],
+          ['query', null],
+        ],
+        [
+          ['_x_mode', 'online'],
+          ['_x_sonic', null],
+          ['_x_app_name', 'client'],
+          ['_x_draft', null],
+        ],
+      ]
+    )
+    assert.ok([TOKEN, MESSAGE, 'confidential', 'xoxb-', 'webapp_message_send'].every((value) => !kept.includes(value)))
+  })
+
+  it('should compare no body Chrome did not read as form fields, and find no fields in a call with no body', () => {
+    // Arrange
+    const url = new URL('https://example.slack.com/api/users.info?_x_id=0f1e2d3c-1794900000.100')
+
+    // Act
+    const raw = startedShapeOf('POST', url, {})
+    const none = startedShapeOf('GET', url, undefined)
+
+    // Assert
+    assert.deepEqual([raw?.body, [...(none?.body ?? [])]], [null, []])
+  })
+
+  it("should keep neither the query nor the body of a file's address, so no upload grant", () => {
+    // Arrange
+    const url = new URL('https://files.slack.com/upload/v1/example-grant-0000?t=xoxe-0000-made-up')
+
+    // Act
+    const shape = startedShapeOf('POST', url, { formData: { filename: [MESSAGE] } })
+
+    // Assert
+    assert.deepEqual(shape, { operation: 'upload', method: 'POST', query: null, body: null })
+    assert.ok(!JSON.stringify(shape).includes('example-grant'))
+  })
+
+  it('should keep header names, and only the listed values of their form: no cookie, no page address, no secret', () => {
+    // Arrange
+    const headers = [
+      { name: 'Accept', value: '*/*' },
+      { name: 'Content-Type', value: 'multipart/form-data; boundary=----WebKitFormBoundaryMADEUP0000' },
+      { name: 'Cookie', value: 'd=xoxd-0000-made-up-cookie' },
+      { name: 'Referer', value: 'https://app.slack.com/client/T0EXAMPLE1/search/confidential' },
+      { name: 'User-Agent', value: `Example/1.0 ${TOKEN}` },
+      { name: 'X-Slack-Made-Up', value: 'opaque' },
+      { name: 'xoxp-1111-made-up-name', value: '1' },
+      { name: 'Origin' },
+    ]
+
+    // Act
+    const fields = headerFieldsOf(headers)
+
+    // Assert
+    assert.deepEqual(
+      [...fields],
+      [
+        ['accept', '*/*'],
+        ['content-type', 'multipart/form-data'],
+        ['cookie', null],
+        ['referer', null],
+        ['user-agent', null],
+        ['x-slack-made-up', null],
+        ['origin', null],
+      ]
+    )
+  })
+})
+
+describe('[service-worker] Slack request shape - differences', () => {
+  it('should count a value of another form as a different value, and two values that are not kept as the same', () => {
+    // Arrange
+    const shape = (headers: [string, string | null][]): IRequestShape => ({
+      operation: 'download',
+      method: 'GET',
+      query: null,
+      body: null,
+      headers: new Map(headers),
+    })
+    const client = shape([
+      ['accept', '*/*'],
+      ['cookie', null],
+      ['user-agent', null],
+    ])
+    const misha = shape([
+      ['accept', '*/*'],
+      ['cookie', null],
+      ['user-agent', 'Example/1.0'],
+    ])
+
+    // Act
+    const differences = differencesOf(client, misha)
+
+    // Assert
+    assert.deepEqual(differences, [{ part: 'header', name: 'user-agent', kind: 'value' }])
   })
 })

@@ -19,7 +19,13 @@ import { startNativeHostRelay } from './relay.js'
 
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 const BROWSER_APP = 'Example Browser.app'
-const STATUS = { type: 'status', identities: [], captures: [], queue: { state: 'committing', droppedEvents: 0 } }
+const STATUS = {
+  type: 'status',
+  identities: [],
+  captures: [],
+  queue: { state: 'committing', droppedEvents: 0 },
+  parity: [],
+}
 
 interface IInbox {
   readonly put: (message: unknown) => void

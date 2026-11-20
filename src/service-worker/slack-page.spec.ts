@@ -138,6 +138,58 @@ describe('[service-worker] Slack page - where the token goes', () => {
   })
 })
 
+// Chrome (from 140, the manifest's minimum) decodes base64 with Uint8Array.fromBase64, which Node 24 lacks; the page
+// gets it for the test, from Buffer.
+const decodeBase64InPage = (context: TestContext): void => {
+  Object.defineProperty(Uint8Array, 'fromBase64', {
+    value: (text: string) => new Uint8Array(Buffer.from(text, 'base64')),
+    configurable: true,
+  })
+  context.after(() => Reflect.deleteProperty(Uint8Array, 'fromBase64'))
+}
+
+describe('[service-worker] Slack page - uploads', () => {
+  const UPLOAD_URL = 'https://files.slack.com/upload/v1/example-grant'
+  const UPLOAD: SlackPageCommand = {
+    kind: 'upload',
+    account: ACCOUNT,
+    uploadUrl: UPLOAD_URL,
+    filename: 'notes.txt',
+    chunks: [Buffer.from('made-up ').toString('base64'), Buffer.from('notes').toString('base64')],
+  }
+
+  it('should post the bytes to the upload URL it is given, as one multipart file, without cookies', async (context) => {
+    // Arrange
+    openSlackPage(context, () => savedConfig('https://example.slack.com/'))
+    decodeBase64InPage(context)
+    const fetched = context.mock.method(globalThis, 'fetch', () => Promise.resolve(new Response('OK')))
+
+    // Act
+    const result = await runSlackPageCommand(UPLOAD)
+
+    // Assert
+    assert.deepEqual(result, { kind: 'uploaded' })
+    const [url, init] = fetched.mock.calls[0]?.arguments ?? []
+    const file = init?.body instanceof FormData ? init.body.get('filename') : null
+    assert.deepEqual([url, init?.method, init?.credentials], [UPLOAD_URL, 'POST', undefined])
+    assert.ok(file instanceof File)
+    assert.deepEqual([file.name, await file.text()], ['notes.txt', 'made-up notes'])
+  })
+
+  it('should answer the status of an upload URL that refused the bytes', async (context) => {
+    // Arrange
+    openSlackPage(context, () => savedConfig('https://example.slack.com/'))
+    decodeBase64InPage(context)
+    context.mock.method(globalThis, 'fetch', () => Promise.resolve(new Response('', { status: 413 })))
+
+    // Act
+    const result = await runSlackPageCommand(UPLOAD)
+
+    // Assert
+    assert.deepEqual(result, { kind: 'upload-refused', status: 413 })
+  })
+})
+
 describe('[service-worker] Slack page - failures', () => {
   it('should answer a failure code, quoting nothing, when the saved client state does not parse', async (context) => {
     // Arrange

@@ -6,6 +6,7 @@ import {
   chunkCount,
   chunkRange,
   NO_SLACK_TAB_ERROR,
+  type PreparedUpload,
   SLACK_BRIDGE_METHODS,
   type SlackAccount,
   slackAccountId,
@@ -105,7 +106,6 @@ const PAGE_FAILURE_TEXT: Readonly<Record<SlackPageFailure, string>> = {
   'file-unreachable': 'Slack could not be reached for the file',
   'file-refused': 'Slack refused the file',
   'file-bytes-lost': "The file's bytes did not arrive",
-  'upload-url-missing': 'files.getUploadURLExternal answered neither an upload URL nor an error',
   'upload-unreachable': 'The upload URL could not be reached',
   'uncaught': 'The command failed in the page',
 }
@@ -194,11 +194,14 @@ const attachRelays = async (): Promise<void> => {
   await Promise.all(tabs.map(({ id }) => attachRelay(relayScripting, id, SLACK_ORIGIN)))
 }
 
-// Runs a command in a tab signed in as the account and in no other; null when there is none. Tabs are tried one at a
-// time, so a write goes out at most once: a tab whose user changed since its identity was read answers other-account
-// without sending anything, and the next one is tried, while a tab that fails during the command fails the call,
-// since the command may have reached Slack.
-const inSlackTab = async (account: SlackAccount, command: SlackPageCommand): Promise<SlackPageResult | null> => {
+// Runs a command in a tab signed in as the account and in no other, and answers the tab with what it answered; null
+// when there is none. Tabs are tried one at a time, so a write goes out at most once: a tab whose user changed since
+// its identity was read answers other-account without sending anything, and the next one is tried, while a tab that
+// fails during the command fails the call, since the command may have reached Slack.
+const inSlackTab = async (
+  account: SlackAccount,
+  command: SlackPageCommand
+): Promise<{ readonly tabId: number; readonly result: SlackPageResult } | null> => {
   const tabs = await slackTabs()
   const identities = await Promise.all(tabs.map(({ id }) => identityOf({ tabId: id })))
   const signedIn = tabs.filter(
@@ -207,11 +210,19 @@ const inSlackTab = async (account: SlackAccount, command: SlackPageCommand): Pro
   for (const tab of signedIn) {
     const result = await runInPage(tab.id, command)
     if (result.kind !== 'other-account') {
-      return result
+      return { tabId: tab.id, result }
     }
   }
 
   return null
+}
+
+const answerOf = (result: SlackPageResult): SlackAnswer => {
+  if (result.kind !== 'answer') {
+    throw unexpected(result)
+  }
+
+  return result.answer
 }
 
 const callSlack = async (
@@ -219,16 +230,9 @@ const callSlack = async (
   method: string,
   params: Readonly<Record<string, string>>
 ): Promise<SlackAnswer> => {
-  const result = await inSlackTab(account, { kind: 'call', account, method, params })
-  if (result === null) {
-    return { ok: false, error: NO_SLACK_TAB_ERROR }
-  }
+  const answered = await inSlackTab(account, { kind: 'call', account, method, params })
 
-  if (result.kind !== 'answer') {
-    throw unexpected(result)
-  }
-
-  return result.answer
+  return answered === null ? { ok: false, error: NO_SLACK_TAB_ERROR } : answerOf(answered.result)
 }
 
 // The pushed chunks of an upload in order, or null when they do not add up to byteLength bytes.
@@ -251,6 +255,38 @@ const uploadParts = (chunks: ReadonlyMap<number, string> | undefined, byteLength
   return parts
 }
 
+// The upload URL and the file's id files.getUploadURLExternal answered, or the error it refused the upload with.
+const uploadTicketOf = (
+  answer: SlackAnswer
+): { readonly uploadUrl: string; readonly fileId: string } | { readonly error: string } => {
+  if (!answer.ok && typeof answer.error === 'string') {
+    return { error: answer.error }
+  }
+
+  const { upload_url: uploadUrl, file_id: fileId } = answer
+  if (!answer.ok || typeof uploadUrl !== 'string' || typeof fileId !== 'string') {
+    throw new Error('files.getUploadURLExternal answered neither an upload URL with a file id nor an error')
+  }
+
+  return { uploadUrl, fileId }
+}
+
+const preparedUploadOf = (uploaded: SlackPageResult, fileId: string): PreparedUpload => {
+  if (uploaded.kind === 'upload-refused') {
+    return { ok: false, error: `The upload URL answered HTTP ${uploaded.status}` }
+  }
+
+  if (uploaded.kind === 'other-account') {
+    return { ok: false, error: NO_SLACK_TAB_ERROR }
+  }
+
+  if (uploaded.kind !== 'uploaded') {
+    throw unexpected(uploaded)
+  }
+
+  return { ok: true, fileId }
+}
+
 const slackHandlers: Handlers = {
   slackCall: (raw) => {
     const { account, method, params } = SLACK_BRIDGE_METHODS.slackCall.params.parse(raw)
@@ -259,11 +295,12 @@ const slackHandlers: Handlers = {
   },
   slackDownload: async (raw) => {
     const { account, url } = SLACK_BRIDGE_METHODS.slackDownload.params.parse(raw)
-    const result = await inSlackTab(account, { kind: 'download', account, url })
-    if (result === null) {
+    const answered = await inSlackTab(account, { kind: 'download', account, url })
+    if (answered === null) {
       throw new Error(`${NO_SLACK_TAB_ERROR}: no open Slack tab is signed in as ${slackAccountId(account)}`)
     }
 
+    const { result } = answered
     if (result.kind !== 'file') {
       throw unexpected(result)
     }
@@ -306,20 +343,22 @@ const slackHandlers: Handlers = {
       return { ok: false, error: `The chunks pushed for upload ${uploadId} do not add up to ${byteLength} bytes` }
     }
 
-    const result = await inSlackTab(account, { kind: 'upload', account, filename, chunks: parts })
-    if (result === null) {
+    const params = { filename, length: String(byteLength) }
+    const answered = await inSlackTab(account, { kind: 'call', account, method: 'files.getUploadURLExternal', params })
+    if (answered === null) {
       return { ok: false, error: NO_SLACK_TAB_ERROR }
     }
 
-    if (result.kind === 'upload-refused') {
-      return { ok: false, error: `The upload URL answered HTTP ${result.status}` }
+    const ticket = uploadTicketOf(answerOf(answered.result))
+    if ('error' in ticket) {
+      return { ok: false, error: ticket.error }
     }
 
-    if (result.kind !== 'prepared') {
-      throw unexpected(result)
-    }
+    // The bytes go from the tab that took the ticket; a tab that changed users since sends nothing.
+    const { uploadUrl, fileId } = ticket
+    const uploaded = await runInPage(answered.tabId, { kind: 'upload', account, uploadUrl, filename, chunks: parts })
 
-    return result.prepared
+    return preparedUploadOf(uploaded, fileId)
   },
   slackUploadFinish: (raw) => {
     const { account, fileId, title, channel, threadTs, initialComment } =

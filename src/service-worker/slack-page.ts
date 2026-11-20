@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { PreparedUploadSchema, type SlackAccount, SlackAnswerSchema } from '../protocol/slack.js'
+import { type SlackAccount, SlackAnswerSchema } from '../protocol/slack.js'
 
 // What the service worker asks of a Slack tab. Each command runs in the page's own world (MAIN), where Slack's client
 // keeps its state, through chrome.scripting. Every command but identity names the account it acts as, and acts only
@@ -16,6 +16,7 @@ export type SlackPageCommand =
   | {
       readonly kind: 'upload'
       readonly account: SlackAccount
+      readonly uploadUrl: string
       readonly filename: string
       readonly chunks: readonly string[]
     }
@@ -29,7 +30,6 @@ export type SlackPageCommand =
 //   JSON object with a boolean ok
 // - file-unreachable, file-refused, file-bytes-lost: a private file got no response, a status other than 2xx, or its
 //   bytes did not arrive
-// - upload-url-missing: files.getUploadURLExternal answered neither an upload URL with a file id nor an error
 // - upload-unreachable: the upload URL got no response
 // - uncaught: any other error
 export const SLACK_PAGE_FAILURES = [
@@ -43,7 +43,6 @@ export const SLACK_PAGE_FAILURES = [
   'file-unreachable',
   'file-refused',
   'file-bytes-lost',
-  'upload-url-missing',
   'upload-unreachable',
   'uncaught',
 ] as const
@@ -55,7 +54,8 @@ const HttpStatusSchema = z.number().int().min(100).max(599)
 
 // What a command answers, checked when it comes back, since the page's own scripts run in the same world. A command
 // that did not complete answers failed with its code, and with the HTTP status of the refusal for api-refused and
-// file-refused. upload-refused: the upload URL answered a status other than 2xx, so Slack holds no bytes.
+// file-refused. uploaded: the upload URL took the bytes; upload-refused: it answered a status other than 2xx, so Slack
+// holds no bytes.
 export const SlackPageResultSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     kind: z.literal('identity'),
@@ -64,7 +64,7 @@ export const SlackPageResultSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('other-account') }),
   z.strictObject({ kind: z.literal('answer'), answer: SlackAnswerSchema }),
   z.strictObject({ kind: z.literal('file'), data: z.string() }),
-  z.strictObject({ kind: z.literal('prepared'), prepared: PreparedUploadSchema }),
+  z.strictObject({ kind: z.literal('uploaded') }),
   z.strictObject({ kind: z.literal('upload-refused'), status: HttpStatusSchema }),
   z.strictObject({
     kind: z.literal('failed'),
@@ -78,10 +78,10 @@ export type SlackPageResult = z.infer<typeof SlackPageResultSchema>
 // chrome.scripting serializes this function into the page, so it uses nothing from the module's scope. The signed-in
 // account is the workspace the tab shows (/client/<team>) and that workspace's user in the client's saved state. The
 // token is read here for the request the command makes and never leaves: the function answers only ids, Slack's
-// answers and file bytes. It posts the token, with the browser's cookies, only to the workspace's https address on
-// Slack's own domain, and follows no redirect with it, since the saved state is the page's to change. An error could
-// quote what the page holds (a JSON parser quotes the text it failed on), so none leaves the function: a command that
-// fails answers failed with a fixed code (SLACK_PAGE_FAILURES).
+// answers, file bytes and whether an upload took. It posts the token, with the browser's cookies, only to the
+// workspace's https address on Slack's own domain, and follows no redirect with it, since the saved state is the page's
+// to change. An error could quote what the page holds (a JSON parser quotes the text it failed on), so none leaves the
+// function: a command that fails answers failed with a fixed code (SLACK_PAGE_FAILURES).
 export const runSlackPageCommand = async (command: SlackPageCommand): Promise<SlackPageResult> => {
   // A failure the function names itself; any other error becomes uncaught.
   class PageFailure extends Error {
@@ -227,32 +227,14 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
       return { kind: 'file', data: new Uint8Array(bytes).toBase64() }
     }
 
-    // Slack's external upload up to the file's id: an upload URL, then the bytes. Nothing is shared yet.
-    const upload = async (filename: string, chunks: readonly string[]): Promise<SlackPageResult> => {
-      const parts = chunks.map((chunk) => Uint8Array.fromBase64(chunk))
-      const byteLength = parts.reduce((total, part) => total + part.byteLength, 0)
-      const ticket = await callSlack('files.getUploadURLExternal', { filename, length: String(byteLength) })
-      if (!ticket.ok) {
-        if (typeof ticket.error !== 'string') {
-          throw new PageFailure('upload-url-missing')
-        }
-
-        return { kind: 'prepared', prepared: { ok: false, error: ticket.error } }
-      }
-
-      const { upload_url: uploadUrl, file_id: fileId } = ticket
-      if (typeof uploadUrl !== 'string' || typeof fileId !== 'string') {
-        throw new PageFailure('upload-url-missing')
-      }
-
-      // A multipart body needs no preflight, and the upload URL itself grants the upload, so no cookies go with it.
+    // The bytes of Slack's external upload, to the upload URL files.getUploadURLExternal answered. Nothing is shared yet.
+    // A multipart body needs no preflight, and the upload URL itself grants the upload, so no cookies go with it.
+    const upload = async (uploadUrl: string, filename: string, chunks: readonly string[]): Promise<SlackPageResult> => {
       const body = new FormData()
-      body.append('filename', new Blob(parts), filename)
+      body.append('filename', new Blob(chunks.map((chunk) => Uint8Array.fromBase64(chunk))), filename)
       const posted = await guarded('upload-unreachable', () => fetch(uploadUrl, { method: 'POST', body }))
 
-      return posted.ok
-        ? { kind: 'prepared', prepared: { ok: true, fileId } }
-        : { kind: 'upload-refused', status: posted.status }
+      return posted.ok ? { kind: 'uploaded' } : { kind: 'upload-refused', status: posted.status }
     }
 
     switch (command.kind) {
@@ -261,7 +243,7 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
       case 'download':
         return download(command.url)
       case 'upload':
-        return upload(command.filename, command.chunks)
+        return upload(command.uploadUrl, command.filename, command.chunks)
     }
   }
 

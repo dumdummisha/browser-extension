@@ -71,6 +71,16 @@ const mishaPost = (requestId: string, request: Partial<IStartedRequest> = {}): I
     ...request,
   })
 
+// What a command of Misha's tells the observer its request is known by: a Web API call's fresh request id, which only
+// its request carries, or a file's address, which the client may fetch too.
+interface IMishaKey {
+  readonly key: string
+  readonly isKeyUnique: boolean
+}
+
+const MISHA_CALL: IMishaKey = { key: MISHA_ID, isKeyUnique: true }
+const MISHA_FILE: IMishaKey = { key: FILE_URL, isKeyUnique: false }
+
 const fileGet = (requestId: string, url = FILE_URL): IStartedRequest => ({
   requestId,
   ...PAGE,
@@ -99,9 +109,13 @@ const sent = (observer: SlackClientObserver, request: IStartedRequest, headers =
   observer.headersSent({ requestId: request.requestId, requestHeaders: headers })
 }
 
-// A command of Misha's in a page: its request carries key, and the command settles once it was sent.
-const mishaSent = (observer: SlackClientObserver, request: IStartedRequest, key: string, isAnswered = true): void => {
-  const isKeyUnique = !key.startsWith('https://')
+// A command of Misha's in a page: its request carries the key, and the command settles once it was sent.
+const mishaSent = (
+  observer: SlackClientObserver,
+  request: IStartedRequest,
+  { key, isKeyUnique }: IMishaKey,
+  isAnswered = true
+): void => {
   const release = observer.exclude({ tabId: request.tabId, documentId: request.documentId ?? '' }, key, isKeyUnique)
   sent(observer, request)
   release(isAnswered)
@@ -206,7 +220,7 @@ describe('[service-worker] Slack client observer - transport check', () => {
   it("should report an operation unchecked until the client sends it, then check Misha's first request once", () => {
     // Arrange
     const { observer, changes } = observe()
-    mishaSent(observer, mishaPost('misha-1'), MISHA_ID)
+    mishaSent(observer, mishaPost('misha-1'), MISHA_CALL)
     const unchecked = observer.parity()
 
     // Act
@@ -215,7 +229,7 @@ describe('[service-worker] Slack client observer - transport check', () => {
     mishaSent(
       observer,
       mishaPost('misha-2', { url: `${API_ORIGIN}/api/chat.postMessage?_x_id=b2c3d4e5-1794900004.000` }),
-      'b2c3d4e5-1794900004.000'
+      { key: 'b2c3d4e5-1794900004.000', isKeyUnique: true }
     )
 
     // Assert
@@ -296,7 +310,7 @@ describe('[service-worker] Slack client observer - transport check', () => {
     ])
 
     // Act
-    mishaSent(observer, mishaPost('misha-1'), MISHA_ID)
+    mishaSent(observer, mishaPost('misha-1'), MISHA_CALL)
 
     // Assert
     const parity = observer.parity()
@@ -329,7 +343,7 @@ describe('[service-worker] Slack client observer - transport check', () => {
     ])
 
     // Act
-    mishaSent(observer, mishaPost('misha-1'), MISHA_ID)
+    mishaSent(observer, mishaPost('misha-1'), MISHA_CALL)
 
     // Assert
     const kept = JSON.stringify([observer.parity(), [...observer.clientQueries(PAGE)]]).toLowerCase()
@@ -349,7 +363,7 @@ describe('[service-worker] Slack client observer - transport check', () => {
   it("should never take Misha's request as the client's reference, in its page, while its command runs", () => {
     // Arrange
     const { observer } = observe()
-    mishaSent(observer, mishaPost('misha-1'), MISHA_ID)
+    mishaSent(observer, mishaPost('misha-1'), MISHA_CALL)
 
     // Act
     sent(observer, mishaPost('client-elsewhere', OTHER_PAGE))
@@ -383,7 +397,7 @@ describe('[service-worker] Slack client observer - transport check', () => {
     failed(true)
 
     // Act
-    mishaSent(observer, fileGet('misha-2'), FILE_URL, false)
+    mishaSent(observer, fileGet('misha-2'), MISHA_FILE, false)
 
     // Assert
     assert.deepEqual(observer.parity(), [])
@@ -392,7 +406,7 @@ describe('[service-worker] Slack client observer - transport check', () => {
   it('should check a Web API call that sent its headers whatever Slack answered, a refusal or no answer included', () => {
     // Arrange
     const { observer } = observe()
-    mishaSent(observer, mishaPost('misha-1'), MISHA_ID, false)
+    mishaSent(observer, mishaPost('misha-1'), MISHA_CALL, false)
     const unanswered = observer.parity()
 
     // Act
@@ -417,7 +431,7 @@ describe('[service-worker] Slack client observer - same-address collisions', () 
     sent(observer, fileGet('misha-1'))
     release(true)
     const afterCollision = observer.parity()
-    mishaSent(observer, fileGet('misha-2'), FILE_URL)
+    mishaSent(observer, fileGet('misha-2'), MISHA_FILE)
 
     // Assert
     assert.deepEqual([afterCollision, observer.parity()], [[], [{ operation: 'download', state: 'unchecked' }]])
@@ -431,7 +445,7 @@ describe('[service-worker] Slack client observer - same-address collisions', () 
     // Act
     sent(observer, fileGet('client-1'))
     release(false)
-    mishaSent(observer, fileGet('misha-2'), FILE_URL)
+    mishaSent(observer, fileGet('misha-2'), MISHA_FILE)
 
     // Assert
     assert.deepEqual(observer.parity(), [{ operation: 'download', state: 'unchecked' }])
@@ -446,7 +460,7 @@ describe('[service-worker] Slack client observer - same-address collisions', () 
     )
 
     // Act
-    mishaSent(observer, fileGet('misha-1'), FILE_URL)
+    mishaSent(observer, fileGet('misha-1'), MISHA_FILE)
 
     // Assert
     const parity = observer.parity()
@@ -474,7 +488,7 @@ describe('[service-worker] Slack client observer - requests that send no headers
       observer.requestEnded('client-1')
       release(true)
       const afterCollision = observer.parity()
-      mishaSent(observer, fileGet('misha-2'), FILE_URL)
+      mishaSent(observer, fileGet('misha-2'), MISHA_FILE)
 
       // Assert
       assert.deepEqual([afterCollision, observer.parity()], [[], [{ operation: 'download', state: 'unchecked' }]])
@@ -490,7 +504,7 @@ describe('[service-worker] Slack client observer - bodies it cannot read', () =>
     sent(observer, clientPost('client-1', { requestBody: raw }))
 
     // Act
-    mishaSent(observer, mishaPost('misha-1'), MISHA_ID)
+    mishaSent(observer, mishaPost('misha-1'), MISHA_CALL)
 
     // Assert
     const parity = observer.parity()

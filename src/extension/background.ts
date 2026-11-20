@@ -235,8 +235,6 @@ const signedInPages = async (account: SlackAccount): Promise<ISlackPage[]> => {
 // A command for a page, and what its request is known by while it runs (slack-request-shape.ts requestKeyOf).
 interface IPageRequest {
   readonly key: string
-  // Whether only this request can carry the key: a Web API call's fresh request id, not a file's address.
-  readonly isKeyUnique: boolean
   readonly command: SlackPageCommand
 }
 
@@ -248,10 +246,11 @@ interface IPageRequest {
 // the pace that the page's result, read, shows nothing went out to Slack.
 const requestInPage = async (
   page: ISlackPage,
-  { key, isKeyUnique, command }: IPageRequest,
+  { key, command }: IPageRequest,
   unsent: () => void
 ): Promise<SlackPageResult> => {
-  const release = clientObserver.exclude(page, key, isKeyUnique)
+  // Only a Web API call's key, its fresh request id, is this request's alone; the client may fetch a file's address too.
+  const release = clientObserver.exclude(page, key, command.kind === 'call')
   let isAnswered = false
   try {
     const { answered } = await injected({ tabId: page.tabId, documentIds: [page.documentId] }, command)
@@ -307,7 +306,7 @@ const callRequest =
       ])
     )
 
-    return { key: requestId, isKeyUnique: true, command: { kind: 'call', account, method, params, queries, deadline } }
+    return { key: requestId, command: { kind: 'call', account, method, params, queries, deadline } }
   }
 
 const answerOf = (result: SlackPageResult): SlackAnswer => {
@@ -408,7 +407,6 @@ const uploadToSlack = (
     const { filename } = params
     const bytesRequest: IPageRequest = {
       key: href,
-      isKeyUnique: false,
       command: { kind: 'upload', account, uploadUrl: href, filename, chunks, deadline },
     }
     const uploaded = await send((unsent) => requestInPage(answered.page, bytesRequest, unsent))
@@ -427,7 +425,6 @@ const slackHandlers: Handlers = {
     const answered = await pace.turn(account.teamId, abandonment, (send) =>
       inSlackTab(account, send, () => ({
         key: new URL(url).href,
-        isKeyUnique: false,
         command: { kind: 'download', account, url, deadline: abandonment.deadline },
       }))
     )

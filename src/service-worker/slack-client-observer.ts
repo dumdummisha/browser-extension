@@ -68,6 +68,13 @@ interface IPageQueries {
   readonly byOrigin: Map<string, BorrowedQuery>
 }
 
+// Where the check of an operation stands: the client's latest request while Misha has sent none (reference), Misha's
+// first request while the client has sent none (waiting), or the result, which no later request changes (checked).
+type OperationCheck =
+  | { readonly state: 'reference'; readonly client: IRequestShape }
+  | { readonly state: 'waiting'; readonly misha: IRequestShape }
+  | { readonly state: 'checked'; readonly parity: OperationParity }
+
 // What Slack's client sends from its own pages, as the service worker observes it, beside Misha's requests, which run
 // in the same pages:
 // - Each page's latest Web API call lends the transport its query (slack-request-shape.ts).
@@ -82,10 +89,7 @@ export class SlackClientObserver {
   private readonly exclusions = new Set<IExclusion>()
   private readonly pending = new Map<string, IPendingRequest>()
   private readonly queries = new Map<number, IPageQueries>()
-  private readonly references = new Map<SlackOperation, IRequestShape>()
-  // Misha's first request of an operation, while the client has not been seen sending that operation.
-  private readonly waiting = new Map<SlackOperation, IRequestShape>()
-  private readonly results = new Map<SlackOperation, OperationParity>()
+  private readonly checks = new Map<SlackOperation, OperationCheck>()
 
   // pageOrigin: where the Slack pages are (config.ts SLACK_ORIGIN); a request any other page sends is not the client's.
   // onChange: called each time the check's status changes.
@@ -180,9 +184,17 @@ export class SlackClientObserver {
     return known?.documentId === documentId ? known.byOrigin : new Map()
   }
 
-  // The check per operation Misha sent, in the operations' order.
+  // The check per operation Misha sent, in the operations' order: unchecked while the client has not sent it.
   public parity(): OperationParity[] {
-    return [...this.results.values()].toSorted((first, second) => (first.operation < second.operation ? -1 : 1))
+    return [...this.checks]
+      .flatMap(([operation, check]): OperationParity[] => {
+        if (check.state === 'reference') {
+          return []
+        }
+
+        return [check.state === 'waiting' ? { operation, state: 'unchecked' } : check.parity]
+      })
+      .toSorted((first, second) => (first.operation < second.operation ? -1 : 1))
   }
 
   public forget(tabId: number): void {
@@ -223,33 +235,35 @@ export class SlackClientObserver {
     this.mishaSent(shape)
   }
 
-  private clientSent(shape: IRequestShape): void {
-    this.references.set(shape.operation, shape)
-    const misha = this.waiting.get(shape.operation)
-    if (misha !== undefined) {
-      this.waiting.delete(shape.operation)
-      this.check(shape, misha)
+  private clientSent(client: IRequestShape): void {
+    const check = this.checks.get(client.operation)
+    if (check?.state === 'checked') {
+      return
     }
+
+    if (check?.state === 'waiting') {
+      this.check(client, check.misha)
+      return
+    }
+
+    this.checks.set(client.operation, { state: 'reference', client })
   }
 
-  private mishaSent(shape: IRequestShape): void {
-    if (this.results.has(shape.operation)) {
+  private mishaSent(misha: IRequestShape): void {
+    const check = this.checks.get(misha.operation)
+    if (check?.state === 'reference') {
+      this.check(check.client, misha)
       return
     }
 
-    const reference = this.references.get(shape.operation)
-    if (reference !== undefined) {
-      this.check(reference, shape)
-      return
+    if (check === undefined) {
+      this.checks.set(misha.operation, { state: 'waiting', misha })
+      this.onChange()
     }
-
-    this.waiting.set(shape.operation, shape)
-    this.results.set(shape.operation, { operation: shape.operation, state: 'unchecked' })
-    this.onChange()
   }
 
   private check(client: IRequestShape, misha: IRequestShape): void {
-    this.results.set(misha.operation, parityOf(client, misha))
+    this.checks.set(misha.operation, { state: 'checked', parity: parityOf(client, misha) })
     this.onChange()
   }
 }

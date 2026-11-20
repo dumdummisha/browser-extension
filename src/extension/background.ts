@@ -444,11 +444,17 @@ const admitFrame = async (
   }
 }
 
-const onHostFrame = (message: unknown): void => {
+// A reply goes back only on the port its request came on, while that port is open. A newer port belongs to a new
+// relay, which numbers its requests from 1 again, so a reply sent there could reach a caller that never asked.
+const onHostFrame = (source: chrome.runtime.Port, message: unknown): void => {
   const frame = HostFrameSchema.parse(message)
   switch (frame.type) {
     case 'request':
-      void answerRequest(handlers, frame).then(post)
+      void answerRequest(handlers, frame).then((reply) => {
+        if (port === source) {
+          source.postMessage(reply)
+        }
+      })
       return
     case 'ack':
       // Redelivery stops once the event is no longer pending: a held one at once, a stored one once its deletion
@@ -471,7 +477,7 @@ const connect = (): void => {
   }
 
   const opened = chrome.runtime.connectNative(NATIVE_HOST_NAME)
-  opened.onMessage.addListener(onHostFrame)
+  opened.onMessage.addListener((message: unknown) => onHostFrame(opened, message))
   opened.onDisconnect.addListener(() => {
     port = null
     forwarder.detach()

@@ -17,13 +17,19 @@ export const NATIVE_HOST_NAME = 'misha.browser_bridge'
 
 const RequestIdSchema = z.number().int()
 
-// method stays a string on the wire, so an extension older than its client can name what it does not know.
+// method stays a string on the wire, so an extension older than its client can name what it does not know. deadline:
+// when the client stops waiting for the reply, in milliseconds since the epoch on this Mac's clock; the extension sends
+// nothing of a request to Slack once it has passed.
 const RequestSchema = z.strictObject({
   type: z.literal('request'),
   id: RequestIdSchema,
   method: z.string(),
   params: z.unknown(),
+  deadline: z.number().int().positive(),
 })
+// A request whose caller gave up before its deadline: from a client, which abandoned it, and from the relay, for each
+// request of a client whose connection closed. The extension then sends nothing more of it to Slack.
+const CancelSchema = z.strictObject({ type: z.literal('cancel'), id: RequestIdSchema })
 const ReplyResultSchema = z.strictObject({ type: z.literal('reply'), id: RequestIdSchema, result: z.unknown() })
 const ReplyErrorSchema = z.strictObject({ type: z.literal('reply'), id: RequestIdSchema, error: z.string() })
 const AckSchema = z.strictObject({ type: z.literal('ack'), id: z.string() })
@@ -36,7 +42,7 @@ const HelloSchema = z.strictObject({ type: z.literal('hello'), browserApp: z.str
 const TakeoverSchema = z.strictObject({ type: z.literal('takeover') })
 
 // A client to the relay, one per line.
-export const ClientMessageSchema = z.union([RequestSchema, ListenSchema, AckSchema, TakeoverSchema])
+export const ClientMessageSchema = z.union([RequestSchema, CancelSchema, ListenSchema, AckSchema, TakeoverSchema])
 // The relay to a client, one per line: a hello first, then replies to its requests and, to the listener, events and
 // status snapshots.
 export const RelayMessageSchema = z.union([
@@ -47,7 +53,7 @@ export const RelayMessageSchema = z.union([
   SlackStatusSchema,
 ])
 // The relay to the extension, one per native messaging frame.
-export const HostFrameSchema = z.union([RequestSchema, AckSchema, ListenerSchema])
+export const HostFrameSchema = z.union([RequestSchema, CancelSchema, AckSchema, ListenerSchema])
 // The extension to the relay, one per native messaging frame.
 export const ExtensionFrameSchema = z.union([ReplyResultSchema, ReplyErrorSchema, SlackEventSchema, SlackStatusSchema])
 

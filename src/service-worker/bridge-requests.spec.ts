@@ -1,13 +1,26 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { answerRequest, type RequestHandler } from './bridge-requests.js'
+import {
+  answerRequest,
+  type BridgeRequest,
+  type IAbandonment,
+  type RequestHandler,
+  throwIfAbandoned,
+} from './bridge-requests.js'
 
-const request = (id: number, method: string): { type: 'request'; id: number; method: string; params: unknown } => ({
+// A caller's deadline that has not passed (2100-01-01) and one that has (2000-01-01).
+const LATER = 4_102_444_800_000
+const EARLIER = 946_684_800_000
+
+const request = (id: number, method: string): BridgeRequest => ({
   type: 'request',
   id,
   method,
   params: {},
+  deadline: LATER,
 })
+
+const { signal } = new AbortController()
 
 describe('[service-worker] Bridge requests - answers', () => {
   it('should answer a failing tab command with its error and still answer the Slack call after it', async () => {
@@ -22,9 +35,9 @@ describe('[service-worker] Bridge requests - answers', () => {
 
     // Act
     const replies = await Promise.all([
-      answerRequest(handlers, request(1, 'locate')),
-      answerRequest(handlers, request(2, 'settle')),
-      answerRequest(handlers, request(3, 'slackCall')),
+      answerRequest(handlers, request(1, 'locate'), signal),
+      answerRequest(handlers, request(2, 'settle'), signal),
+      answerRequest(handlers, request(3, 'slackCall'), signal),
     ])
 
     // Assert
@@ -41,8 +54,8 @@ describe('[service-worker] Bridge requests - answers', () => {
 
     // Act
     const replies = await Promise.all([
-      answerRequest(handlers, request(1, 'reload')),
-      answerRequest(handlers, request(2, 'toString')),
+      answerRequest(handlers, request(1, 'reload'), signal),
+      answerRequest(handlers, request(2, 'toString'), signal),
     ])
 
     // Assert
@@ -50,5 +63,55 @@ describe('[service-worker] Bridge requests - answers', () => {
       { type: 'reply', id: 1, error: 'This extension does not know reload; it is older than its client. Reload it.' },
       { type: 'reply', id: 2, error: 'This extension does not know toString; it is older than its client. Reload it.' },
     ])
+  })
+})
+
+describe('[service-worker] Bridge requests - callers that gave up', () => {
+  it("should hand a handler the request's deadline and the signal that aborts once its caller cancels", async () => {
+    // Arrange
+    const controller = new AbortController()
+    const seen: IAbandonment[] = []
+    const handlers: Record<string, RequestHandler> = {
+      slackCall: (_params, abandonment) => {
+        seen.push(abandonment)
+
+        return { ok: true }
+      },
+    }
+
+    // Act
+    await answerRequest(handlers, request(1, 'slackCall'), controller.signal)
+    controller.abort()
+
+    // Assert
+    assert.deepEqual(
+      seen.map(({ deadline, signal: aborts }) => [deadline, aborts.aborted]),
+      [[LATER, true]]
+    )
+  })
+
+  it('should stop a request whose caller cancelled it or whose deadline passed, and let any other go on', () => {
+    // Arrange
+    const cancelled = new AbortController()
+    cancelled.abort()
+    const abandonments: IAbandonment[] = [
+      { deadline: LATER, signal: cancelled.signal },
+      { deadline: EARLIER, signal },
+      { deadline: LATER, signal },
+    ]
+
+    // Act
+    const stopped = abandonments.map((abandonment) => {
+      try {
+        throwIfAbandoned(abandonment)
+
+        return false
+      } catch {
+        return true
+      }
+    })
+
+    // Assert
+    assert.deepEqual(stopped, [true, true, false])
   })
 })

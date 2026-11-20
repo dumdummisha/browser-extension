@@ -20,7 +20,7 @@ import {
   type SlackStatus,
   type SlackUploadMethod,
 } from '../protocol/slack.js'
-import { answerRequest } from '../service-worker/bridge-requests.js'
+import { answerRequest, type IAbandonment, throwIfAbandoned } from '../service-worker/bridge-requests.js'
 import { Forwarder } from '../service-worker/forwarder.js'
 import { captureHealthOf, ObservedMessageSchema } from '../service-worker/observed-message.js'
 import { openPendingQueue, PendingQueueWriter } from '../service-worker/pending-queue-writer.js'
@@ -56,7 +56,10 @@ import { startTabTracking, TAB_HANDLERS } from './tab-commands.js'
 z.config({ jitless: true })
 
 type Handlers = {
-  [TMethod in SlackBridgeMethod]: (params: unknown) => SlackBridgeResult<TMethod> | Promise<SlackBridgeResult<TMethod>>
+  [TMethod in SlackBridgeMethod]: (
+    params: unknown,
+    abandonment: IAbandonment
+  ) => SlackBridgeResult<TMethod> | Promise<SlackBridgeResult<TMethod>>
 }
 
 type IdentifiedTab = chrome.tabs.Tab & { id: number }
@@ -120,6 +123,7 @@ const PAGE_FAILURE_TEXT: Readonly<Record<SlackPageFailure, string>> = {
   'no-api-address': "Slack's client keeps no Slack API address for the workspace",
   'no-client-query':
     "The extension has seen no Web API call of Slack's own client in this page since it started; use Slack in the tab, or reload it",
+  'deadline-passed': "The caller's deadline passed before the request went out, so nothing was sent",
   'api-unreachable': "Slack's Web API could not be reached",
   'api-refused': "Slack's Web API refused the call",
   'api-no-answer': "Slack's Web API answered no JSON object with a boolean ok",
@@ -259,12 +263,15 @@ const requestInPage = async (page: ISlackPage, { key, command }: IPageRequest): 
 // Runs a request in a page signed in as the account and in no other, and answers the page with what it answered; null
 // when there is none. Pages are tried one at a time, so a write goes out at most once: a page whose user changed since
 // its identity was read answers other-account without sending anything, and the next one is tried, while a page that
-// fails during the command fails the call, since the command may have reached Slack.
+// fails during the command fails the call, since the command may have reached Slack. Nothing more is sent once the
+// caller gave up, which the page checks against the deadline once more right before its request leaves.
 const inSlackTab = async (
   account: SlackAccount,
+  abandonment: IAbandonment,
   requestFor: (page: ISlackPage) => IPageRequest
 ): Promise<{ readonly page: ISlackPage; readonly result: SlackPageResult } | null> => {
   for (const page of await signedInPages(account)) {
+    throwIfAbandoned(abandonment)
     const result = await requestInPage(page, requestFor(page))
     if (result.kind !== 'other-account') {
       return { page, result }
@@ -276,14 +283,22 @@ const inSlackTab = async (
 
 // A Web API call in a page: a fresh request id, and for each workspace API the query its client lent the transport.
 const callRequest =
-  (account: SlackAccount, method: SlackMethod | SlackUploadMethod, params: Readonly<Record<string, string>>) =>
+  (
+    account: SlackAccount,
+    method: SlackMethod | SlackUploadMethod,
+    params: Readonly<Record<string, string>>,
+    deadline: number
+  ) =>
   (page: ISlackPage): IPageRequest => {
     const requestId = freshRequestId()
     const queries = new Map(
       [...clientObserver.clientQueries(page)].map(([origin, query]) => [origin, borrowedQueryString(query, requestId)])
     )
 
-    return { key: requestId, command: { kind: 'call', account, method, params, queries: Object.fromEntries(queries) } }
+    return {
+      key: requestId,
+      command: { kind: 'call', account, method, params, queries: Object.fromEntries(queries), deadline },
+    }
   }
 
 const answerOf = (result: SlackPageResult): SlackAnswer => {
@@ -297,9 +312,10 @@ const answerOf = (result: SlackPageResult): SlackAnswer => {
 const callSlack = async (
   account: SlackAccount,
   method: SlackMethod | SlackUploadMethod,
-  params: Readonly<Record<string, string>>
+  params: Readonly<Record<string, string>>,
+  abandonment: IAbandonment
 ): Promise<SlackAnswer> => {
-  const answered = await inSlackTab(account, callRequest(account, method, params))
+  const answered = await inSlackTab(account, abandonment, callRequest(account, method, params, abandonment.deadline))
 
   return answered === null ? { ok: false, error: NO_SLACK_TAB_ERROR } : answerOf(answered.result)
 }
@@ -358,16 +374,16 @@ const preparedUploadOf = (uploaded: SlackPageResult, fileId: string): PreparedUp
 }
 
 const slackHandlers: Handlers = {
-  slackCall: (raw) => {
+  slackCall: (raw, abandonment) => {
     const { account, method, params } = SLACK_BRIDGE_METHODS.slackCall.params.parse(raw)
 
-    return callSlack(account, method, params)
+    return callSlack(account, method, params, abandonment)
   },
-  slackDownload: async (raw) => {
+  slackDownload: async (raw, abandonment) => {
     const { account, url } = SLACK_BRIDGE_METHODS.slackDownload.params.parse(raw)
-    const answered = await inSlackTab(account, () => ({
+    const answered = await inSlackTab(account, abandonment, () => ({
       key: new URL(url).href,
-      command: { kind: 'download', account, url },
+      command: { kind: 'download', account, url, deadline: abandonment.deadline },
     }))
     if (answered === null) {
       throw new Error(`${NO_SLACK_TAB_ERROR}: no open Slack tab is signed in as ${slackAccountId(account)}`)
@@ -408,7 +424,7 @@ const slackHandlers: Handlers = {
 
     return {}
   },
-  slackUploadPrepare: async (raw) => {
+  slackUploadPrepare: async (raw, abandonment) => {
     const { account, uploadId, filename, byteLength } = SLACK_BRIDGE_METHODS.slackUploadPrepare.params.parse(raw)
     const parts = uploadParts(uploads.get(uploadId), byteLength)
     uploads.delete(uploadId)
@@ -417,7 +433,9 @@ const slackHandlers: Handlers = {
     }
 
     const params = { filename, length: String(byteLength) }
-    const answered = await inSlackTab(account, callRequest(account, 'files.getUploadURLExternal', params))
+    const { deadline } = abandonment
+    const ticketRequest = callRequest(account, 'files.getUploadURLExternal', params, deadline)
+    const answered = await inSlackTab(account, abandonment, ticketRequest)
     if (answered === null) {
       return { ok: false, error: NO_SLACK_TAB_ERROR }
     }
@@ -429,23 +447,29 @@ const slackHandlers: Handlers = {
 
     // The bytes go from the page that took the ticket; a page whose user changed since sends nothing.
     const { href } = ticket.uploadUrl
+    throwIfAbandoned(abandonment)
     const uploaded = await requestInPage(answered.page, {
       key: href,
-      command: { kind: 'upload', account, uploadUrl: href, filename, chunks: parts },
+      command: { kind: 'upload', account, uploadUrl: href, filename, chunks: parts, deadline },
     })
 
     return preparedUploadOf(uploaded, ticket.fileId)
   },
-  slackUploadFinish: (raw) => {
+  slackUploadFinish: (raw, abandonment) => {
     const { account, fileId, title, channel, threadTs, initialComment } =
       SLACK_BRIDGE_METHODS.slackUploadFinish.params.parse(raw)
 
-    return callSlack(account, 'files.completeUploadExternal', {
-      files: JSON.stringify([{ id: fileId, title }]),
-      channel_id: channel,
-      ...(threadTs === null ? {} : { thread_ts: threadTs }),
-      ...(initialComment === null ? {} : { initial_comment: initialComment }),
-    })
+    return callSlack(
+      account,
+      'files.completeUploadExternal',
+      {
+        files: JSON.stringify([{ id: fileId, title }]),
+        channel_id: channel,
+        ...(threadTs === null ? {} : { thread_ts: threadTs }),
+        ...(initialComment === null ? {} : { initial_comment: initialComment }),
+      },
+      abandonment
+    )
   },
 }
 
@@ -522,16 +546,24 @@ const admitFrame = async (
 }
 
 // A reply goes back only on the port its request came on, while that port is open. A newer port belongs to a new
-// relay, which numbers its requests from 1 again, so a reply sent there could reach a caller that never asked.
-const onHostFrame = (source: chrome.runtime.Port, message: unknown): void => {
+// relay, which numbers its requests from 1 again, so a reply sent there could reach a caller that never asked. Each
+// request of the port runs with a controller in running, which a cancel from the relay aborts.
+const onHostFrame = (source: chrome.runtime.Port, running: Map<number, AbortController>, message: unknown): void => {
   const frame = HostFrameSchema.parse(message)
   switch (frame.type) {
-    case 'request':
-      void answerRequest(handlers, frame).then((reply) => {
+    case 'request': {
+      const controller = new AbortController()
+      running.set(frame.id, controller)
+      void answerRequest(handlers, frame, controller.signal).then((reply) => {
+        running.delete(frame.id)
         if (port === source) {
           source.postMessage(reply)
         }
       })
+      return
+    }
+    case 'cancel':
+      running.get(frame.id)?.abort()
       return
     case 'ack':
       // Redelivery stops once the event is no longer pending: a held one at once, a stored one once its deletion
@@ -554,9 +586,16 @@ const connect = (): void => {
   }
 
   const opened = chrome.runtime.connectNative(NATIVE_HOST_NAME)
-  opened.onMessage.addListener((message: unknown) => onHostFrame(opened, message))
+  const running = new Map<number, AbortController>()
+  opened.onMessage.addListener((message: unknown) => onHostFrame(opened, running, message))
+  // A port that dropped took its relay with it, and every caller of its requests lost the connection.
   opened.onDisconnect.addListener(() => {
     port = null
+    for (const controller of running.values()) {
+      controller.abort()
+    }
+
+    running.clear()
     forwarder.detach()
   })
   port = opened

@@ -3,7 +3,8 @@ import { type SlackAccount, SlackAnswerSchema } from '../protocol/slack.js'
 
 // What the service worker asks of a Slack tab. Each command runs in the page's own world (MAIN), where Slack's client
 // keeps its state, through chrome.scripting. Every command but identity names the account it acts as, and acts only
-// when the tab is signed in as that account at that moment.
+// when the tab is signed in as that account at that moment, and makes one request to Slack, which it sends only before
+// its deadline: when the caller stops waiting, in milliseconds since the epoch.
 export type SlackPageCommand =
   | { readonly kind: 'identity' }
   | {
@@ -14,14 +15,16 @@ export type SlackPageCommand =
       // The query the call goes out with, by the origin of the workspace API it belongs to: the query of the page
       // client's own latest call to that API, as the service worker borrowed it (slack-client-observer.ts).
       readonly queries: Readonly<Record<string, string>>
+      readonly deadline: number
     }
-  | { readonly kind: 'download'; readonly account: SlackAccount; readonly url: string }
+  | { readonly kind: 'download'; readonly account: SlackAccount; readonly url: string; readonly deadline: number }
   | {
       readonly kind: 'upload'
       readonly account: SlackAccount
       readonly uploadUrl: string
       readonly filename: string
       readonly chunks: readonly string[]
+      readonly deadline: number
     }
 
 // Why a command did not complete, as a fixed code. The page words no error itself, so no text the page or a response
@@ -30,6 +33,7 @@ export type SlackPageCommand =
 // - no-api-session, no-api-address: the saved state keeps no token, or no https address on a workspace's Slack host
 // - no-client-query: the service worker has seen no Web API call of the page's client to the workspace's API, so it
 //   holds no query to send the call with
+// - deadline-passed: the caller's deadline passed before the request went out, so nothing was sent
 // - api-unreachable, api-refused, api-no-answer: a Web API call got no response, an HTTP status other than 2xx, or no
 //   JSON object with a boolean ok
 // - file-unreachable, file-refused, file-bytes-lost: a private file got no response, a status other than 2xx, or its
@@ -41,6 +45,7 @@ export const SLACK_PAGE_FAILURES = [
   'no-api-session',
   'no-api-address',
   'no-client-query',
+  'deadline-passed',
   'api-unreachable',
   'api-refused',
   'api-no-answer',
@@ -160,6 +165,17 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
     }
 
     const apiUrl = new URL('/api/', base.origin)
+    const { deadline } = command
+
+    // Sends the command's request only while its caller still waits: the deadline is checked right before the fetch
+    // call, the last point before the request leaves.
+    const sent = async (failure: SlackPageFailure, send: () => Promise<Response>): Promise<Response> => {
+      if (Date.now() >= deadline) {
+        throw new PageFailure('deadline-passed')
+      }
+
+      return guarded(failure, send)
+    }
 
     // Slack's client calls the Web API with a query of its own (_x_id, _x_csid, slack_route, _x_version_ts and the rest),
     // and Slack answers a call with cookies with credentialed CORS (the page's origin, allow-credentials) only when it
@@ -189,7 +205,7 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
       })) {
         body.append(name, value)
       }
-      const response = await guarded('api-unreachable', () =>
+      const response = await sent('api-unreachable', () =>
         fetch(url, { method: 'POST', body, credentials: 'include', redirect: 'error' })
       )
       if (!response.ok) {
@@ -206,9 +222,7 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
 
     // A private file, fetched with the browser's cookies.
     const download = async (url: string): Promise<SlackPageResult> => {
-      const response = await guarded('file-unreachable', () =>
-        fetch(url, { credentials: 'include', redirect: 'error' })
-      )
+      const response = await sent('file-unreachable', () => fetch(url, { credentials: 'include', redirect: 'error' }))
       if (!response.ok) {
         throw new PageFailure('file-refused', response.status)
       }
@@ -224,7 +238,7 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
     const upload = async (uploadUrl: string, filename: string, chunks: readonly string[]): Promise<SlackPageResult> => {
       const body = new FormData()
       body.append('filename', new Blob(chunks.map((chunk) => Uint8Array.fromBase64(chunk))), filename)
-      const posted = await guarded('upload-unreachable', () =>
+      const posted = await sent('upload-unreachable', () =>
         fetch(uploadUrl, { method: 'POST', body, redirect: 'error' })
       )
 

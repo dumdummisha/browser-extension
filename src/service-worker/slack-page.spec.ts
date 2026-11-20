@@ -9,6 +9,9 @@ import {
 
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 const TOKEN = 'xoxc-0000-example'
+// A caller's deadline that has not passed (2100-01-01) and one that has (2000-01-01).
+const LATER = 4_102_444_800_000
+const EARLIER = 946_684_800_000
 // The query the service worker borrowed for the workspace's API (slack-request-shape.ts borrowedQueryString).
 const CLIENT_QUERY =
   '_x_id=0f1e2d3c-1794900000.100&_x_csid=example-csid&slack_route=T0EXAMPLE1&_x_version_ts=1794800000&_x_gantry=true&fp=7a&_x_num_retries=0'
@@ -18,6 +21,7 @@ const CALL: Extract<SlackPageCommand, { kind: 'call' }> = {
   method: 'auth.test',
   params: {},
   queries: { 'https://example.slack.com': CLIENT_QUERY },
+  deadline: LATER,
 }
 
 const savedConfig = (url: string): string =>
@@ -147,6 +151,7 @@ describe('[service-worker] Slack page - uploads', () => {
     uploadUrl: UPLOAD_URL,
     filename: 'notes.txt',
     chunks: [Buffer.from('made-up ').toString('base64'), Buffer.from('notes').toString('base64')],
+    deadline: LATER,
   }
 
   it('should post the bytes to the upload URL it is given, as one multipart file, without cookies or redirects', async (context) => {
@@ -191,6 +196,45 @@ describe('[service-worker] Slack page - uploads', () => {
 
     // Assert
     assert.deepEqual(result, { kind: 'failed', failure: 'upload-unreachable', status: null })
+  })
+})
+
+describe('[service-worker] Slack page - deadlines', () => {
+  it("should send nothing once the caller's deadline passed, for a call, a download and an upload's bytes", async (context) => {
+    // Arrange
+    openSlackPage(context, () => savedConfig('https://example.slack.com/'))
+    decodeBase64InPage(context)
+    const fetched = context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
+    const commands: SlackPageCommand[] = [
+      { ...CALL, deadline: EARLIER },
+      {
+        kind: 'download',
+        account: ACCOUNT,
+        url: 'https://files.slack.com/files-pri/T0EXAMPLE1-F0EXAMPLE1/a.txt',
+        deadline: EARLIER,
+      },
+      {
+        kind: 'upload',
+        account: ACCOUNT,
+        uploadUrl: 'https://files.slack.com/upload/v1/example-grant',
+        filename: 'a.txt',
+        chunks: [Buffer.from('made-up').toString('base64')],
+        deadline: EARLIER,
+      },
+    ]
+
+    // Act
+    const results = []
+    for (const command of commands) {
+      results.push(await runSlackPageCommand(command))
+    }
+
+    // Assert
+    assert.deepEqual(
+      results,
+      commands.map(() => ({ kind: 'failed', failure: 'deadline-passed', status: null }))
+    )
+    assert.equal(fetched.mock.callCount(), 0)
   })
 })
 

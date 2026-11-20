@@ -61,7 +61,9 @@ interface IPendingCall {
   readonly method: BridgeMethod
   readonly resolve: (result: unknown) => void
   readonly reject: (error: Error) => void
-  readonly timer: NodeJS.Timeout
+  // Stops the call's timer and stops listening to its caller's signal, once the call is answered or its connection
+  // closed.
+  readonly release: () => void
 }
 
 interface IConnection {
@@ -105,49 +107,58 @@ export class BridgeClient {
     }
   }
 
+  // signal, on this and the other Slack methods: aborting it abandons the call, and only that call. It rejects at once,
+  // and the extension sends nothing more of it to Slack; what it already sent stays sent.
   public async call(
     account: SlackAccount,
     method: SlackMethod,
-    params: Readonly<Record<string, string>>
+    params: Readonly<Record<string, string>>,
+    signal?: AbortSignal
   ): Promise<SlackAnswer> {
     const { slackCall } = SLACK_BRIDGE_METHODS
+    const answer = await this.request('slackCall', slackCall.params.parse({ account, method, params }), signal)
 
-    return slackCall.result.parse(await this.request('slackCall', slackCall.params.parse({ account, method, params })))
+    return slackCall.result.parse(answer)
   }
 
   // A private file, pulled from the extension chunk by chunk as the stream is read.
-  public async download(account: SlackAccount, url: string): Promise<Readable> {
+  public async download(account: SlackAccount, url: string, signal?: AbortSignal): Promise<Readable> {
     const { slackDownload } = SLACK_BRIDGE_METHODS
     const { downloadId, byteLength } = slackDownload.result.parse(
-      await this.request('slackDownload', slackDownload.params.parse({ account, url }))
+      await this.request('slackDownload', slackDownload.params.parse({ account, url }), signal)
     )
 
-    return Readable.from(this.downloadChunks(downloadId, byteLength), { objectMode: false })
+    return Readable.from(this.downloadChunks(downloadId, byteLength, signal), { objectMode: false })
   }
 
   // The first upload step: the bytes go to Slack, which answers the file's id; nobody sees the file until finishUpload.
-  public async prepareUpload(account: SlackAccount, filename: string, bytes: Uint8Array): Promise<PreparedUpload> {
+  public async prepareUpload(
+    account: SlackAccount,
+    filename: string,
+    bytes: Uint8Array,
+    signal?: AbortSignal
+  ): Promise<PreparedUpload> {
     const { slackUploadChunk, slackUploadPrepare } = SLACK_BRIDGE_METHODS
     const uploadId = randomUUID()
     for (let index = 0; index < chunkCount(bytes.byteLength); index += 1) {
       const { start, end } = chunkRange(index, bytes.byteLength)
       const data = Buffer.from(bytes.subarray(start, end)).toString('base64')
       slackUploadChunk.result.parse(
-        await this.request('slackUploadChunk', slackUploadChunk.params.parse({ uploadId, index, data }))
+        await this.request('slackUploadChunk', slackUploadChunk.params.parse({ uploadId, index, data }), signal)
       )
     }
 
     const params = slackUploadPrepare.params.parse({ account, uploadId, filename, byteLength: bytes.byteLength })
 
-    return slackUploadPrepare.result.parse(await this.request('slackUploadPrepare', params))
+    return slackUploadPrepare.result.parse(await this.request('slackUploadPrepare', params, signal))
   }
 
   // The second upload step: shares exactly the prepared file, and answers Slack's completion answer as it is.
-  public async finishUpload(account: SlackAccount, share: UploadShare): Promise<SlackAnswer> {
+  public async finishUpload(account: SlackAccount, share: UploadShare, signal?: AbortSignal): Promise<SlackAnswer> {
     const { slackUploadFinish } = SLACK_BRIDGE_METHODS
     const params = slackUploadFinish.params.parse({ account, ...share })
 
-    return slackUploadFinish.result.parse(await this.request('slackUploadFinish', params))
+    return slackUploadFinish.result.parse(await this.request('slackUploadFinish', params, signal))
   }
 
   // A tab command of the browser tools, with its result checked against the protocol.
@@ -177,29 +188,48 @@ export class BridgeClient {
     opened?.socket.destroy()
   }
 
-  private async *downloadChunks(downloadId: string, byteLength: number): AsyncGenerator<Buffer> {
+  private async *downloadChunks(downloadId: string, byteLength: number, signal?: AbortSignal): AsyncGenerator<Buffer> {
     const { slackDownloadChunk } = SLACK_BRIDGE_METHODS
     for (let index = 0; index < chunkCount(byteLength); index += 1) {
       const params = slackDownloadChunk.params.parse({ downloadId, index })
-      const { data } = slackDownloadChunk.result.parse(await this.request('slackDownloadChunk', params))
+      const { data } = slackDownloadChunk.result.parse(await this.request('slackDownloadChunk', params, signal))
       yield Buffer.from(data, 'base64')
     }
   }
 
-  // Resolves with the extension's result. Rejects when no answer came: the connection dropped, the call timed out, or
-  // the extension answered an error; for a write, the outcome is then unknown.
-  private async request(method: BridgeMethod, params: unknown): Promise<unknown> {
+  // Resolves with the extension's result. Rejects when no answer came: the connection dropped, the call timed out, the
+  // caller abandoned it, or the extension answered an error; for a write, the outcome is then unknown. The request
+  // carries its deadline, the moment the timeout fires, so the extension sends nothing of it to Slack once the client
+  // stopped waiting; an abandoned call is cancelled at the extension.
+  private async request(method: BridgeMethod, params: unknown, signal?: AbortSignal): Promise<unknown> {
     const { socket, calls } = await this.connect()
+    if (signal?.aborted === true) {
+      throw new BridgeError(`The caller abandoned ${method} before it was sent`)
+    }
+
     const id = this.nextId
     this.nextId += 1
+    const deadline = Date.now() + this.options.requestTimeoutMs
 
     return new Promise((resolve, reject) => {
+      const abandon = (): void => {
+        calls.delete(id)
+        clearTimeout(timer)
+        this.write(socket, { type: 'cancel', id })
+        reject(new BridgeError(`The caller abandoned ${method}`))
+      }
       const timer = setTimeout(() => {
         calls.delete(id)
+        signal?.removeEventListener('abort', abandon)
         reject(new BridgeError(`The extension did not answer ${method} within ${this.options.requestTimeoutMs}ms`))
       }, this.options.requestTimeoutMs)
-      calls.set(id, { method, resolve, reject, timer })
-      this.write(socket, { type: 'request', id, method, params })
+      const release = (): void => {
+        clearTimeout(timer)
+        signal?.removeEventListener('abort', abandon)
+      }
+      calls.set(id, { method, resolve, reject, release })
+      signal?.addEventListener('abort', abandon, { once: true })
+      this.write(socket, { type: 'request', id, method, params, deadline })
     })
   }
 
@@ -273,7 +303,7 @@ export class BridgeClient {
         reject(error)
         onClose()
         for (const call of connection.calls.values()) {
-          clearTimeout(call.timer)
+          call.release()
           call.reject(error)
         }
 
@@ -294,7 +324,7 @@ export class BridgeClient {
         }
 
         calls.delete(message.id)
-        clearTimeout(call.timer)
+        call.release()
         if ('error' in message) {
           call.reject(new BridgeError(`The extension failed ${call.method}: ${message.error}`))
         } else {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { type IStartedRequest, SlackClientObserver } from './slack-client-observer.js'
-import type { IRequestHeader } from './slack-request-shape.js'
+import { borrowedQueryString, type IRequestHeader } from './slack-request-shape.js'
 
 const SLACK_ORIGIN = 'https://app.slack.com'
 const PAGE = { tabId: 7, documentId: 'DOC-A' }
@@ -417,6 +417,73 @@ describe('[service-worker] Slack client observer - transport check', () => {
       [unanswered, observer.parity()],
       [[{ operation: 'chat.postMessage', state: 'unchecked' }], [{ operation: 'chat.postMessage', state: 'matches' }]]
     )
+  })
+
+  it("should match a call of Misha's built from the query a client call with a focus field and a next build lent", () => {
+    // Arrange
+    const { observer } = observe()
+    const clientQuery =
+      '_x_gantry=true&_x_desktop_ia=4&_x_csid=example-csid&slack_route=T0EXAMPLE1&_x_version_ts=1794800000&_x_foreground=true&_x_frontend_build_type=next-0a1b2c3d&fp=7a'
+    sent(
+      observer,
+      clientPost('client-1', {
+        url: `${API_ORIGIN}/api/conversations.history?_x_id=0f1e2d3c-1794900000.100&${clientQuery}&_x_num_retries=0`,
+      })
+    )
+    const borrowed = observer.clientQueries(PAGE).get(API_ORIGIN)
+    assert.ok(borrowed !== undefined)
+
+    // Act
+    mishaSent(
+      observer,
+      mishaPost('misha-1', {
+        url: `${API_ORIGIN}/api/conversations.history?${borrowedQueryString(borrowed, MISHA_ID)}`,
+      }),
+      MISHA_CALL
+    )
+
+    // Assert
+    assert.deepEqual(observer.parity(), [{ operation: 'conversations.history', state: 'matches' }])
+  })
+
+  it('should name both focus fields when the reference carries one and the borrowed query the other', () => {
+    // Arrange
+    const { observer } = observe()
+    sent(
+      observer,
+      clientPost('client-1', {
+        url: `${API_ORIGIN}/api/conversations.history?_x_id=0f1e2d3c-1794900000.100&slack_route=T0EXAMPLE1&_x_foreground=true`,
+      })
+    )
+    sent(
+      observer,
+      clientPost('client-2', {
+        url: `${API_ORIGIN}/api/client.counts?_x_id=2b3c4d5e-1794900003.000&slack_route=T0EXAMPLE1&_x_background=true`,
+      })
+    )
+    const borrowed = observer.clientQueries(PAGE).get(API_ORIGIN)
+    assert.ok(borrowed !== undefined)
+
+    // Act
+    mishaSent(
+      observer,
+      mishaPost('misha-1', {
+        url: `${API_ORIGIN}/api/conversations.history?${borrowedQueryString(borrowed, MISHA_ID)}`,
+      }),
+      MISHA_CALL
+    )
+
+    // Assert
+    assert.deepEqual(observer.parity(), [
+      {
+        operation: 'conversations.history',
+        state: 'differs',
+        differences: [
+          { part: 'query', name: '_x_background', kind: 'extra' },
+          { part: 'query', name: '_x_foreground', kind: 'missing' },
+        ],
+      },
+    ])
   })
 })
 

@@ -25,16 +25,27 @@ const RETRIES_FIELD = '_x_num_retries'
 const FIRST_ATTEMPT = '0'
 
 // The query fields of the client's page session the transport borrows, each with the form its value must have; a
-// field of another form, or any other field, is not borrowed. The repository's recorded client call names _x_id,
-// _x_csid, slack_route, _x_version_ts, _x_gantry, fp and _x_num_retries; _x_frontend_build_type and _x_desktop_ia are
-// the other fields public reimplementations of Slack's web client send. A field the client sends and this list lacks
-// shows in the transport check as one Misha's request is missing. _x_reason, which names the action behind one call
-// of the client, is never borrowed.
+// field of another form, or any other field, is not borrowed. Slack's web client builds its default Web API query
+// (generateQueryString in its client bundle) from the page, the session and the team, never from the method called,
+// though a call may replace it with a query of its own: _x_gantry and _x_desktop_ia, then _x_csid, slack_route,
+// _x_version_ts, the focus field and _x_frontend_build_type, then fp and _x_num_retries as each attempt is sent.
+// - The focus field is _x_foreground=true or _x_background=true, which the client works out from its window's focus
+//   as it dispatches each call, or neither while the window was never focused. The transport carries the one the
+//   client's latest call carried, so its value is the client's as of that call, not as of Misha's.
+// - _x_frontend_build_type is the page's build: current, or next with an optional number from 2 to 999, a hyphen and
+//   4 to 40 lower-case hex digits, the forms the client itself accepts.
+// The client also writes fields this list lacks, so the transport check shows each as missing from Misha's request
+// whenever the client's request carries it: force_agentic_ia and force_agentic_ia_experimental under a local
+// override, feature_*, force_*, country* and _x_fail_apis copied from the page's address, and _x_b3_traceid,
+// _x_b3_spanid and _x_b3_sampled on a traced call. _x_reason, which names the action behind one call of the client,
+// is never borrowed.
 const BORROWED_QUERY_FORMS: Readonly<Record<string, RegExp>> = {
   _x_csid: /^[\w.-]{1,64}$/u,
   slack_route: /^[A-Z0-9]{2,32}(?::[A-Z0-9]{2,32})*$/u,
   _x_version_ts: /^\d{1,16}$/u,
-  _x_frontend_build_type: /^[a-z_]{1,32}$/u,
+  _x_foreground: /^true$/u,
+  _x_background: /^true$/u,
+  _x_frontend_build_type: /^(?:current|next(?:[2-9]|[1-9]\d{1,2})?-[\da-f]{4,40})$/u,
   _x_desktop_ia: /^\d{1,4}$/u,
   _x_gantry: /^(?:true|false)$/u,
   fp: /^[\da-f]{1,16}$/u,

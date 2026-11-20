@@ -19,7 +19,15 @@ import { startNativeHostRelay } from './relay.js'
 
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 const BROWSER_APP = 'Example Browser.app'
-const STATUS = { type: 'status', identities: [], captures: [], queue: { state: 'committing', droppedEvents: 0 } }
+// A caller's deadline that has not passed (2100-01-01).
+const DEADLINE = 4_102_444_800_000
+const STATUS = {
+  type: 'status',
+  identities: [],
+  captures: [],
+  queue: { state: 'committing', droppedEvents: 0 },
+  parity: [],
+}
 
 interface IInbox {
   readonly put: (message: unknown) => void
@@ -123,7 +131,7 @@ const fromExtension = ({ input }: IRelay, frame: unknown): void => {
 // A request that went through and its reply came back proves the relay handled everything the client sent before it,
 // and that nothing else reached the client in between.
 const roundTrip = async (relay: IRelay, client: IClient): Promise<void> => {
-  send(client, { type: 'request', id: 99, method: 'slackCall', params: {} })
+  send(client, { type: 'request', id: 99, method: 'slackCall', params: {}, deadline: DEADLINE })
   const request = await relay.extension.next()
   assert.ok(typeof request === 'object' && request !== null && 'id' in request && typeof request.id === 'number')
   fromExtension(relay, { type: 'reply', id: request.id, result: { ok: true } })
@@ -286,9 +294,9 @@ describe('[host] Relay - requests', () => {
     const [first, second] = [await connectClient(relay), await connectClient(relay)]
 
     // Act
-    send(first, { type: 'request', id: 1, method: 'slackCall', params: { order: 1 } })
+    send(first, { type: 'request', id: 1, method: 'slackCall', params: { order: 1 }, deadline: DEADLINE })
     const firstRequest = await relay.extension.next()
-    send(second, { type: 'request', id: 1, method: 'slackDownload', params: { order: 2 } })
+    send(second, { type: 'request', id: 1, method: 'slackDownload', params: { order: 2 }, deadline: DEADLINE })
     const secondRequest = await relay.extension.next()
     fromExtension(relay, { type: 'reply', id: 2, result: { ok: true } })
     fromExtension(relay, { type: 'reply', id: 1, error: 'Tab 12 closed' })
@@ -297,8 +305,8 @@ describe('[host] Relay - requests', () => {
     assert.deepEqual(
       [firstRequest, secondRequest],
       [
-        { type: 'request', id: 1, method: 'slackCall', params: { order: 1 } },
-        { type: 'request', id: 2, method: 'slackDownload', params: { order: 2 } },
+        { type: 'request', id: 1, method: 'slackCall', params: { order: 1 }, deadline: DEADLINE },
+        { type: 'request', id: 2, method: 'slackDownload', params: { order: 2 }, deadline: DEADLINE },
       ]
     )
     assert.deepEqual(await second.inbox.next(), { type: 'reply', id: 1, result: { ok: true } })
@@ -314,7 +322,7 @@ describe('[host] Relay - message size', () => {
     const text = 'x'.repeat(HOST_MESSAGE_MAX_BYTES)
 
     // Act
-    send(client, { type: 'request', id: 7, method: 'slackCall', params: { text } })
+    send(client, { type: 'request', id: 7, method: 'slackCall', params: { text }, deadline: DEADLINE })
     const refusal = await client.inbox.next()
 
     // Assert
@@ -407,13 +415,13 @@ describe('[host] Relay - events', () => {
 
     // Act
     send(bystander, { type: 'ack', id: ignored.id })
-    send(bystander, { type: 'request', id: 5, method: 'slackCall', params: {} })
+    send(bystander, { type: 'request', id: 5, method: 'slackCall', params: {}, deadline: DEADLINE })
     const afterBystander = await relay.extension.next()
     send(listener, { type: 'ack', id: acknowledged.id })
     const afterListener = await relay.extension.next()
 
     // Assert
-    assert.deepEqual(afterBystander, { type: 'request', id: 1, method: 'slackCall', params: {} })
+    assert.deepEqual(afterBystander, { type: 'request', id: 1, method: 'slackCall', params: {}, deadline: DEADLINE })
     assert.deepEqual(afterListener, { type: 'ack', id: acknowledged.id })
   })
 
@@ -437,5 +445,69 @@ describe('[host] Relay - events', () => {
     // Assert
     assert.deepEqual(told, { type: 'listener' })
     assert.deepEqual([await next.inbox.next(), await next.inbox.next()], [STATUS, event])
+  })
+})
+
+describe('[host] Relay - callers that gave up', () => {
+  it("should pass a client's cancel on under the extension's id, and drop the reply that still comes", async (context) => {
+    // Arrange
+    const relay = await startRelay(context)
+    const [other, client] = [await connectClient(relay), await connectClient(relay)]
+    send(other, { type: 'request', id: 4, method: 'slackCall', params: {}, deadline: DEADLINE })
+    await relay.extension.next()
+    send(client, { type: 'request', id: 4, method: 'slackCall', params: {}, deadline: DEADLINE })
+    await relay.extension.next()
+
+    // Act
+    send(client, { type: 'cancel', id: 4 })
+    const cancel = await relay.extension.next()
+    fromExtension(relay, { type: 'reply', id: 2, error: 'The caller gave up on the request before it was sent' })
+    fromExtension(relay, { type: 'reply', id: 1, result: { ok: true } })
+
+    // Assert
+    assert.deepEqual(cancel, { type: 'cancel', id: 2 })
+    assert.deepEqual(await other.inbox.next(), { type: 'reply', id: 4, result: { ok: true } })
+    await roundTrip(relay, client)
+  })
+
+  it("should cancel every pending request of a client whose connection closed, and no other client's", async (context) => {
+    // Arrange
+    const relay = await startRelay(context)
+    const [leaving, staying] = [await connectClient(relay), await connectClient(relay)]
+    send(leaving, { type: 'request', id: 1, method: 'slackCall', params: {}, deadline: DEADLINE })
+    await relay.extension.next()
+    send(staying, { type: 'request', id: 1, method: 'slackCall', params: {}, deadline: DEADLINE })
+    await relay.extension.next()
+    send(leaving, { type: 'request', id: 2, method: 'slackDownload', params: {}, deadline: DEADLINE })
+    await relay.extension.next()
+
+    // Act
+    leaving.socket.destroy()
+    const cancels = [await relay.extension.next(), await relay.extension.next()]
+
+    // Assert
+    assert.deepEqual(cancels, [
+      { type: 'cancel', id: 1 },
+      { type: 'cancel', id: 3 },
+    ])
+    fromExtension(relay, { type: 'reply', id: 2, result: { ok: true } })
+    assert.deepEqual(await staying.inbox.next(), { type: 'reply', id: 1, result: { ok: true } })
+  })
+
+  it('should pass on no cancel for a request that was answered, or that another client sent', async (context) => {
+    // Arrange
+    const relay = await startRelay(context)
+    const [first, second] = [await connectClient(relay), await connectClient(relay)]
+    send(first, { type: 'request', id: 1, method: 'slackCall', params: {}, deadline: DEADLINE })
+    await relay.extension.next()
+    fromExtension(relay, { type: 'reply', id: 1, result: { ok: true } })
+    await first.inbox.next()
+
+    // Act
+    send(first, { type: 'cancel', id: 1 })
+    send(second, { type: 'cancel', id: 1 })
+
+    // Assert
+    await roundTrip(relay, second)
   })
 })

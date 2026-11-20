@@ -6,12 +6,15 @@ import { slackEventKey } from './slack.js'
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 const FRAME = { type: 'message', channel: 'D0EXAMPLE1', ts: '1700000000.000100', text: 'hello' } as const
 const EVENT = { type: 'event', id: slackEventKey(ACCOUNT, FRAME), account: ACCOUNT, frame: FRAME } as const
+// A caller's deadline that has not passed (2100-01-01).
+const DEADLINE = 4_102_444_800_000
 
 describe('[protocol] Wire messages', () => {
-  it('should take requests, listen and acks from a client', () => {
+  it('should take requests, cancels, listen and acks from a client', () => {
     // Arrange
     const messages = [
-      { type: 'request', id: 7, method: 'slackCall', params: {} },
+      { type: 'request', id: 7, method: 'slackCall', params: {}, deadline: DEADLINE },
+      { type: 'cancel', id: 7 },
       { type: 'listen' },
       { type: 'ack', id: EVENT.id },
     ]
@@ -41,5 +44,20 @@ describe('[protocol] Wire messages', () => {
     // Assert
     assert.equal(fromExtension.success, true)
     assert.equal(toExtension.success, false)
+  })
+
+  it('should refuse a request with no deadline, and pass requests and cancels on to the extension', () => {
+    // Arrange
+    const request = { type: 'request', id: 7, method: 'slackCall', params: {}, deadline: DEADLINE }
+
+    // Act
+    const parsed = [
+      ClientMessageSchema.safeParse({ type: 'request', id: 7, method: 'slackCall', params: {} }).success,
+      HostFrameSchema.safeParse(request).success,
+      HostFrameSchema.safeParse({ type: 'cancel', id: 7 }).success,
+    ]
+
+    // Assert
+    assert.deepEqual(parsed, [false, true, true])
   })
 })

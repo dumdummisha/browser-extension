@@ -101,7 +101,8 @@ const clearSocketPath = async (socketPath: string): Promise<void> => {
 }
 
 // The browser starts one host per extension connection, and every client process connects to its socket. The relay
-// renumbers the clients' requests so each reply from the extension finds its way back to the client that asked, and
+// renumbers the clients' requests so each reply from the extension finds its way back to the client that asked, tells
+// the extension when a request's caller has given up (the client cancelled it, or its connection closed), and
 // passes what the extension sends unasked, events and status, to the one listener: the newest client to send listen.
 // It tells the extension each time a listener attaches, so the extension sends its status and every waiting event. The
 // relay lives as long as the browser's pipe: when input ends, the socket closes and the process can exit.
@@ -115,6 +116,7 @@ export const startNativeHostRelay = async ({
   const clients = new Set<Socket>()
   let listener: Socket | null = null
   let nextId = 1
+  let isPipeOpen = true
 
   // Chrome closes the pipe on a frame larger than HOST_MESSAGE_MAX_BYTES, which would cut off the listener and every
   // caller; such a frame is refused here instead, and false says nothing of it went out.
@@ -131,6 +133,19 @@ export const startNativeHostRelay = async ({
 
   const toClient = (client: Socket, message: RelayMessage): void => {
     client.write(encodeLine(message))
+  }
+
+  // Tells the extension the caller of each pending request that matches has given up, and forgets the request, so a
+  // reply that still comes reaches nobody. Nothing goes out once the browser's pipe has ended.
+  const cancelPending = (isGivenUp: (request: IPendingRequest) => boolean): void => {
+    for (const [id, request] of pending) {
+      if (isGivenUp(request)) {
+        pending.delete(id)
+        if (isPipeOpen) {
+          toExtension({ type: 'cancel', id })
+        }
+      }
+    }
   }
 
   const relayClientMessage = (client: Socket, raw: unknown): void => {
@@ -151,6 +166,9 @@ export const startNativeHostRelay = async ({
         pending.set(id, { client, clientId: message.id })
         return
       }
+      case 'cancel':
+        cancelPending((request) => request.client === client && request.clientId === message.id)
+        return
       case 'listen':
         listener = client
         toExtension({ type: 'listener' })
@@ -205,17 +223,14 @@ export const startNativeHostRelay = async ({
       }
     })
     client.on('error', (error) => warn(`A client connection failed: ${error.message}`))
+    // A client whose connection closed can take no reply, so its pending requests are given up.
     client.on('close', () => {
       clients.delete(client)
       if (listener === client) {
         listener = null
       }
 
-      for (const [id, request] of pending) {
-        if (request.client === client) {
-          pending.delete(id)
-        }
-      }
+      cancelPending((request) => request.client === client)
     })
 
     toClient(client, { type: 'hello', browserApp })
@@ -237,6 +252,7 @@ export const startNativeHostRelay = async ({
 
   input.on('data', createFrameReader(relayExtensionFrame))
   input.on('end', () => {
+    isPipeOpen = false
     server.close()
     for (const client of clients) {
       client.destroy()

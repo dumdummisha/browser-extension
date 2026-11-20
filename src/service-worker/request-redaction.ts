@@ -24,7 +24,7 @@ const CREDENTIAL_NAME_PARTS = [
 ]
 
 // Values shaped like a known secret, wherever they appear.
-const VALUE_SHAPES = [
+export const VALUE_SHAPES: readonly RegExp[] = [
   // Every Slack xox token type: bot (xoxb), user (xoxp), app configuration (xoxa), refresh (xoxe), and the web
   // client's session token (xoxc) and cookie (xoxd).
   /\bxox[a-z]-[\w-]{10,}/u,

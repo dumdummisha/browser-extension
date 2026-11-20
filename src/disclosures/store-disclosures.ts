@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
 import { MESSAGE_FIELDS, NEW_MESSAGE_SUBTYPES } from '../protocol/slack-message-fields.js'
-import { SLACK_READ_METHODS, SLACK_WRITE_METHODS } from '../protocol/slack.js'
+import { SLACK_READ_METHODS, SLACK_UPLOAD_METHODS, SLACK_WRITE_METHODS } from '../protocol/slack.js'
 
 // The extension's store disclosures: docs/store-disclosures.json says what each permission, host permission and content
 // script lets the extension do and why, and docs/store-permissions.md is rendered from it and the manifest, for the
@@ -242,7 +242,7 @@ export const renderStorePermissions = (inputs: IDisclosureInputs): string => {
     disclosures.privacyPolicyUrl,
     '## Slack transport limits',
     [
-      `- Web API methods the extension calls when the Misha app asks: the reads ${codeList(SLACK_READ_METHODS)}, the writes ${codeList(SLACK_WRITE_METHODS)}, and for an upload ${codeList(['files.getUploadURLExternal', 'files.completeUploadExternal'])}.`,
+      `- Web API methods the extension calls when the Misha app asks: the reads ${codeList(SLACK_READ_METHODS)}, the writes ${codeList(SLACK_WRITE_METHODS)}, and for an upload ${codeList(SLACK_UPLOAD_METHODS)}.`,
       `- Fields a new message keeps when it leaves the page: ${codeList(MESSAGE_FIELDS)}, and the id of each file it shares.`,
       `- A message is new when it has no subtype or one of ${codeList(NEW_MESSAGE_SUBTYPES)}.`,
     ].join('\n'),

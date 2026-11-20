@@ -139,18 +139,6 @@ export const QueueHealthSchema = z.discriminatedUnion('state', [
   }),
 ])
 
-export const SlackStatusSchema = z.strictObject({
-  type: z.literal('status'),
-  identities: z.array(SlackIdentitySchema),
-  captures: z.array(CaptureHealthSchema),
-  queue: QueueHealthSchema,
-})
-
-export type SlackIdentity = z.infer<typeof SlackIdentitySchema>
-export type CaptureHealth = z.infer<typeof CaptureHealthSchema>
-export type QueueHealth = z.infer<typeof QueueHealthSchema>
-export type SlackStatus = z.infer<typeof SlackStatusSchema>
-
 // The Web API methods a Slack tab will call for the app. Reads change nothing anyone sees; writes do, so the app sends
 // them only through its provenance ledger. Uploads have their own methods below.
 export const SLACK_READ_METHODS = [
@@ -174,6 +162,64 @@ export const SlackMethodSchema = z.enum([...SLACK_READ_METHODS, ...SLACK_WRITE_M
 export type SlackMethod = z.infer<typeof SlackMethodSchema>
 export type SlackReadMethod = (typeof SLACK_READ_METHODS)[number]
 export type SlackWriteMethod = (typeof SLACK_WRITE_METHODS)[number]
+
+// The Web API methods of an upload's two stages: the upload URL, then the share (SLACK_BRIDGE_METHODS below).
+export const SLACK_UPLOAD_METHODS = ['files.getUploadURLExternal', 'files.completeUploadExternal'] as const
+
+export type SlackUploadMethod = (typeof SLACK_UPLOAD_METHODS)[number]
+
+// What the transport sends Slack, each a request the extension compares with Slack's client's own request for the
+// same operation: every Web API method it calls, a private file's download, and an upload's bytes.
+export const SlackOperationSchema = z.enum([
+  ...SLACK_READ_METHODS,
+  ...SLACK_WRITE_METHODS,
+  ...SLACK_UPLOAD_METHODS,
+  'download',
+  'upload',
+])
+
+export type SlackOperation = z.infer<typeof SlackOperationSchema>
+
+// A difference between a request of the transport and the client's request for the same operation, by name only, never
+// a value. part: the request's HTTP method (named method), a header, a query field or a body field. kind: missing, the
+// client sends the field and the transport does not; extra, the other way round; value, both send it with values that
+// differ.
+export const ParityDifferenceSchema = z.strictObject({
+  part: z.enum(['request', 'header', 'query', 'body']),
+  name: z.string().min(1).max(64),
+  kind: z.enum(['missing', 'extra', 'value']),
+})
+
+// How the transport's first request of an operation since the service worker started compares with the client's:
+// unchecked while the client has not been seen sending that operation, then matches or differs, which stays. A
+// comparison that found no difference but could not read a part (a body Chrome handed over as raw bytes) stays
+// unchecked, never matches.
+export const OperationParitySchema = z.discriminatedUnion('state', [
+  z.strictObject({ operation: SlackOperationSchema, state: z.literal('unchecked') }),
+  z.strictObject({ operation: SlackOperationSchema, state: z.literal('matches') }),
+  z.strictObject({
+    operation: SlackOperationSchema,
+    state: z.literal('differs'),
+    differences: z.array(ParityDifferenceSchema).min(1),
+  }),
+])
+
+export type ParityDifference = z.infer<typeof ParityDifferenceSchema>
+export type OperationParity = z.infer<typeof OperationParitySchema>
+
+// parity: the transport check, one entry per operation the transport sent since the service worker started.
+export const SlackStatusSchema = z.strictObject({
+  type: z.literal('status'),
+  identities: z.array(SlackIdentitySchema),
+  captures: z.array(CaptureHealthSchema),
+  queue: QueueHealthSchema,
+  parity: z.array(OperationParitySchema),
+})
+
+export type SlackIdentity = z.infer<typeof SlackIdentitySchema>
+export type CaptureHealth = z.infer<typeof CaptureHealthSchema>
+export type QueueHealth = z.infer<typeof QueueHealthSchema>
+export type SlackStatus = z.infer<typeof SlackStatusSchema>
 
 // The error an answer carries when no open tab is signed in as the account: the extension sent nothing to Slack.
 export const NO_SLACK_TAB_ERROR = 'misha_no_slack_tab'

@@ -17,6 +17,7 @@ const STATUS: SlackStatus = {
   identities: [{ tabId: 7, teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1', teamName: 'Example Workspace' }],
   captures: [{ tabId: 7, state: 'attached', isSocketOpen: true }],
   queue: { state: 'committing', droppedEvents: 0 },
+  parity: [],
 }
 
 interface IRejectedEvent {
@@ -137,7 +138,9 @@ describe('[client] Bridge client - events', () => {
 
     // Assert
     assert.deepEqual(taken, event)
-    assert.deepEqual(beforeCommit, {
+    assert.ok(typeof beforeCommit === 'object' && beforeCommit !== null && 'deadline' in beforeCommit)
+    const { deadline: _deadline, ...request } = beforeCommit
+    assert.deepEqual(request, {
       type: 'request',
       id: 1,
       method: 'slackCall',
@@ -187,9 +190,11 @@ describe('[client] Bridge client - status', () => {
 })
 
 describe('[client] Bridge client - tab commands', () => {
-  it('should send a tab command and answer its checked result', async (context) => {
+  it('should send a tab command with the deadline its timeout sets, and answer its checked result', async (context) => {
     // Arrange
     const { client, extension } = await startClient(context)
+
+    const startedAt = Date.now()
 
     // Act
     const answered = client.tab('closeTab', { tabId: 4 })
@@ -197,7 +202,10 @@ describe('[client] Bridge client - tab commands', () => {
     fromExtension(extension, { type: 'reply', id: 1, result: { tabId: 4 } })
 
     // Assert
-    assert.deepEqual(request, { type: 'request', id: 1, method: 'closeTab', params: { tabId: 4 } })
+    assert.ok(typeof request === 'object' && request !== null && 'deadline' in request)
+    const { deadline, ...sent } = request
+    assert.deepEqual(sent, { type: 'request', id: 1, method: 'closeTab', params: { tabId: 4 } })
+    assert.ok(typeof deadline === 'number' && deadline >= startedAt + 5000 && deadline <= Date.now() + 5000)
     assert.deepEqual(await answered, { tabId: 4 })
   })
 
@@ -239,5 +247,51 @@ describe('[client] Bridge client - tab commands', () => {
 
     // Assert
     assert.equal(browserApp, '/Applications/Example Browser.app')
+  })
+})
+
+describe('[client] Bridge client - abandoned calls', () => {
+  it('should abandon only the call whose signal aborts, and cancel it at the extension', async (context) => {
+    // Arrange
+    const { client, extension } = await startClient(context)
+    const controller = new AbortController()
+    const abandoned = client.call(ACCOUNT, 'chat.postMessage', { channel: 'C0EXAMPLE1', text: 'hi' }, controller.signal)
+    await extension.next()
+    const kept = client.call(ACCOUNT, 'auth.test', {})
+    await extension.next()
+
+    const rejected = assert.rejects(abandoned, { name: 'BridgeError', message: 'The caller abandoned slackCall' })
+
+    // Act
+    controller.abort()
+    const cancel = await extension.next()
+    fromExtension(extension, { type: 'reply', id: 2, result: { ok: true } })
+
+    // Assert
+    assert.deepEqual(cancel, { type: 'cancel', id: 1 })
+    await rejected
+    assert.deepEqual(await kept, { ok: true })
+  })
+
+  it('should send nothing for a call whose signal aborted before it went out', async (context) => {
+    // Arrange
+    const { client, extension } = await startClient(context)
+    const controller = new AbortController()
+    controller.abort()
+
+    // Act
+    const abandoned = client.call(ACCOUNT, 'auth.test', {}, controller.signal)
+    await assert.rejects(abandoned, {
+      name: 'BridgeError',
+      message: 'The caller abandoned slackCall before it was sent',
+    })
+    const next = client.tab('closeTab', { tabId: 4 })
+    const request = await extension.next()
+    fromExtension(extension, { type: 'reply', id: 1, result: { tabId: 4 } })
+
+    // Assert
+    assert.ok(typeof request === 'object' && request !== null && 'method' in request)
+    assert.equal(request.method, 'closeTab')
+    assert.deepEqual(await next, { tabId: 4 })
   })
 })

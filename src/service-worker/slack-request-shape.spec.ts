@@ -301,16 +301,30 @@ describe('[service-worker] Slack request shape - differences', () => {
 describe('[service-worker] Slack request shape - secret shapes', () => {
   const TOKEN = 'xoxc-0000-made-up-token'
   const AWS_KEY = 'AKIAABCDEFGHIJKLMNOP'
-  const SECRETS = ['xoxc-0000', 'AKIAABCD', 'akiaabcd']
+  // A Google API key's shape and a JSON Web Token's, built here so the source holds no literal of either: each starts
+  // with a mixed-case prefix (AIza, eyJ) that lower-casing changes.
+  const GOOGLE_KEY = `AIza${'a'.repeat(35)}`
+  const JWT = `eyJ${'a'.repeat(10)}.${'b'.repeat(10)}.${'c'.repeat(10)}`
+  // Compared with what is kept in lower case.
+  const SECRETS = ['xoxc-0000', 'akiaabcd', 'aizaaaaa', 'eyjaaaaa']
 
-  it('should keep no name holding a secret: glued to a prefix, or in another letter case', () => {
+  const holdsNoSecret = (kept: unknown): boolean => {
+    const text = JSON.stringify(kept).toLowerCase()
+
+    return SECRETS.every((secret) => !text.includes(secret))
+  }
+
+  it('should keep no name holding a secret: glued to a prefix or a suffix, or in another letter case', () => {
     // Arrange
-    const url = new URL(`https://example.slack.com/api/chat.postMessage?_x_id=0f1e2d3c-1794900000.100&_x_${TOKEN}=1`)
-    const body = { formData: { [`_x_${TOKEN}`]: ['1'], _x_mode: ['online'] } }
+    const url = new URL(
+      `https://example.slack.com/api/chat.postMessage?_x_id=0f1e2d3c-1794900000.100&_x_${TOKEN}=1&_x_${AWS_KEY}_suffix=1`
+    )
+    const body = { formData: { [`_x_${TOKEN}`]: ['1'], [`_x_${AWS_KEY}_suffix`]: ['1'], _x_mode: ['online'] } }
     const headers = [
       { name: AWS_KEY, value: '1' },
-      { name: AWS_KEY.toLowerCase(), value: '1' },
+      { name: `${AWS_KEY}0`.toLowerCase(), value: '1' },
       { name: `x-${TOKEN}`, value: '1' },
+      { name: GOOGLE_KEY.toLowerCase(), value: '1' },
       { name: 'Accept', value: '*/*' },
     ]
 
@@ -320,32 +334,40 @@ describe('[service-worker] Slack request shape - secret shapes', () => {
 
     // Assert
     assert.ok(shape !== null && shape.query !== null && shape.body !== null)
-    const kept = JSON.stringify([[...shape.query], [...shape.body], [...fields]])
-    assert.deepEqual(
-      [[...shape.query], [...shape.body], [...fields]],
-      [[], [['_x_mode', 'online']], [['accept', '*/*']]]
-    )
-    assert.ok(SECRETS.every((secret) => !kept.includes(secret)))
+    const kept = [[...shape.query], [...shape.body], [...fields]]
+    assert.deepEqual(kept, [[], [['_x_mode', 'online']], [['accept', '*/*']]])
+    assert.ok(holdsNoSecret(kept))
   })
 
-  it('should keep no value holding a secret, the content type included', () => {
+  it('should keep no value holding a secret: glued to a suffix, lower-cased, or in the content type', () => {
     // Arrange
     const headers = [
-      { name: 'Content-Type', value: `application/${TOKEN}` },
       { name: 'User-Agent', value: `Example/1.0_${TOKEN}` },
-      { name: 'Accept-Language', value: `en_${AWS_KEY}` },
+      { name: 'Accept-Language', value: `en_${AWS_KEY}_suffix` },
     ]
+    const contentTypes = [`application/${TOKEN}`, `application/${GOOGLE_KEY}`, `application/${JWT}`]
+    const url = new URL(
+      `https://example.slack.com/api/client.counts?_x_id=0f1e2d3c-1794900000.100&slack_route=T0EXAMPLE1&_x_csid=${AWS_KEY}_suffix&_x_frontend_build_type=${AWS_KEY.toLowerCase()}_x`
+    )
 
     // Act
     const fields = headerFieldsOf(headers)
+    const kept = contentTypes.map((value) => headerFieldsOf([{ name: 'Content-Type', value }]).get('content-type'))
+    const borrowed = borrowedQueryOf(url)
 
     // Assert
     assert.deepEqual(
-      [...fields],
+      [[...fields], kept, borrowed],
       [
-        ['content-type', null],
-        ['user-agent', null],
-        ['accept-language', null],
+        [
+          ['user-agent', null],
+          ['accept-language', null],
+        ],
+        [null, null, null],
+        [
+          ['_x_id', null],
+          ['slack_route', 'T0EXAMPLE1'],
+        ],
       ]
     )
   })

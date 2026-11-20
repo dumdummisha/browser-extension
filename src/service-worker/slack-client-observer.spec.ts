@@ -304,32 +304,44 @@ describe('[service-worker] Slack client observer - transport check', () => {
     assert.ok(!JSON.stringify(parity).includes(secretName))
   })
 
-  it('should emit no name holding a secret glued to a prefix or in another letter case, nor such a value', () => {
+  it('should keep and emit no name holding a secret glued to a prefix or a suffix or lower-cased, nor such a value', () => {
     // Arrange
     const { observer } = observe()
-    const glued = `_x_${TOKEN}`
     const awsKey = 'AKIAABCDEFGHIJKLMNOP'
+    // A Google API key's shape, built here so the source holds no literal of one; lower-casing changes its prefix.
+    const googleKey = `AIza${'a'.repeat(35)}`
+    const glued = [`_x_${TOKEN}`, `_x_${awsKey}_suffix`]
     const client = clientPost('client-1', {
-      url: `${clientPost('').url}&${glued}=1`,
-      requestBody: { formData: { [glued]: ['1'], _x_mode: ['online'], _x_sonic: ['true'], _x_app_name: ['client'] } },
+      url: `${clientPost('').url}&${glued.map((name) => `${name}=1`).join('&')}&_x_frontend_build_type=${awsKey.toLowerCase()}_x`,
+      requestBody: {
+        formData: {
+          ...Object.fromEntries(glued.map((name) => [name, ['1']])),
+          _x_mode: ['online'],
+          _x_sonic: ['true'],
+          _x_app_name: ['client'],
+        },
+      },
     })
     sent(observer, client, [
       ...HEADERS.filter(({ name }) => name !== 'Content-Type'),
-      { name: 'Content-Type', value: `application/${TOKEN}` },
-      { name: awsKey.toLowerCase(), value: '1' },
+      { name: 'Content-Type', value: `application/${googleKey}` },
+      { name: googleKey.toLowerCase(), value: '1' },
     ])
 
     // Act
     mishaSent(observer, mishaPost('misha-1'), MISHA_ID)
 
     // Assert
-    const status = JSON.stringify(observer.parity())
-    assert.ok([TOKEN, 'akiaabcd', 'AKIAABCD'].every((secret) => !status.includes(secret)))
+    const kept = JSON.stringify([observer.parity(), [...observer.clientQueries(PAGE)]]).toLowerCase()
+    assert.ok([TOKEN, 'akiaabcd', 'aizaaaaa'].every((secret) => !kept.includes(secret)))
     assert.deepEqual(observer.parity(), [
       {
         operation: 'chat.postMessage',
         state: 'differs',
-        differences: [{ part: 'header', name: 'content-type', kind: 'value' }],
+        differences: [
+          { part: 'header', name: 'content-type', kind: 'value' },
+          { part: 'query', name: '_x_frontend_build_type', kind: 'missing' },
+        ],
       },
     ])
   })

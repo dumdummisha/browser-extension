@@ -1,5 +1,5 @@
 import { type ParityDifference, type SlackOperation, SlackOperationSchema } from '../protocol/slack.js'
-import { isSecretShaped } from './request-redaction.js'
+import { VALUE_SHAPES } from './request-redaction.js'
 
 // What the service worker reads from a request a Slack page sends, as Chrome's webRequest reports it: a safe
 // projection made inside the listener, before anything keeps it. Only the fields named here keep a value, each only in
@@ -45,7 +45,8 @@ const BORROWED_QUERY_FORMS: Readonly<Record<string, RegExp>> = {
 //   content-length among them); and a listed field whose value is not of its form.
 // - Compared by value too: the HTTP method, the listed headers and _x_ body fields, and the encoding, which is the
 //   media type of content-type.
-// - Never named: a field whose name is not of the name form or is shaped like a secret.
+// - Never named: a field whose name is not of the name form or holds anything shaped like a secret. No value that holds
+//   one is kept either.
 const EXCLUDED_FIELDS = new Set([REQUEST_ID_FIELD, '_x_reason'])
 const CLIENT_FIELD_PREFIX = '_x_'
 const HTTP_METHOD = /^[A-Z]{3,7}$/u
@@ -137,27 +138,26 @@ export const requestKeyOf = (url: URL): string | null => {
   return url.origin === SLACK_FILES_ORIGIN ? url.href : null
 }
 
-// Whether text holds something shaped like a secret anywhere in it, in any letter case. Each suffix is tested on its
-// own, so no character glued before a secret (an underscore, say) hides it from a pattern that starts at a word
-// boundary, and the case variants catch a secret whose case a header name's normalization changed.
-const hasSecretShape = (text: string): boolean =>
-  [...new Set([text, text.toLowerCase(), text.toUpperCase()])].some((variant) =>
-    Array.from({ length: variant.length }, (_unused, index) => variant.slice(index)).some((suffix) =>
-      isSecretShaped(suffix)
-    )
-  )
+// The shapes of known secrets the redaction finds (request-redaction.ts), found anywhere in a text and in any letter
+// case: without the word boundaries the redaction matches them at, since a name or value may glue a secret to what
+// comes before or after it (_x_<token>_suffix), and case-insensitive, since a header name and the content type are kept
+// lower-cased, which changes a mixed-case prefix (AIza, eyJ). The catalog holds \b only as a word boundary.
+const WORD_BOUNDARY = String.raw`\b`
+const EMBEDDED_SECRET_SHAPES = VALUE_SHAPES.map((shape) => new RegExp(shape.source.replaceAll(WORD_BOUNDARY, ''), 'iu'))
+
+const holdsSecret = (text: string): boolean => EMBEDDED_SECRET_SHAPES.some((shape) => shape.test(text))
 
 // The value when forms lists the field and the value is of its form, and holds nothing shaped like a secret; null
 // otherwise.
 const formedValue = (forms: Readonly<Record<string, RegExp>>, name: string, value: string): string | null => {
   const form = Object.hasOwn(forms, name) ? forms[name] : undefined
 
-  return form?.test(value) === true && !hasSecretShape(value) ? value : null
+  return form?.test(value) === true && !holdsSecret(value) ? value : null
 }
 
 const isBorrowable = (name: string, value: string): boolean => formedValue(BORROWED_QUERY_FORMS, name, value) !== null
 
-const isNameable = (name: string, form: RegExp): boolean => form.test(name) && !hasSecretShape(name)
+const isNameable = (name: string, form: RegExp): boolean => form.test(name) && !holdsSecret(name)
 
 // The query a client's Web API call lends the transport, whatever method it calls; null for a request that is no Web
 // API call, or one with no request id or no workspace route, so no call of the client's to borrow from.
@@ -266,15 +266,14 @@ const headerValueOf = (name: string, value: string | undefined): string | null =
 
   const mediaType = value.split(';')[0]?.trim().toLowerCase() ?? ''
 
-  return MEDIA_TYPE.test(mediaType) && !hasSecretShape(mediaType) ? mediaType : null
+  return MEDIA_TYPE.test(mediaType) && !holdsSecret(mediaType) ? mediaType : null
 }
 
-// The headers a request was sent with, as the check keeps them, by lower-case name. A name is tested for a secret's
-// shape as Chrome reported it, before lower-casing could change what a pattern sees.
+// The headers a request was sent with, as the check keeps them, by lower-case name.
 export const headerFieldsOf = (headers: readonly IRequestHeader[]): Fields =>
   new Map(
     headers
-      .filter(({ name }) => isNameable(name.toLowerCase(), HEADER_NAME) && !hasSecretShape(name))
+      .filter(({ name }) => isNameable(name.toLowerCase(), HEADER_NAME))
       .map(({ name, value }): [string, string | null] => [name.toLowerCase(), headerValueOf(name.toLowerCase(), value)])
   )
 

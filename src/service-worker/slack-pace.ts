@@ -36,19 +36,24 @@ const pause = (ms: number, signal: AbortSignal): Promise<void> =>
     signal.addEventListener('abort', done, { once: true })
   })
 
+// A workspace's turns, which run one at a time, and when its previous request to Slack ended.
+interface IWorkspace {
+  readonly queue: ReturnType<typeof serially>
+  lastEnd: number
+}
+
 // Slack's requests at a person's pace, one queue per workspace: a workspace's turns run one at a time in the order
 // they came, and each request a turn sends waits until a fresh gap (drawGapMs) has passed since the workspace's
 // previous request to Slack ended, or goes at once when it has passed already. A request handed to the page leaves a
 // gap behind unless its result shows that nothing went out (a page signed in as another account, a failure before the
 // fetch); one that failed or whose result did not read after the hand-off may have gone out, so it leaves one, and is
-// never sent again. Whether the caller still waits is
-// checked before the turn, at the end of the gap and so right before the request hands its command to the page, which
-// is the send boundary, after every asynchronous step of the turn (finding the page, an upload's ticket). A request
-// whose caller gave up by then is dropped; one whose deadline would pass before its gap ends is dropped at once. A
-// cancel after the hand-off is too late; the page checks only the deadline once more, right before its fetch.
+// never sent again. Whether the caller still waits is checked before the turn, at the end of the gap and so right
+// before the request hands its command to the page, which is the send boundary, after every asynchronous step of the
+// turn (finding the page, an upload's ticket). A request whose caller gave up by then is dropped; one whose deadline
+// would pass before its gap ends is dropped at once. A cancel after the hand-off is too late; the page checks only the
+// deadline once more, right before its fetch.
 export class SlackPace {
-  private readonly queues = new Map<string, ReturnType<typeof serially>>()
-  private readonly lastEnds = new Map<string, number>()
+  private readonly workspaces = new Map<string, IWorkspace>()
 
   constructor(private readonly drawGapMs: () => number) {}
 
@@ -58,24 +63,24 @@ export class SlackPace {
     abandonment: IAbandonment,
     task: (send: PacedSend) => Promise<TResult>
   ): Promise<TResult> {
-    const queue = this.queues.get(teamId) ?? serially()
-    this.queues.set(teamId, queue)
+    const workspace = this.workspaces.get(teamId) ?? { queue: serially(), lastEnd: Number.NEGATIVE_INFINITY }
+    this.workspaces.set(teamId, workspace)
 
-    return queue(() => {
+    return workspace.queue(() => {
       throwIfAbandoned(abandonment)
 
-      return task((request) => this.send(teamId, abandonment, request))
+      return task((request) => this.send(workspace, abandonment, request))
     })
   }
 
   private async send<TResult>(
-    teamId: string,
+    workspace: IWorkspace,
     abandonment: IAbandonment,
     request: (unsent: () => void) => Promise<TResult>
   ): Promise<TResult> {
     throwIfAbandoned(abandonment)
     const now = Date.now()
-    const sendAt = Math.max(now, (this.lastEnds.get(teamId) ?? Number.NEGATIVE_INFINITY) + this.drawGapMs())
+    const sendAt = Math.max(now, workspace.lastEnd + this.drawGapMs())
     throwIfAbandoned(abandonment, sendAt)
     if (sendAt > now) {
       await pause(sendAt - now, abandonment.signal)
@@ -89,7 +94,7 @@ export class SlackPace {
       })
     } finally {
       if (attempt.isSent) {
-        this.lastEnds.set(teamId, Date.now())
+        workspace.lastEnd = Date.now()
       }
     }
   }

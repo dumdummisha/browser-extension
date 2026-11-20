@@ -425,3 +425,30 @@ describe('[service-worker] Slack client observer - same-address collisions', () 
     assert.ok(!JSON.stringify(parity).includes('xoxe-'))
   })
 })
+
+describe('[service-worker] Slack client observer - requests that send no headers', () => {
+  const orders = [
+    ['the request without headers first', ['client-1', 'misha-1']],
+    ['the request with headers first', ['misha-1', 'client-1']],
+  ] as const
+
+  for (const [order, [first, second]] of orders) {
+    it(`should take no shape and no reference when two requests carried the key and one sent no headers, ${order}`, () => {
+      // Arrange
+      const { observer } = observe()
+      const release = observer.exclude(PAGE, FILE_URL)
+      observer.requestStarted(fileGet(first))
+      observer.requestStarted(fileGet(second))
+
+      // Act
+      observer.headersSent({ requestId: 'misha-1', requestHeaders: HEADERS })
+      observer.requestEnded('client-1')
+      release(true)
+      const afterCollision = observer.parity()
+      mishaSent(observer, fileGet('misha-2'), FILE_URL)
+
+      // Assert
+      assert.deepEqual([afterCollision, observer.parity()], [[], [{ operation: 'download', state: 'unchecked' }]])
+    })
+  }
+})

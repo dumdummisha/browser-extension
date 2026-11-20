@@ -39,10 +39,13 @@ export interface ISentRequest {
 
 // A request of Misha's the observer is told about before it leaves: the page it runs in and what it is known by
 // (slack-request-shape.ts requestKeyOf), for as long as the command that sends it runs, and after that until every
-// request that carried its key in that page has ended. It collects the shapes of those requests.
+// request that carried its key in that page has ended.
 interface IExclusion extends ISlackPage {
   readonly key: string
-  readonly shapes: IRequestShape[]
+  // Requests that carried the key, counted as they start: a second one makes the command's request ambiguous for good.
+  starts: number
+  // The shape of the request that carried the key, once its headers were sent.
+  shape: IRequestShape | null
   // Requests that carried the key and have not sent their headers or ended yet.
   inFlight: number
   isReleased: boolean
@@ -69,8 +72,9 @@ interface IPageQueries {
 //   each operation since the service worker started is compared with it once, as soon as both are known. The result
 //   per operation is a status of names only (protocol slack.ts OperationParitySchema).
 // A request is Misha's when it carries the key of a command of Misha's running in that same page. A command whose
-// requests cannot be told apart (two carried its key, or it did not reach Slack while one did) supplies no shape:
-// neither those requests nor the command count as the client's or as Misha's.
+// request cannot be told apart (a second request carried its key, whether or not either sent its headers, or it did
+// not reach Slack while one did) supplies no shape: neither those requests nor the command count as the client's or as
+// Misha's.
 export class SlackClientObserver {
   private readonly exclusions = new Set<IExclusion>()
   private readonly pending = new Map<string, IPendingRequest>()
@@ -90,7 +94,15 @@ export class SlackClientObserver {
   // Takes the requests carrying key in page as Misha's until the returned function runs, which the command that sends
   // them calls once it settled, with whether its result proves its request reached Slack.
   public exclude(page: ISlackPage, key: string): (isAnswered: boolean) => void {
-    const exclusion: IExclusion = { ...page, key, shapes: [], inFlight: 0, isReleased: false, isAnswered: false }
+    const exclusion: IExclusion = {
+      ...page,
+      key,
+      starts: 0,
+      shape: null,
+      inFlight: 0,
+      isReleased: false,
+      isAnswered: false,
+    }
     this.exclusions.add(exclusion)
 
     return (isAnswered) => {
@@ -115,6 +127,7 @@ export class SlackClientObserver {
     const exclusion = key === null ? undefined : this.exclusionOf({ tabId, documentId }, key)
     const started = startedShapeOf(method, parsed, requestBody)
     if (exclusion !== undefined) {
+      exclusion.starts += 1
       exclusion.inFlight += 1
       this.pending.set(requestId, { started, exclusion })
       return
@@ -135,10 +148,7 @@ export class SlackClientObserver {
 
     const shape = request.started === null ? null : { ...request.started, headers: headerFieldsOf(requestHeaders) }
     if (request.exclusion !== null) {
-      if (shape !== null) {
-        request.exclusion.shapes.push(shape)
-      }
-
+      request.exclusion.shape = shape ?? request.exclusion.shape
       this.leave(request.exclusion)
       return
     }
@@ -200,15 +210,12 @@ export class SlackClientObserver {
 
   // Once the command settled and its requests ended, its request's shape is Misha's only when the command reached Slack
   // and exactly one request carried its key.
-  private settleIfDone(exclusion: IExclusion): void {
-    const [shape, ...others] = exclusion.shapes
-    if (!exclusion.isReleased || exclusion.inFlight > 0 || !exclusion.isAnswered) {
+  private settleIfDone({ isReleased, inFlight, isAnswered, starts, shape }: IExclusion): void {
+    if (!isReleased || inFlight > 0 || !isAnswered || starts !== 1 || shape === null) {
       return
     }
 
-    if (shape !== undefined && others.length === 0) {
-      this.mishaSent(shape)
-    }
+    this.mishaSent(shape)
   }
 
   private clientSent(shape: IRequestShape): void {

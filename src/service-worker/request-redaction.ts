@@ -3,7 +3,8 @@
 // download's). A body field (URL-encoded, JSON or multipart, a truncated body as far as it goes), query parameter or
 // header whose name says it holds a credential loses its value, and so does any value shaped like a known token or key;
 // the name stays, so the shape of an API stays readable. A URL also loses its userinfo, and the path of a URL that is
-// itself an authorization. Pure, so the service worker and its specs share it.
+// itself an authorization. Page text a tab command answers has no names to go by: only the spans shaped like a known
+// token or key are redacted, and the text around them stays. Pure, so the service worker and its specs share it.
 
 export const REDACTED_VALUE = '[redacted]'
 
@@ -36,8 +37,13 @@ export const VALUE_SHAPES: readonly RegExp[] = [
   /\bgithub_pat_\w{22,}/u,
   // AWS access key id, long-term (AKIA) or temporary (ASIA).
   /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/u,
-  // PEM private key block of any type: RSA, EC, OPENSSH, ENCRYPTED or a bare PKCS #8 key.
-  /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/u,
+  // PEM private key block of any type: RSA, EC, OPENSSH, ENCRYPTED or a bare PKCS #8 key. The block runs from its BEGIN
+  // line through the RFC 1421 headers an encrypted key carries (Proc-Type, DEK-Info), the base64 body with the line
+  // breaks or spaces between its lines, and the END line of the same label. A block cut off before its END (a clipped
+  // field value, a read that stopped at its limit) runs through its headers and body as far as they go, which also
+  // takes any following words made only of base64 letters and digits: text alone cannot tell them from a body line.
+  // A header value never starts with a hyphen and the body holds none, so a block never runs into the next BEGIN line.
+  /-----BEGIN (?<label>(?:[A-Z0-9]+ )*)PRIVATE KEY-----(?:\s+[A-Za-z][\dA-Za-z-]*:[\t ]*[\w,][\w,-]*)*(?:\s+[\d+/=A-Za-z]+)*(?:\s*-----END \k<label>PRIVATE KEY-----)?/u,
   // Anthropic, then OpenAI API keys (legacy sk-, project sk-proj- and service account sk-svcacct- keys).
   /\bsk-ant-[\w-]{20,}/u,
   /\bsk-[\w-]{20,}/u,
@@ -49,6 +55,11 @@ export const VALUE_SHAPES: readonly RegExp[] = [
   // A Bearer value.
   /\bBearer\s+[\w.~+/=-]{8,}/iu,
 ]
+
+// Each shape again, to find every match in a text rather than test for one.
+const SHAPE_FINDERS = VALUE_SHAPES.map((shape) => new RegExp(shape.source, `${shape.flags}g`))
+
+const LINE_SEPARATOR = '\n'
 
 interface IJsonToken {
   readonly start: number
@@ -63,6 +74,11 @@ interface ISpan {
   readonly start: number
   readonly end: number
   readonly replacement: string
+}
+
+interface ICredentialSpan {
+  readonly start: number
+  end: number
 }
 
 interface IJsonStep {
@@ -158,6 +174,29 @@ export const redactUrl = (url: string): string => {
   return `${redactAddress(address)}${query.replaceAll(URL_FIELD, (field) => redactFormField(field))}`
 }
 
+// Page text: every span shaped like a known credential becomes one [redacted], and the line breaks a span runs across
+// stay, so the text keeps its lines and everything outside the spans. No text grows: every shape matches more than the
+// marker's length besides its line breaks.
+export const redactText = (text: string): string =>
+  replaceSpans(
+    text,
+    credentialSpans(text).map(({ start, end }) => ({
+      start,
+      end,
+      replacement: `${REDACTED_VALUE}${LINE_SEPARATOR.repeat(text.slice(start, end).split(LINE_SEPARATOR).length - 1)}`,
+    }))
+  )
+
+// Lines of page text, matched as one text, so a key whose lines are separate items is found whole; the answer has as
+// many lines as the question. With no lines there is nothing to join: an empty join would read back as one line.
+export const redactLines = (lines: readonly string[]): string[] => {
+  if (lines.length === 0) {
+    return []
+  }
+
+  return redactText(lines.join(LINE_SEPARATOR)).split(LINE_SEPARATOR)
+}
+
 // A URL up to its query: an authorization URL loses everything after its prefix, any other URL each path segment
 // shaped like a secret.
 const redactAddress = (address: string): string => {
@@ -186,6 +225,25 @@ const isCredentialName = (name: string): boolean => {
 }
 
 const isSecretShaped = (text: string): boolean => VALUE_SHAPES.some((pattern) => pattern.test(text))
+
+// Where the shapes match in the text, in order; matches that overlap (a JSON Web Token in a Bearer value, an Anthropic
+// key that the OpenAI shape matches too) merge into one span.
+const credentialSpans = (text: string): ICredentialSpan[] => {
+  const matches = SHAPE_FINDERS.flatMap((finder) =>
+    [...text.matchAll(finder)].map(({ index, 0: match }) => ({ start: index, end: index + match.length }))
+  ).sort((first, second) => first.start - second.start)
+  const spans: ICredentialSpan[] = []
+  for (const match of matches) {
+    const last = spans.at(-1)
+    if (last !== undefined && match.start < last.end) {
+      last.end = Math.max(last.end, match.end)
+    } else {
+      spans.push(match)
+    }
+  }
+
+  return spans
+}
 
 // Decodes without throwing: bytes that are not valid UTF-8 become replacement characters.
 const percentDecoded = (segment: string): string =>

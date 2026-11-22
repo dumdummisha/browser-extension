@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { redactBody, redactHeaders, redactUrl } from './request-redaction.js'
+import { redactBody, redactHeaders, redactLines, redactText, redactUrl } from './request-redaction.js'
 
 const OPAQUE_SECRET = ['opaque', 'value', '0123456789'].join('-')
 const SESSION_COOKIE = ['session', 'c2Vzc2lvbi1leGFtcGxl'].join('=')
@@ -21,6 +21,15 @@ const SHAPED_SAMPLES = {
     ['-----END', 'RSA', 'PRIVATE', 'KEY-----'].join(' '),
   ].join('\n'),
 }
+
+const SLACK_BOT_TOKEN = ['xoxb', '1024', '2048', 'zYxWvUtSrQpOnMlK'].join('-')
+const ANTHROPIC_KEY = ['sk', 'ant', 'api03', 'aBcDeFgHiJkLmNoPqRsTuV'].join('-')
+const OPENAI_KEY = ['sk', 'proj', 'aBcDeFgHiJkLmNoPqRsTuVwX'].join('-')
+const KEY_LINES = ['MIIEvQIBADANBgkqhkiG9w0BAQEFAASC', 'BKcwggSjAgEAAoIBAQC7exampleBody'] as const
+const KEY_BODY = [...KEY_LINES, 'c2FtcGxlLWtleS1ib2R5LWxpbmU=']
+
+const pemLine = (edge: 'BEGIN' | 'END', label: string): string =>
+  [`-----${edge}`, ...(label === '' ? [] : [label]), 'PRIVATE', 'KEY-----'].join(' ')
 
 const multipart = (parts: readonly (readonly [string, string])[]): string =>
   [
@@ -234,5 +243,150 @@ describe('[service-worker] Request redaction - URLs and headers', () => {
       { name: 'Referer', value: 'https://app.example.test/reset?token=[redacted]&step=2' },
       { name: 'X-Context', value: '{"secret":"[redacted]","team":"T0123"}' },
     ])
+  })
+})
+
+describe('[service-worker] Request redaction - page text', () => {
+  for (const [kind, sample] of Object.entries(SHAPED_SAMPLES)) {
+    it(`should redact a ${kind} inside page text and keep the text around it`, () => {
+      // Arrange
+      const lineBreaks = '\n'.repeat(sample.split('\n').length - 1)
+
+      // Act
+      const redacted = redactText(`Copy ${sample} into the app.`)
+
+      // Assert
+      assert.equal(redacted, `Copy [redacted]${lineBreaks} into the app.`)
+    })
+  }
+
+  it('should redact every occurrence of a token and each of several tokens', () => {
+    // Act
+    const redacted = redactText(
+      `User ${SLACK_SESSION_TOKEN}, bot ${SLACK_BOT_TOKEN}; user again ${SLACK_SESSION_TOKEN}.`
+    )
+
+    // Assert
+    assert.equal(redacted, 'User [redacted], bot [redacted]; user again [redacted].')
+  })
+
+  it('should redact matches of overlapping shapes as one span', () => {
+    // Act
+    const redacted = [
+      `Authorization: Bearer ${SHAPED_SAMPLES['JSON Web Token']} sent`,
+      `Anthropic ${ANTHROPIC_KEY} and OpenAI ${OPENAI_KEY}`,
+    ].map(redactText)
+
+    // Assert
+    assert.deepEqual(redacted, ['Authorization: [redacted] sent', 'Anthropic [redacted] and OpenAI [redacted]'])
+  })
+
+  it('should redact a multiline private key line by line and keep the lines around it', () => {
+    // Arrange
+    const lines = [
+      '## [3] Deploy key',
+      pemLine('BEGIN', 'RSA'),
+      ...KEY_BODY,
+      pemLine('END', 'RSA'),
+      '[12] button "Copy"',
+    ]
+
+    // Act
+    const redacted = redactLines(lines)
+
+    // Assert
+    assert.deepEqual(redacted, ['## [3] Deploy key', '[redacted]', '', '', '', '', '[12] button "Copy"'])
+  })
+
+  it('should redact a private key an outline collapsed into one field value', () => {
+    // Arrange
+    const key = [pemLine('BEGIN', ''), ...KEY_BODY, pemLine('END', '')].join(' ')
+
+    // Act
+    const redacted = redactText(`[4] textbox "Key" value="${key}" readonly`)
+
+    // Assert
+    assert.equal(redacted, '[4] textbox "Key" value="[redacted]" readonly')
+  })
+
+  it('should redact an encrypted private key through its headers, whole or cut off before its END', () => {
+    // Arrange
+    const headers = ['Proc-Type: 4,ENCRYPTED', 'DEK-Info: AES-128-CBC,0123456789ABCDEF', '']
+    const whole = [pemLine('BEGIN', 'RSA'), ...headers, ...KEY_BODY, pemLine('END', 'RSA'), 'Keep it safe.']
+    const cutOff = [pemLine('BEGIN', 'RSA'), ...headers, ...KEY_BODY, '[7] button "Download"']
+
+    // Act
+    const redacted = [whole, cutOff].map(redactLines)
+
+    // Assert
+    assert.deepEqual(redacted, [
+      ['[redacted]', '', '', '', '', '', '', '', 'Keep it safe.'],
+      ['[redacted]', '', '', '', '', '', '', '[7] button "Download"'],
+    ])
+  })
+
+  it('should end a private key cut off before its END at the next BEGIN line', () => {
+    // Arrange
+    const lines = [
+      pemLine('BEGIN', 'EC'),
+      KEY_LINES[0],
+      pemLine('BEGIN', 'RSA'),
+      KEY_LINES[1],
+      pemLine('END', 'RSA'),
+      'Rotated today.',
+    ]
+
+    // Act
+    const redacted = redactLines(lines)
+
+    // Assert
+    assert.deepEqual(redacted, ['[redacted]', '', '[redacted]', '', '', 'Rotated today.'])
+  })
+
+  it('should end a private key cut off before its END at the first character no key body holds', () => {
+    // Arrange
+    const clipped = `[4] textbox "Key" value="${pemLine('BEGIN', '')} ${KEY_LINES[0]}…" readonly`
+    // Text alone cannot tell words of base64 letters from a body line, so they go with the key they follow.
+    const followed = `${pemLine('BEGIN', '')} ${KEY_LINES[0]} keep it safe. Next step`
+
+    // Act
+    const redacted = [clipped, followed].map(redactText)
+
+    // Assert
+    assert.deepEqual(redacted, ['[4] textbox "Key" value="[redacted]…" readonly', '[redacted]. Next step'])
+  })
+
+  it('should never make a text longer, however short the lines a span runs across', () => {
+    // Arrange
+    const shortLines = [pemLine('BEGIN', ''), ...Array.from({ length: 30 }, () => 'QUJD'), pemLine('END', '')].join(
+      '\n'
+    )
+    const spreadBearer = `Bearer\n\n\n\n${OPAQUE_SECRET}`
+
+    // Act
+    const redacted = [redactText(shortLines), redactText(spreadBearer)] as const
+
+    // Assert
+    assert.deepEqual(redacted, [`[redacted]${'\n'.repeat(31)}`, '[redacted]\n\n\n\n'])
+    assert.ok(redacted[0].length < shortLines.length && redacted[1].length < spreadBearer.length)
+  })
+
+  it('should answer as many lines as it is given, none included', () => {
+    // Act
+    const redacted = [[], [''], ['', ''], [`token ${SLACK_BOT_TOKEN}`, '']].map(redactLines)
+
+    // Assert
+    assert.deepEqual(redacted, [[], [''], ['', ''], ['token [redacted]', '']])
+  })
+
+  it('should keep text without a known credential shape as it is', () => {
+    // Arrange
+    const text = '# [1] Settings\n[2] textbox "Name" value="Example Team"\nBearer of good news | sk-short'
+
+    // Act
+    const redacted = redactText(text)
+
+    // Assert
+    assert.equal(redacted, text)
   })
 })

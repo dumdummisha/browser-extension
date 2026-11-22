@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import type { IToolDefinition } from '../module/tool.js'
 import type { BrowserControlService } from './browser-control.js'
-import { TAB_ID_ARG_DESCRIPTION } from './config.js'
+import { PAGE_TEXT_REDACTION_DESCRIPTION, TAB_ID_ARG_DESCRIPTION } from './config.js'
 import { formatSnapshot } from './tab-format.js'
 
 const input = z.object({
@@ -30,7 +30,7 @@ export const createReadTool = (browser: BrowserControlService): IToolDefinition<
     'tab_select_option and tab_scroll; to find one control on a long page, tab_find is cheaper. Reading ' +
     'does not move the mouse or switch tabs. Defaults to what is on screen in the active tab; use scope "page" for ' +
     'the whole page, and tab_screenshot when the look of the page matters, or when the outline leaves you unsure what ' +
-    'the user sees (a dialog, a canvas, a page that changed unexpectedly).',
+    `the user sees (a dialog, a canvas, a page that changed unexpectedly). ${PAGE_TEXT_REDACTION_DESCRIPTION}`,
   input,
   execute: async ({ tabId, ref, scope = 'viewport' }) => formatSnapshot(await browser.read(tabId, scope, ref)),
 })

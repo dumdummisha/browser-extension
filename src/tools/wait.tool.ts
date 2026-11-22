@@ -1,7 +1,12 @@
 import { z } from 'zod'
 import type { IToolDefinition } from '../module/tool.js'
 import type { BrowserControlService } from './browser-control.js'
-import { TAB_ID_ARG_DESCRIPTION, WAIT_DEFAULT_SECONDS, WAIT_MAX_SECONDS } from './config.js'
+import {
+  PAGE_TEXT_REDACTION_DESCRIPTION,
+  TAB_ID_ARG_DESCRIPTION,
+  WAIT_DEFAULT_SECONDS,
+  WAIT_MAX_SECONDS,
+} from './config.js'
 
 const input = z.object({
   text: z
@@ -26,7 +31,7 @@ export const createWaitTool = (browser: BrowserControlService): IToolDefinition<
   description:
     "Wait until a text shows on a page in the user's browser, or with gone until it no longer does: a result that " +
     'loads after a delay, a loading message going away, or the user finishing a step you asked them to do, such as ' +
-    'logging in. Returns the lines that mention the text, with refs, as tab_find does. Does not touch the page.',
+    `logging in. Returns the lines that mention the text, with refs, as tab_find does. Does not touch the page. ${PAGE_TEXT_REDACTION_DESCRIPTION}`,
   input,
   execute: async ({ text, gone: isGone = false, timeoutSeconds = WAIT_DEFAULT_SECONDS, tabId }) => {
     const matches = await browser.waitFor(tabId, { text, isGone, timeoutMs: timeoutSeconds * 1000 })

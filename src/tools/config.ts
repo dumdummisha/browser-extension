@@ -46,6 +46,12 @@ export const WAIT_POLL_INTERVAL_MS = 250
 export const WAIT_DEFAULT_SECONDS = 30
 export const WAIT_MAX_SECONDS = 300
 
+// The page-text redaction (the extension's request-redaction.ts), said once for every tool that returns page text.
+export const PAGE_TEXT_REDACTION_DESCRIPTION =
+  'Text shaped like a known credential (Slack, GitHub and Google tokens, AWS access key ids, OpenAI and Anthropic ' +
+  'keys, JSON Web Tokens, Bearer values, private keys) comes back as [redacted]. This known credential-shape ' +
+  'redaction misses any other secret, and tab_screenshot is not redacted, so avoid pages that show credentials.'
+
 export const TAB_ID_ARG_DESCRIPTION =
   'Tab id from tab_list or tab_read. Defaults to the active tab of the browser window the user used last.'
 export const REF_ARG_DESCRIPTION =

@@ -13,7 +13,9 @@ export const createScreenshotTool = (browser: BrowserControlService): IToolDefin
     "Take a screenshot of the visible part of a tab in the user's browser, returned as an image attachment. The tab " +
     'is made active in its window first. Use it when the visual layout matters (charts, images, styling, canvas ' +
     'apps); for text and controls, tab_read is cheaper and gives refs to act on. On a canvas page, click what it ' +
-    'shows with tab_click x and y: the result gives the viewport size in CSS pixels to scale image pixels by.',
+    'shows with tab_click x and y: the result gives the viewport size in CSS pixels to scale image pixels by. The ' +
+    'image is not redacted: it shows any credential on screen that tab_read would redact, so do not screenshot a page ' +
+    'that shows one.',
   input,
   execute: async ({ tabId }) => {
     const { tab, dataUrl, viewport } = await browser.screenshot(tabId)

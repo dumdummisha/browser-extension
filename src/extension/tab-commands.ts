@@ -14,7 +14,8 @@ import {
 } from '../protocol/tab.js'
 import { NetworkLog } from '../service-worker/network-log.js'
 import { runPageCommand, waitForQuietPage } from '../service-worker/page-command.js'
-import { redactUrl } from '../service-worker/request-redaction.js'
+import { redactText, redactUrl } from '../service-worker/request-redaction.js'
+import { type RawTabResult, TAB_RESULT_REDACTIONS } from '../service-worker/tab-result-redaction.js'
 import {
   DOWNLOAD_POLL_INTERVAL_MS,
   LOAD_POLL_INTERVAL_MS,
@@ -26,11 +27,17 @@ import {
 } from './config.js'
 
 // The tab commands of the service worker (protocol tab.ts), apart from its Slack transport: they share only the native
-// port, and a command that fails answers its own request with an error. Every URL they answer is redacted
-// (request-redaction.ts); the comparisons that tell a navigation run on the raw ones inside the service worker.
+// port, and a command that fails answers its own request with an error. Each command works on the raw page and hands
+// its answer to the redaction of what leaves the service worker (tab-result-redaction.ts): every URL, and every
+// page-derived text by the known credential shapes, an error message included. The comparisons that tell a navigation,
+// the lines a change report keeps and the lines a search matches are decided on the raw text.
 
 type TabHandlers = {
   [TMethod in TabBridgeMethod]: (params: unknown) => Promise<TabBridgeResult<TMethod>>
+}
+
+type RawTabHandlers = {
+  [TMethod in TabBridgeMethod]: (params: unknown) => Promise<RawTabResult<TMethod>>
 }
 
 type IdentifiedTab = chrome.tabs.Tab & { id: number }
@@ -150,7 +157,7 @@ const tabInfo = async (tab: IdentifiedTab): Promise<TabInfo> => ({
   tabId: tab.id,
   windowId: tab.windowId,
   title: tab.title ?? '',
-  url: redactUrl(tab.url ?? tab.pendingUrl ?? ''),
+  url: tab.url ?? tab.pendingUrl ?? '',
   status: tab.status ?? 'unknown',
   zoom: await chrome.tabs.getZoom(tab.id),
   windowBounds: await windowBounds(tab.windowId),
@@ -236,16 +243,17 @@ const pageOutline = async (tabId: number, maxChars: number): Promise<IMarkedPage
 }
 
 // A site repeats its header above every page and its footer below, so the lines a new screen starts and ends with
-// that the previous page had too are left out; the same lines in between are content and stay.
-const withoutRepeatedEnds = (lines: string[], previous: IMarkedPage): string[] => {
+// that the previous page had too are left out; the same lines in between are content and stay. Answers the range of
+// the lines that stay.
+const freshRange = (lines: string[], previous: IMarkedPage): { freshStart: number; freshEnd: number } => {
   const known = new Set(previous.lines.map(withoutRef))
   const isKnown = (line: string): boolean => known.has(withoutRef(line))
   const start = lines.findIndex((line) => !isKnown(line))
   if (start === -1) {
-    return []
+    return { freshStart: 0, freshEnd: 0 }
   }
 
-  return lines.slice(start, lines.findLastIndex((line) => !isKnown(line)) + 1)
+  return { freshStart: start, freshEnd: lines.findLastIndex((line) => !isKnown(line)) + 1 }
 }
 
 // A download in progress without a filename waits for the user to choose where to save it.
@@ -259,7 +267,7 @@ const downloadState = ({ state, filename }: chrome.downloads.DownloadItem): Down
 
 const actionDownloads = async (since: number): Promise<Download[]> =>
   (await chrome.downloads.search({ startedAfter: new Date(since).toISOString() })).map((item) => ({
-    url: redactUrl(item.url),
+    url: item.url,
     filename: item.filename,
     state: downloadState(item),
     bytesReceived: item.bytesReceived,
@@ -271,7 +279,7 @@ const tabParams = <TMethod extends TabBridgeMethod>(
   raw: unknown
 ): z.output<(typeof TAB_BRIDGE_METHODS)[TMethod]['params']> => parseWith(TAB_BRIDGE_METHODS[method].params, raw)
 
-export const TAB_HANDLERS: TabHandlers = {
+const RAW_TAB_HANDLERS: RawTabHandlers = {
   listTabs: async () => {
     const windows = await chrome.windows.getAll({ populate: true, windowTypes: ['normal'] })
 
@@ -284,7 +292,7 @@ export const TAB_HANDLERS: TabHandlers = {
               windowId,
               isFocused,
               tabs: tabs.flatMap(({ id: tabId, title = '', url = '', active: isActive }) =>
-                tabId === undefined ? [] : [{ tabId, title, url: redactUrl(url), isActive }]
+                tabId === undefined ? [] : [{ tabId, title, url, isActive }]
               ),
             },
           ]
@@ -345,11 +353,15 @@ export const TAB_HANDLERS: TabHandlers = {
     if (after.documentId === before.documentId && after.url === before.url) {
       const beforeLines = new Set(before.lines)
       const afterLines = new Set(after.lines)
+      const placesOf = (lines: string[], isKept: (line: string) => boolean): number[] =>
+        lines.flatMap((line, index) => (isKept(line) ? [index] : []))
 
       return {
         isNavigated: false,
-        added: after.lines.filter((line) => !beforeLines.has(line)),
-        removed: before.lines.filter((line) => !afterLines.has(line)),
+        before: before.lines,
+        after: after.lines,
+        added: placesOf(after.lines, (line) => !beforeLines.has(line)),
+        removed: placesOf(before.lines, (line) => !afterLines.has(line)),
       }
     }
 
@@ -357,14 +369,8 @@ export const TAB_HANDLERS: TabHandlers = {
       method: 'snapshot',
       params: { scope: 'viewport', maxChars: viewportMaxChars },
     })
-    const lines = snapshot.outline.split('\n')
-    const fresh = withoutRepeatedEnds(lines, before)
 
-    return {
-      isNavigated: true,
-      snapshot: { ...snapshot, url: redactUrl(snapshot.url), outline: fresh.join('\n') },
-      repeatedLineCount: lines.length - fresh.length,
-    }
+    return { isNavigated: true, snapshot, ...freshRange(snapshot.outline.split('\n'), before) }
   },
   downloads: async (raw) => {
     const { tabId, timeoutMs } = tabParams('downloads', raw)
@@ -396,7 +402,7 @@ export const TAB_HANDLERS: TabHandlers = {
     const { tabId, ...params } = tabParams('snapshot', raw)
     const { tab, result } = await runInPage(tabId, 'snapshot', { method: 'snapshot', params })
 
-    return { ...result, url: redactUrl(result.url), tabId: tab.id }
+    return { ...result, tabId: tab.id }
   },
   find: async (raw) => {
     const { tabId, ...params } = tabParams('find', raw)
@@ -433,4 +439,37 @@ export const TAB_HANDLERS: TabHandlers = {
 
     return (await runInPage(tabId, 'hasFocus', { method: 'hasFocus', params: {} })).result
   },
+}
+
+// A command's answer leaves through its redaction; so does the message of one that fails, which can quote the page
+// (the element that covers a target, a select's options).
+const answering =
+  <TMethod extends TabBridgeMethod>(method: TMethod) =>
+  async (params: unknown): Promise<TabBridgeResult<TMethod>> => {
+    try {
+      return TAB_RESULT_REDACTIONS[method](await RAW_TAB_HANDLERS[method](params))
+    } catch (error) {
+      throw new Error(redactText(error instanceof Error ? error.message : String(error)))
+    }
+  }
+
+export const TAB_HANDLERS: TabHandlers = {
+  listTabs: answering('listTabs'),
+  focusTab: answering('focusTab'),
+  openTab: answering('openTab'),
+  closeTab: answering('closeTab'),
+  mark: answering('mark'),
+  settle: answering('settle'),
+  changes: answering('changes'),
+  downloads: answering('downloads'),
+  screenshot: answering('screenshot'),
+  network: answering('network'),
+  snapshot: answering('snapshot'),
+  find: answering('find'),
+  locate: answering('locate'),
+  pointer: answering('pointer'),
+  field: answering('field'),
+  selectOption: answering('selectOption'),
+  selectContent: answering('selectContent'),
+  hasFocus: answering('hasFocus'),
 }

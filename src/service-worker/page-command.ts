@@ -3,6 +3,8 @@ import type {
   FieldContent,
   FieldState,
   PageCommand,
+  PageFind,
+  PageFindMatch,
   PageOutcome,
   PageSnapshot,
   PointerState,
@@ -18,11 +20,11 @@ interface IPageState {
   isTrackingPointer: boolean
   pointerSeq: number
   pointer: ClientPoint | null
-  maskedReads: WeakMap<Element, IMaskedRead>
+  fieldReads: WeakMap<Element, IFieldRead>
 }
 
-// The value a masked field held when it was last read, and the revision that read answered.
-interface IMaskedRead {
+// The value a field held when it was last read, and the revision that read answered.
+interface IFieldRead {
   value: string
   revision: number
 }
@@ -135,7 +137,7 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
     isTrackingPointer: false,
     pointerSeq: 0,
     pointer: null,
-    maskedReads: new WeakMap(),
+    fieldReads: new WeakMap(),
   }
   const state = host.mishaTabState
 
@@ -355,16 +357,13 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
     return null
   }
 
+  // An element that holds no value reads as an empty field that never changes, at revision 0.
   const fieldContent = (element: Element, { value, isMasked }: IFieldValue): FieldContent => {
-    if (!isMasked) {
-      return { isMasked, value }
-    }
-
-    const last = state.maskedReads.get(element)
+    const last = state.fieldReads.get(element)
     const revision = last === undefined ? 0 : last.revision + Number(last.value !== value)
-    state.maskedReads.set(element, { value, revision })
+    state.fieldReads.set(element, { value, revision })
 
-    return { isMasked, length: value.length, revision }
+    return isMasked ? { isMasked, length: value.length, revision } : { isMasked, value, revision }
   }
 
   const valueState = ({ value, isMasked }: IFieldValue): string => {
@@ -703,34 +702,39 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
   }
 
   // Lines of the whole page's outline that mention the query, so one control can be found without reading the page. A
-  // matching heading brings the first sectionLines lines of the section it titles, which usually hold the controls the
-  // search was for.
-  const find = (query: string, maxChars: number, sectionLines: number): { matches: string[]; isTruncated: boolean } => {
+  // matching heading brings the first sectionLines lines of the section it titles (its outline's lines after the
+  // heading's own), which usually hold the controls the search was for. The outlines come back whole with the places
+  // of the matches in them, so the service worker can redact each outline before it answers the matching lines.
+  const find = (query: string, maxChars: number, sectionLines: number): PageFind => {
     const wanted = collapse(query).toLowerCase()
     const { outline, isTruncated } = snapshot('page', maxChars)
+    const lines = outline.split('\n')
+    const sections: string[][] = []
     // A match already shown in an earlier heading's section is not listed again.
     const shown = new Set<string>()
-    const matches: string[] = []
-    for (const line of outline.split('\n').filter((candidate) => candidate.toLowerCase().includes(wanted))) {
-      if (shown.has(line)) {
+    const matches: PageFindMatch[] = []
+    for (const [index, line] of lines.entries()) {
+      if (!line.toLowerCase().includes(wanted) || shown.has(line)) {
         continue
       }
 
-      matches.push(line)
+      matches.push({ kind: 'line', line: index })
       const headingRef = /^#+ \[(?<ref>\d+)\]/u.exec(line)?.groups?.ref
       if (headingRef !== undefined) {
-        const section = snapshot('page', maxChars, Number(headingRef)).outline.split('\n').slice(1)
-        for (const sectionLine of section.slice(0, sectionLines)) {
+        const section = snapshot('page', maxChars, Number(headingRef)).outline.split('\n')
+        const listedEnd = Math.min(section.length, sectionLines + 1)
+        for (const [offset, sectionLine] of section.slice(1, listedEnd).entries()) {
           shown.add(sectionLine)
-          matches.push(`  ${sectionLine}`)
+          matches.push({ kind: 'sectionLine', section: sections.length, line: offset + 1 })
         }
-        if (section.length > sectionLines) {
-          matches.push(`  ... and ${section.length - sectionLines} more lines`)
+        if (section.length > listedEnd) {
+          matches.push({ kind: 'moreLines', count: section.length - listedEnd })
         }
+        sections.push(section)
       }
     }
 
-    return { matches, isTruncated }
+    return { outline: lines, sections, matches, isTruncated }
   }
 
   const trackPointer = (): void => {
@@ -823,7 +827,7 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
     return {
       isFocused,
       focusedElement: active === null ? 'nothing' : brief(active),
-      content: fieldValue === null ? { isMasked: false, value: '' } : fieldContent(target, fieldValue),
+      content: fieldContent(target, fieldValue ?? { value: '', isMasked: false }),
       isMultiline: target instanceof HTMLTextAreaElement || (target instanceof HTMLElement && target.isContentEditable),
     }
   }

@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict'
 import { afterEach, beforeEach, describe, it } from 'node:test'
-import type { FieldState, PageCommand, PageSnapshot } from '../protocol/tab.js'
+import type { FieldState, PageCommand, PageFind, PageSnapshot } from '../protocol/tab.js'
 import { runPageCommand } from './page-command.js'
 
 const OPAQUE_PASSWORD = ['opaque', 'example', 'password'].join('-')
 const OPAQUE_TOKEN = ['opaque', 'example', 'value'].join('-')
+// Two Slack-shaped tokens that the service worker redacts to the same text.
+const FIRST_TOKEN = ['xoxb', '1024', '2048', 'aBcDeFgHiJkLmNoP'].join('-')
+const SECOND_TOKEN = ['xoxb', '1024', '2048', 'zYxWvUtSrQpOnMlK'].join('-')
 
 // The least of the DOM the page command reads for a page of plain, visible elements: every element has a box, no
 // style hides it and no selector beyond its own tag matches it.
@@ -165,7 +168,31 @@ describe('[service-worker] Page command - masked fields', () => {
     const field = readField(1)
 
     // Assert
-    assert.deepEqual(field.content, { isMasked: false, value: 'person@example.test' })
+    assert.deepEqual(field.content, { isMasked: false, value: 'person@example.test', revision: 0 })
+  })
+
+  it('should count a plain field revision up with each changed value, so redacted values still tell apart', () => {
+    // Arrange
+    const key = new FakeInput('text', { 'aria-label': 'API key' })
+    key.value = FIRST_TOKEN
+    showPage([key], key)
+    outline()
+
+    // Act
+    const first = readField(1)
+    const unchanged = readField(1)
+    key.value = SECOND_TOKEN
+    const changed = readField(1)
+
+    // Assert
+    assert.deepEqual(
+      [first.content, unchanged.content, changed.content],
+      [
+        { isMasked: false, value: FIRST_TOKEN, revision: 0 },
+        { isMasked: false, value: FIRST_TOKEN, revision: 0 },
+        { isMasked: false, value: SECOND_TOKEN, revision: 1 },
+      ]
+    )
   })
 })
 
@@ -177,18 +204,23 @@ describe('[service-worker] Page command - frames', () => {
 
     // Act
     const lines = outline()
-    const byOrigin = run<{ matches: string[] }>({
+    const byOrigin = run<PageFind>({
       method: 'find',
       params: { query: 'embed.example', maxChars: 10_000, sectionLines: 5 },
     })
-    const byToken = run<{ matches: string[] }>({
+    const byToken = run<PageFind>({
       method: 'find',
       params: { query: OPAQUE_TOKEN, maxChars: 10_000, sectionLines: 5 },
     })
 
     // Assert
     assert.equal(lines, '[frame] https://embed.example.test:8443\n[frame] about:')
-    assert.deepEqual(byOrigin.matches, ['[frame] https://embed.example.test:8443'])
+    assert.deepEqual(byOrigin, {
+      outline: ['[frame] https://embed.example.test:8443', '[frame] about:'],
+      sections: [],
+      matches: [{ kind: 'line', line: 0 }],
+      isTruncated: false,
+    })
     assert.deepEqual(byToken.matches, [])
   })
 })

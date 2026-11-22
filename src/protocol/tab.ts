@@ -4,7 +4,8 @@ import { z } from 'zod'
 // with its params and its result, as the Slack half declares its own (slack.ts). A page method runs a command inside
 // the tab's page (service-worker/page-command.ts), the rest work through the browser's tab, window, download and
 // network APIs. URLs and recorded requests leave the extension with their credentials redacted (the service worker's
-// request-redaction.ts), so no raw token, cookie or password reaches the native host.
+// request-redaction.ts), and page text with the spans shaped like a known token or key redacted; text the shapes miss
+// and screenshots leave as the page shows them.
 
 const TabIdSchema = z.number().int()
 const WindowIdSchema = z.number().int()
@@ -86,10 +87,11 @@ const PointerStateSchema = z.strictObject({
 
 export type PointerState = z.infer<typeof PointerStateSchema>
 
-// A masked field's value (a password) never leaves the page: it answers its length and a revision that the page counts
-// up each time it reads a changed value, so a caller can still tell when typing has settled.
+// The page counts a field's revision up each time it reads a changed value, so a caller can tell when typing has
+// settled from what leaves the page: a masked field's value (a password) never does, only its length, and an ordinary
+// value leaves with its known credential shapes redacted, so two different tokens can read the same.
 const FieldContentSchema = z.discriminatedUnion('isMasked', [
-  z.strictObject({ isMasked: z.literal(false), value: z.string() }),
+  z.strictObject({ isMasked: z.literal(false), value: z.string(), revision: CountSchema }),
   z.strictObject({ isMasked: z.literal(true), length: CountSchema, revision: CountSchema }),
 ])
 
@@ -106,6 +108,28 @@ const FieldStateSchema = z.strictObject({
 export type FieldState = z.infer<typeof FieldStateSchema>
 
 const PageMatchesSchema = z.strictObject({ matches: z.array(z.string()), isTruncated: z.boolean() })
+
+// A line find answers: a line of the page's outline, a line of the section a matching heading titles (by its index
+// among the sections and its line in that section's outline), or how many more lines that section has.
+const PageFindMatchSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('line'), line: CountSchema }),
+  z.strictObject({ kind: z.literal('sectionLine'), section: CountSchema, line: CountSchema }),
+  z.strictObject({ kind: z.literal('moreLines'), count: CountSchema }),
+])
+
+export type PageFindMatch = z.infer<typeof PageFindMatchSchema>
+
+// What find reads in the page: the whole page's outline it searched and the outline of each section a matching heading
+// titles, as lines, and its matches as places in them. The service worker answers the matching lines from the outlines
+// redacted whole, so a line keeps the context a credential's shape spans (a private key's BEGIN line above a body line).
+const PageFindSchema = z.strictObject({
+  outline: z.array(z.string()),
+  sections: z.array(z.array(z.string())),
+  matches: z.array(PageFindMatchSchema),
+  isTruncated: z.boolean(),
+})
+
+export type PageFind = z.infer<typeof PageFindSchema>
 
 // What changed since mark: the lines of the page's outline that appeared and went, wherever they are on the page, so
 // lines that only scrolled into view are not changes. A new document, or a new URL in the same one, counts as a
@@ -168,7 +192,7 @@ const pageMethods = {
   },
   find: {
     params: z.strictObject({ query: z.string().min(1), maxChars: CharCountSchema, sectionLines: CountSchema }),
-    result: PageMatchesSchema,
+    result: PageFindSchema,
   },
   locate: { params: z.strictObject({ ref: RefSchema.optional() }), result: TargetPointSchema },
   pointer: { params: z.strictObject({ ref: RefSchema.optional() }), result: PointerStateSchema },
@@ -236,7 +260,7 @@ const tabBridgeMethods = {
     params: inTab(pageMethods.snapshot.params),
     result: z.strictObject({ ...PageSnapshotSchema.shape, tabId: TabIdSchema }),
   },
-  find: { params: inTab(pageMethods.find.params), result: pageMethods.find.result },
+  find: { params: inTab(pageMethods.find.params), result: PageMatchesSchema },
   locate: { params: inTab(pageMethods.locate.params), result: pageMethods.locate.result },
   pointer: { params: inTab(pageMethods.pointer.params), result: pageMethods.pointer.result },
   field: { params: inTab(pageMethods.field.params), result: pageMethods.field.result },

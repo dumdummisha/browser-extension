@@ -157,18 +157,20 @@ const assertInViewport = ({ clientX, clientY, innerWidth, innerHeight }: TargetP
 const viewportLayout = (tab: TabInfo, target: TargetPoint): string =>
   `${tab.windowBounds.width}x${tab.windowBounds.height} ${target.innerWidth}x${target.innerHeight} ${tab.zoom}`
 
-// The page reports the pointer in whole CSS pixels while the system moves it in points, so a landing a pixel off is on
-// the point.
+// A field is read again by its revision, since its value leaves the page redacted: two different tokens being typed
+// read the same. An ordinary value is compared too, in case the read moved to another field at the same revision.
 const isSameContent = (first: FieldContent, second: FieldContent): boolean => {
   if (first.isMasked || second.isMasked) {
     return first.isMasked && second.isMasked && first.revision === second.revision
   }
 
-  return first.value === second.value
+  return first.value === second.value && first.revision === second.revision
 }
 
 const isEmpty = (content: FieldContent): boolean => (content.isMasked ? content.length === 0 : content.value === '')
 
+// The page reports the pointer in whole CSS pixels while the system moves it in points, so a landing a pixel off is on
+// the point.
 const isAtPoint = (position: ClientPoint, target: ClientPoint): boolean =>
   Math.abs(position.clientX - target.clientX) <= POINT_LANDING_TOLERANCE_PX &&
   Math.abs(position.clientY - target.clientY) <= POINT_LANDING_TOLERANCE_PX

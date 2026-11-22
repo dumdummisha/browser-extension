@@ -10,7 +10,7 @@ const FIRST_TOKEN = ['xoxb', '1024', '2048', 'aBcDeFgHiJkLmNoP'].join('-')
 const SECOND_TOKEN = ['xoxb', '1024', '2048', 'zYxWvUtSrQpOnMlK'].join('-')
 
 // The least of the DOM the page command reads for a page of plain, visible elements: every element has a box, no
-// style hides it and no selector beyond its own tag matches it.
+// style hides it and no selector beyond its own tag and its role matches it.
 class FakeElement {
   public parentNode: FakeElement | null = null
   public readonly id = ''
@@ -44,7 +44,16 @@ class FakeElement {
   }
 
   public matches(selector: string): boolean {
-    return selector.split(', ').some((part) => part === this.localName || part.startsWith(`${this.localName}:`))
+    const role = this.attributes.role ?? null
+
+    return selector
+      .split(', ')
+      .some(
+        (part) =>
+          part === this.localName ||
+          part.startsWith(`${this.localName}:`) ||
+          (role !== null && part === `[role="${role}"]`)
+      )
   }
 
   public querySelector(): null {
@@ -96,6 +105,10 @@ const DOM_GLOBALS = {
   window: { innerWidth: 1000, innerHeight: 800, scrollY: 0 },
   location: { href: 'https://app.example.test/login' },
   getComputedStyle: () => ({ display: 'block', cursor: 'auto', overflow: 'visible', clip: 'auto', clipPath: 'none' }),
+}
+
+const moveFocus = (focused: FakeElement): void => {
+  Object.assign(document, { activeElement: focused })
 }
 
 const showPage = (children: FakeElement[], focused: FakeElement | null): void => {
@@ -191,6 +204,38 @@ describe('[service-worker] Page command - masked fields', () => {
         { isMasked: false, value: FIRST_TOKEN, revision: 0 },
         { isMasked: false, value: FIRST_TOKEN, revision: 0 },
         { isMasked: false, value: SECOND_TOKEN, revision: 1 },
+      ]
+    )
+  })
+
+  it('should give each field a wrapper ref reads in turn a revision of its own', () => {
+    // Arrange
+    const user = new FakeInput('text', { 'aria-label': 'User token' })
+    const bot = new FakeInput('text', { 'aria-label': 'Bot token' })
+    user.value = FIRST_TOKEN
+    bot.value = SECOND_TOKEN
+    showPage([new FakeElement('div', { 'role': 'textbox', 'aria-label': 'Tokens' }, [user, bot])], user)
+    assert.equal(outline(), '[1] textbox "Tokens"')
+
+    // Act
+    const reads = [readField(1)]
+    moveFocus(bot)
+    reads.push(readField(1), readField(1))
+    moveFocus(user)
+    reads.push(readField(1))
+    bot.value = `${SECOND_TOKEN}x`
+    moveFocus(bot)
+    reads.push(readField(1))
+
+    // Assert
+    assert.deepEqual(
+      reads.map(({ content }) => content),
+      [
+        { isMasked: false, value: FIRST_TOKEN, revision: 0 },
+        { isMasked: false, value: SECOND_TOKEN, revision: 1 },
+        { isMasked: false, value: SECOND_TOKEN, revision: 1 },
+        { isMasked: false, value: FIRST_TOKEN, revision: 0 },
+        { isMasked: false, value: `${SECOND_TOKEN}x`, revision: 2 },
       ]
     )
   })

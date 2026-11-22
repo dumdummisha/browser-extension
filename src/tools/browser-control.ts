@@ -157,15 +157,9 @@ const assertInViewport = ({ clientX, clientY, innerWidth, innerHeight }: TargetP
 const viewportLayout = (tab: TabInfo, target: TargetPoint): string =>
   `${tab.windowBounds.width}x${tab.windowBounds.height} ${target.innerWidth}x${target.innerHeight} ${tab.zoom}`
 
-// A field is read again by its revision, since its value leaves the page redacted: two different tokens being typed
-// read the same. An ordinary value is compared too, in case the read moved to another field at the same revision.
-const isSameContent = (first: FieldContent, second: FieldContent): boolean => {
-  if (first.isMasked || second.isMasked) {
-    return first.isMasked && second.isMasked && first.revision === second.revision
-  }
-
-  return first.value === second.value && first.revision === second.revision
-}
+// A field has settled when two reads answer the same revision, which the page gives to one value of one element: the
+// value cannot tell, since a password never leaves the page and two different tokens read the same once redacted.
+const isSameContent = (first: FieldContent, second: FieldContent): boolean => first.revision === second.revision
 
 const isEmpty = (content: FieldContent): boolean => (content.isMasked ? content.length === 0 : content.value === '')
 

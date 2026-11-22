@@ -20,6 +20,7 @@ interface IPageState {
   isTrackingPointer: boolean
   pointerSeq: number
   pointer: ClientPoint | null
+  nextRevision: number
   fieldReads: WeakMap<Element, IFieldRead>
 }
 
@@ -137,6 +138,7 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
     isTrackingPointer: false,
     pointerSeq: 0,
     pointer: null,
+    nextRevision: 0,
     fieldReads: new WeakMap(),
   }
   const state = host.mishaTabState
@@ -357,11 +359,19 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
     return null
   }
 
-  // An element that holds no value reads as an empty field that never changes, at revision 0.
+  // A revision names one value of one element: reads answer the same revision while that element holds that value, and
+  // a changed value gets a new one, drawn from one count for the whole document, so reads of two elements never share
+  // a revision (a ref on a wrapper reads whichever field inside it has the focus). An element that holds no value reads
+  // as an empty field.
   const fieldContent = (element: Element, { value, isMasked }: IFieldValue): FieldContent => {
     const last = state.fieldReads.get(element)
-    const revision = last === undefined ? 0 : last.revision + Number(last.value !== value)
-    state.fieldReads.set(element, { value, revision })
+    const read = last?.value === value ? last : { value, revision: state.nextRevision }
+    if (read !== last) {
+      state.nextRevision += 1
+      state.fieldReads.set(element, read)
+    }
+
+    const { revision } = read
 
     return isMasked ? { isMasked, length: value.length, revision } : { isMasked, value, revision }
   }

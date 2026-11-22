@@ -111,6 +111,37 @@ describe('[tools] Browser control - typing settles by revision', () => {
     )
   })
 
+  it('should keep waiting when a wrapper ref reads another field whose token redacts the same', async (context) => {
+    // Arrange
+    context.after(pretendPlatform('darwin'))
+    // The page answers each value of each field a revision of its own: the user token 0, then the bot token, which the
+    // wrapper's focus moved to, 1, and the bot token once more typing changed it 2.
+    const reads = [
+      focusedField(REDACTED_TOKEN),
+      focusedField(REDACTED_TOKEN),
+      focusedField({ ...REDACTED_TOKEN, revision: 1 }),
+      focusedField({ ...REDACTED_TOKEN, revision: 2 }),
+    ]
+    const answered: FieldState[] = []
+    const browser = typingBrowser(reads, answered)
+
+    // Act
+    const result = await browser.typeInto({
+      tabId: TAB.tabId,
+      ref: FIELD_REF,
+      text: 'a made-up key',
+      isClearing: false,
+      isSubmitting: false,
+    })
+
+    // Assert
+    assert.deepEqual(result, { field: focusedField({ ...REDACTED_TOKEN, revision: 2 }), action: null })
+    assert.deepEqual(
+      answered.map(({ content }) => content.revision),
+      [0, 0, 1, 2, 2]
+    )
+  })
+
   it('should keep a masked field settling by its revision alone', async (context) => {
     // Arrange
     context.after(pretendPlatform('darwin'))

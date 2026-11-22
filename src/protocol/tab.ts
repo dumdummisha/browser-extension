@@ -87,9 +87,11 @@ const PointerStateSchema = z.strictObject({
 
 export type PointerState = z.infer<typeof PointerStateSchema>
 
-// The page counts a field's revision up each time it reads a changed value, so a caller can tell when typing has
-// settled from what leaves the page: a masked field's value (a password) never does, only its length, and an ordinary
-// value leaves with its known credential shapes redacted, so two different tokens can read the same.
+// A field's revision names the value the page read and the element it read it from: the same while that element holds
+// that value, new for every other value or element in the document. A caller tells when typing has settled by it,
+// since the value itself cannot tell: a masked field's value (a password) never leaves the page, only its length, and
+// an ordinary value leaves the service worker with its known credential shapes redacted, so two different tokens, in
+// one field or in two fields a wrapper's ref reads in turn, can read the same.
 const FieldContentSchema = z.discriminatedUnion('isMasked', [
   z.strictObject({ isMasked: z.literal(false), value: z.string(), revision: CountSchema }),
   z.strictObject({ isMasked: z.literal(true), length: CountSchema, revision: CountSchema }),

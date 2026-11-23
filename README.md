@@ -130,6 +130,12 @@ pnpm install
 pnpm run typecheck && pnpm run lint && pnpm run format:check && pnpm test
 ```
 
+The extension's icons in `src/extension/icons/` are rendered from `misha.svg` beside them, at the sizes Chrome's manifest takes for `icons`, with macOS's `sips`. The script keeps only the PNG chunks that describe pixels, so the EXIF block `sips` writes stays out of the repository:
+
+```sh
+pnpm run render-icons
+```
+
 ## Related repositories
 
 - [dumdummisha/docs](https://github.com/dumdummisha/docs): the documentation site at [docs.dumdummisha.ai](https://docs.dumdummisha.ai), including the Misha app's setup, privacy policy and architecture.

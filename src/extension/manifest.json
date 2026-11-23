@@ -5,6 +5,12 @@
   "version": "0.1.0",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0dSZGPmCueNqXNI+P2U4AHXqaPXzJX+/1NDz6w2l5C+ZaDrJ0kJ6b5aL7q6bnJrfasIk0b5jgxkeIPj7jmF8oMkF3z7akjoiWR7/c8hEt8z2YyM5isVw16ZReggmWulfgUIRqkFlD+FT5QE7B0FRZqVdrAEHHSaZ0GWgcbfPv8zjBiFw+cFhJQOG3B+SQw/qdpebVYATyArZM58KzVVT28uDdtr4yNLeKwsUpTjVKe7SmhG7a2oDvxwFVSlZPU3b3EYK6KcTClb3Y6rN22zt2YNNDG3CVBvQ0z228YgADmjix225b6KcDBYfOXeEH3uYovM7EEfirA2ABIF5Dh2rZQIDAQAB",
   "minimum_chrome_version": "140",
+  "icons": {
+    "16": "icons/misha-16.png",
+    "32": "icons/misha-32.png",
+    "48": "icons/misha-48.png",
+    "128": "icons/misha-128.png"
+  },
   "background": { "service_worker": "background.js", "type": "module" },
   "permissions": [
     "nativeMessaging",

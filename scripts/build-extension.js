@@ -14,5 +14,10 @@ const options = { bundle: true, target: 'chrome140', outdir: EXTENSION_DIR, logL
 await build({ ...options, entryPoints: [`${SOURCE_DIR}/background.ts`], format: 'esm' })
 await build({ ...options, entryPoints: [`${SOURCE_DIR}/observer.ts`, `${SOURCE_DIR}/relay.ts`], format: 'iife' })
 cpSync(`${SOURCE_DIR}/manifest.json`, `${EXTENSION_DIR}/manifest.json`)
+// The manifest names the icon folder's PNGs; the SVG they are rendered from stays out of the extension.
+cpSync(`${SOURCE_DIR}/icons`, `${EXTENSION_DIR}/icons`, {
+  recursive: true,
+  filter: (/** @type {string} */ source) => !source.endsWith('.svg'),
+})
 
 process.stdout.write(`Built the unpacked extension in ${EXTENSION_DIR}/\n`)

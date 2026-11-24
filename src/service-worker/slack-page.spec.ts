@@ -322,30 +322,104 @@ describe('[service-worker] Slack page - activity session', () => {
     )
   })
 
-  it("should answer a failure code, sending nothing, for stored sessions that parse but not as Slack's client writes them", async (context) => {
+  it("should answer a failure code, sending nothing and changing nothing, where Slack's client would throw or lose the session", async (context) => {
     // Arrange
     const stored = openSlackPage(context, () => savedConfig('https://example.slack.com/'))
+    context.mock.timers.enable({ apis: ['Date'], now: NOW })
     const fetched = context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
+    const active = storedSession('Sactive0001', NOW - 20_000, NOW - 1_000)
+    const other = storedSession('Sother00001', NOW - 600_000, NOW - 300_000)
     const values = [
       '[]',
+      JSON.stringify([active]),
       '7',
+      '"text"',
+      'true',
       '{"Sother00001":null}',
-      '{"Sother00001":{"id":"Snotitskey1","startTime":1,"lastActivity":1}}',
+      JSON.stringify({ Snamed00001: active }),
+      JSON.stringify({ Snoid000001: { startTime: active.startTime, lastActivity: active.lastActivity } }),
+      JSON.stringify({ [other.id]: other, Snamed00001: { ...active, id: other.id } }),
+      '{"Sodd0000001":{"lastActivity":{"toString":1,"valueOf":1}}}',
     ]
 
     // Act
-    const results: SlackPageResult[] = []
+    const outcomes: [SlackPageResult, string | undefined][] = []
     for (const value of values) {
       stored.set(SESSIONS_KEY, value)
-      results.push(await runSlackPageCommand(CALL))
+      outcomes.push([await runSlackPageCommand(CALL), stored.get(SESSIONS_KEY)])
     }
 
     // Assert
     assert.deepEqual(
-      results,
-      values.map(() => ({ kind: 'failed', failure: 'activity-session-unreadable', status: null }))
+      outcomes,
+      values.map((value) => [{ kind: 'failed', failure: 'activity-session-unreadable', status: null }, value])
     )
     assert.equal(fetched.mock.callCount(), 0)
+  })
+
+  it('should prune a stale entry whose id is not its name, as the client does, and start a new session', async (context) => {
+    // Arrange
+    const stored = openSlackPage(context, () => savedConfig('https://example.slack.com/'))
+    context.mock.timers.enable({ apis: ['Date'], now: NOW })
+    context.mock.method(Math, 'random', () => 0)
+    stored.set(SESSIONS_KEY, '{"Sother00001":{"id":"Snotitskey1","startTime":1,"lastActivity":1}}')
+    const fetched = context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
+
+    // Act
+    const result = await runSlackPageCommand(CALL)
+
+    // Assert
+    assert.deepEqual(result, { kind: 'answer', answer: { ok: true } })
+    assert.equal(queryOf(fetched), CLIENT_QUERY.replace('example-csid', NEW_SESSION_ID))
+    assert.equal(
+      stored.get(SESSIONS_KEY),
+      JSON.stringify({ [NEW_SESSION_ID]: storedSession(NEW_SESSION_ID, NOW, NOW) })
+    )
+  })
+
+  it("should extend the active session beside entries it cannot read as sessions, keeping or pruning them as Slack's client does", async (context) => {
+    // Arrange
+    const stored = openSlackPage(context, () => savedConfig('https://example.slack.com/'))
+    context.mock.timers.enable({ apis: ['Date'], now: NOW })
+    const active = storedSession('Sactive0001', NOW - 20_000, NOW - 1_000)
+    // Kept: no object, or no last activity a subtraction reads as a number. Pruned: a last activity a subtraction reads
+    // as more than a day ago (a numeric string, null).
+    const kept = {
+      Stext000001: 'text',
+      Snumber0001: 5,
+      Sarray00001: [],
+      Snolast0001: { id: 'Snolast0001', startTime: NOW - 20_000 },
+      Snostart001: { id: 'Snostart001', lastActivity: NOW - 500 },
+    }
+    const pruned = {
+      Sstring0001: { id: 'Sstring0001', startTime: 1, lastActivity: '1' },
+      Snull000001: { id: 'Snull000001', startTime: 1, lastActivity: null },
+    }
+    stored.set(SESSIONS_KEY, JSON.stringify({ ...kept, ...pruned, [active.id]: active }))
+    const fetched = context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
+
+    // Act
+    await runSlackPageCommand(CALL)
+
+    // Assert
+    assert.equal(queryOf(fetched), CLIENT_QUERY.replace('example-csid', 'Sactive0001'))
+    assert.equal(stored.get(SESSIONS_KEY), JSON.stringify({ ...kept, [active.id]: { ...active, lastActivity: NOW } }))
+  })
+
+  it("should send no _x_csid for an active session whose id is empty, as Slack's client writes none", async (context) => {
+    // Arrange
+    const stored = openSlackPage(context, () => savedConfig('https://example.slack.com/'))
+    context.mock.timers.enable({ apis: ['Date'], now: NOW })
+    const active = storedSession('', NOW - 20_000, NOW - 1_000)
+    stored.set(SESSIONS_KEY, JSON.stringify({ '': active }))
+    const fetched = context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
+
+    // Act
+    await runSlackPageCommand(CALL)
+
+    // Assert
+    assert.equal(queryOf(fetched), CLIENT_QUERY.replace('_x_csid=example-csid&', ''))
+    assert.equal(stored.get(SESSIONS_KEY), JSON.stringify({ '': { ...active, lastActivity: NOW } }))
   })
 
   it("should answer a failure code, sending nothing, when the page's storage refuses the session", async (context) => {

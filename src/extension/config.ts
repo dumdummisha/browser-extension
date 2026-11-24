@@ -19,8 +19,10 @@ export const SLACK_CLIENT_PATH = /^\/client\/(?<teamId>[TE][A-Z0-9]+)/u
 // Slack's saved client state in the page's localStorage: each workspace under teams, with its signed-in user_id.
 export const SLACK_CLIENT_STATE_KEY = 'localConfig_v2'
 
-// The message the service worker sends a tab's relay to learn its observer's socket state.
+// The messages the service worker sends a tab's relay: to learn its observer's socket state, and the client queries
+// its observer keeps, which a Web API call goes out with (background.ts callSlack).
 export const CAPTURE_QUERY = 'misha-capture-query'
+export const CLIENT_QUERY = 'misha-client-query'
 
 // The relay's bundle, as the manifest names it, which the service worker injects into an open Slack tab whose relay it
 // cannot reach (background.ts), and the mark a relay leaves in its isolated world so a second copy there leaves.

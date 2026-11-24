@@ -240,7 +240,7 @@ describe('[service-worker] Capture handshake - the frame hold', () => {
 
 describe("[service-worker] Capture handshake - the relay's side", () => {
   it(
-    'should take the port the observer offers during its ready event, and get what is posted on it',
+    'should take the port the observer offers during its ready event, answer that it was offered, and get what is posted on it',
     TEST_OPTIONS,
     async () => {
       // Arrange
@@ -253,10 +253,11 @@ describe("[service-worker] Capture handshake - the relay's side", () => {
       const relay = recordMessages()
 
       // Act
-      takeObserverPorts(slackPage(document), SLACK_ORIGIN, relay.onMessage)
+      const isOffered = takeObserverPorts(slackPage(document), SLACK_ORIGIN, relay.onMessage)
       channel.port1.postMessage(GREETING)
 
       // Assert
+      assert.equal(isOffered, true)
       assert.deepEqual(await relay.received(1), [GREETING])
     }
   )
@@ -283,18 +284,18 @@ describe("[service-worker] Capture handshake - the relay's side", () => {
     assert.equal(readyEvents, 0)
   })
 
-  it('should leave a port offered after its ready event untaken', () => {
+  it('should answer that no port was offered, and leave a port offered after its ready event untaken', () => {
     // Arrange
     const document = new EventTarget()
     const channel = new MessageChannel()
     openPorts.push(channel.port1, channel.port2)
-    takeObserverPorts(slackPage(document), SLACK_ORIGIN, () => undefined)
+    const isOffered = takeObserverPorts(slackPage(document), SLACK_ORIGIN, () => undefined)
 
     // Act
     document.dispatchEvent(new MessageEvent(OBSERVER_PORT_EVENT, { ports: [channel.port2] }))
 
     // Assert
-    assert.equal(channel.port2.onmessage, null)
+    assert.deepEqual([isOffered, channel.port2.onmessage], [false, null])
   })
 
   it('should get a channel of its own from an observer that answered a relay before', TEST_OPTIONS, async () => {

@@ -14,7 +14,8 @@
 // handed out. A ready event a page script dispatched gets a copy of what the observer passes on, which the page holds
 // anyway, and never takes the channel from the relay. A page script can also answer a later relay's ready event with a
 // port of its own, or report frames taken on a port it asked for; page scripts are out of scope (observer.ts), and the
-// relay checks whatever a port brings, which becomes events and status only.
+// relay checks whatever a port brings, which becomes events and status, and client queries that only shape the
+// envelope of a call the Misha app asked for.
 //
 // A relay cut off by a reload passes nothing on, and its replacement asks for a channel only once the new service
 // worker injected it, so a new message can reach the observer while no relay passes anything on. The observer holds
@@ -180,11 +181,13 @@ export interface IRelayPage {
 // both, and throws anywhere else, before it dispatches anything. It dispatches the ready event on the page's document,
 // and each message a port offered during that dispatch brings goes to onMessage with that port. A port offered at any
 // other time finds no listener. A document keeps its origin for as long as it lives, and the relay goes with it.
+// Answers whether a port was offered. The observer posts its greeting in the same listener that offers the port, so
+// once this returns true the greeting is already queued on that port, and comes in the relay's next message.
 export const takeObserverPorts = (
   page: IRelayPage,
   slackOrigin: string,
   onMessage: (data: unknown, port: MessagePort) => void
-): void => {
+): boolean => {
   if (page.origin !== slackOrigin || !page.isTopFrame) {
     const frame = page.isTopFrame ? 'top frame' : 'subframe'
     throw new Error(
@@ -192,9 +195,11 @@ export const takeObserverPorts = (
     )
   }
 
+  let isOffered = false
   const takePort = (event: Event): void => {
     const [port] = event instanceof MessageEvent ? event.ports : []
     if (port !== undefined) {
+      isOffered = true
       port.onmessage = ({ data }: MessageEvent<unknown>) => {
         onMessage(data, port)
       }
@@ -204,6 +209,8 @@ export const takeObserverPorts = (
   page.document.addEventListener(OBSERVER_PORT_EVENT, takePort)
   page.document.dispatchEvent(new CustomEvent(RELAY_READY_EVENT))
   page.document.removeEventListener(OBSERVER_PORT_EVENT, takePort)
+
+  return isOffered
 }
 
 // The relay tells the observer, on the port the frame came on, that the service worker took the frame numbered seq.

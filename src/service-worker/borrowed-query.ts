@@ -94,6 +94,25 @@ export const borrowedQueryOf = (url: URL): BorrowedQuery | null => {
   })
 }
 
+// Whether a query is one borrowedQueryOf can give, the check of a query that crossed a boundary: each field a borrowed
+// one with a value of its form, or one of the request's own fields by name only, with a request id and a workspace
+// route among them.
+export const isBorrowedQuery = (query: BorrowedQuery): boolean => {
+  const names = query.map(([name]) => name)
+  const isEachKept = query.every(([name, value]) =>
+    value === null ? name === REQUEST_ID_FIELD || name === RETRIES_FIELD : isBorrowable(name, value)
+  )
+
+  return isEachKept && names.includes(REQUEST_ID_FIELD) && names.includes(ROUTE_FIELD)
+}
+
+// Whether text is a workspace API's origin as URL writes one: https, no port, and a workspace host on Slack's domain.
+export const isApiOrigin = (text: string): boolean => {
+  const url = URL.parse(text)
+
+  return url?.origin === text && url.protocol === 'https:' && url.port === '' && SLACK_API_HOSTNAME.test(url.hostname)
+}
+
 // A request id in the form Slack's client gives its own: eight hex digits, then the time in seconds to the millisecond.
 export const freshRequestId = (): string => `${crypto.randomUUID().slice(0, 8)}-${(Date.now() / 1000).toFixed(3)}`
 

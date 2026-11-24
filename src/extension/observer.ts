@@ -1,20 +1,26 @@
 import { answerRelays, HELD_FRAMES_MAX, holdFrames } from '../service-worker/capture-handshake.js'
+import { keepClientQueries } from '../service-worker/client-query-keeper.js'
 import { projectedMessageOf } from '../service-worker/message-projection.js'
 import { SLACK_CLIENT_PATH, SLACK_CLIENT_STATE_KEY, SLACK_SOCKET_HOSTNAME } from './config.js'
 
 // Runs in the page's own world at document_start, before Slack's scripts, so it wraps WebSocket before Slack opens its
 // socket. It only reads: it sends nothing on the socket, and never passes the socket's URL on, since the URL carries a
 // token. It hands each relay of the extension one end of a private channel (capture-handshake.ts), and passes on them
-// only what it takes from Slack's socket itself: whether a socket is open, and each new message cut down to the fields
-// the app reads, with the account the tab showed when it came.
+// what it takes from Slack's socket itself, whether a socket is open and each new message cut down to the fields the
+// app reads, with the account the tab showed when it came, and the client query it keeps: per workspace API, the
+// borrowed fields of the latest Web API call of Slack's own client (client-query-keeper.ts). It learns that query from
+// the page's resource timing, through a PerformanceObserver, which receives every entry whatever Slack does with the
+// page's own entry buffer, and adds no request and no wrapper around XHR or fetch. It reads each entry's initiator type,
+// and the address only of the client's XHR entries.
 //
 // Threat model (README, Security): scripts already running in the page, Slack's own or another extension's in this
 // world, are out of scope, since such a script already holds the session and token and can send them anywhere itself.
 // The guarantees are that the extension's own code never moves a credential out of the page, and that Slack message
 // content, remote data that never runs as script, reaches the relay only as a cut-down message that becomes an event,
-// never as a command, an API call or an ack. The built-ins taken at load (here, in message-projection.ts and in
-// capture-handshake.ts) and the isTrusted check keep what the observer reads the same when the page's scripts later
-// replace a built-in or dispatch events of their own; they are not a boundary against such a script.
+// never as a command, an API call or an ack. The client query only shapes the envelope of a call the Misha app asked
+// for. The built-ins taken at load (here, in message-projection.ts and in capture-handshake.ts) and the isTrusted
+// check keep what the observer reads the same when the page's scripts later replace a built-in or dispatch events of
+// their own; they are not a boundary against such a script.
 const { apply, construct } = Reflect
 const { getOwnPropertyDescriptor } = Object
 const NativeUrl = URL
@@ -35,19 +41,51 @@ const getterOf = (prototype: object, name: string): (() => unknown) => {
 const messageData = getterOf(MessageEvent.prototype, 'data')
 const urlProtocol = getterOf(URL.prototype, 'protocol')
 const urlHostname = getterOf(URL.prototype, 'hostname')
+const NativePerformanceObserver = PerformanceObserver
+const observePerformance = PerformanceObserver.prototype.observe
+const listedEntries = PerformanceObserverEntryList.prototype.getEntries
+const entryName = getterOf(PerformanceEntry.prototype, 'name')
+const entryStartTime = getterOf(PerformanceEntry.prototype, 'startTime')
+const entryInitiatorType = getterOf(PerformanceResourceTiming.prototype, 'initiatorType')
 
 let openSockets = 0
+const clientQueries = keepClientQueries()
 
-const socketState = (): object => ({ kind: 'socket', isSocketOpen: openSockets > 0 })
-
-// Every relay that asked gets the socket state as it stands, every new message no relay reported taken yet, and then
-// each change and each new message. A relay the service worker injects after the extension reloaded asks while the
-// socket is already open, and learns so at once, along with the messages that came while no relay passed them on.
-const relays = answerRelays(document, socketState, holdFrames(HELD_FRAMES_MAX))
+// Every relay that asked gets a greeting with the socket state and the client queries as they stand, every new message
+// no relay reported taken yet, and then each change and each new message. A relay the service worker injects after the
+// extension reloaded asks while the socket is already open and the client has already called the Web API, and learns
+// both at once, along with the messages that came while no relay passed them on.
+const relays = answerRelays(
+  document,
+  () => ({ kind: 'greeting', isSocketOpen: openSockets > 0, queries: clientQueries.queries() }),
+  holdFrames(HELD_FRAMES_MAX)
+)
 
 const reportSocketState = (): void => {
-  relays.postState(socketState())
+  relays.postState({ kind: 'socket', isSocketOpen: openSockets > 0 })
 }
+
+// Each resource entry the browser reports, in the order it reports them; a change of the kept query goes to the relays.
+// buffered takes the entries still in the page's buffer when the observer registers, so the client's calls made before
+// it did count too.
+const onResourceEntries = (list: PerformanceObserverEntryList): void => {
+  const entries: PerformanceEntryList = apply(listedEntries, list, [])
+  for (const entry of entries) {
+    const initiatorType: unknown = apply(entryInitiatorType, entry, [])
+    const startTime: unknown = apply(entryStartTime, entry, [])
+    const change =
+      typeof initiatorType === 'string' && typeof startTime === 'number'
+        ? clientQueries.take({ initiatorType, startTime, url: () => apply(entryName, entry, []) })
+        : null
+    if (change !== null) {
+      relays.postState({ kind: 'client-query', ...change })
+    }
+  }
+}
+
+apply(observePerformance, construct(NativePerformanceObserver, [onResourceEntries]), [
+  { type: 'resource', buffered: true },
+])
 
 const matches = (pattern: RegExp, text: unknown): RegExpExecArray | null =>
   typeof text === 'string' ? apply(execPattern, pattern, [text]) : null

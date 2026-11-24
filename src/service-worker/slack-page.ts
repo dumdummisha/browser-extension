@@ -361,9 +361,11 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
 
       session.lastActivity = now
       sessions[entryName] = session
-      // pruneStaleSessionsObject, after the session was extended or added, as the client prunes.
+      // pruneStaleSessionsObject, after the session was extended or added, as the client prunes: at the time it reads
+      // when pruning starts, which is later than the activity's.
+      const pruneNow = Date.now()
       for (const [name, entry] of Object.entries(sessions)) {
-        if (now - prunedLastActivityOf(entry) > SESSION_STALE_MS) {
+        if (pruneNow - prunedLastActivityOf(entry) > SESSION_STALE_MS) {
           Reflect.deleteProperty(sessions, name)
         }
       }

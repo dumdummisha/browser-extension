@@ -422,6 +422,28 @@ describe('[service-worker] Slack page - activity session', () => {
     assert.equal(stored.get(SESSIONS_KEY), JSON.stringify({ '': { ...active, lastActivity: NOW } }))
   })
 
+  it('should prune at the time pruning starts, which Slack reads after the activity time', async (context) => {
+    // Arrange - the clock moves 1 ms while the command reads the sessions
+    const stored = openSlackPage(context, () => savedConfig('https://example.slack.com/'))
+    context.mock.timers.enable({ apis: ['Date'], now: NOW })
+    context.mock.method(Math, 'random', () => 0)
+    const dayOld = storedSession('Sdayold0001', NOW - STALE_MS - 60_000, NOW - STALE_MS)
+    stored.set(SESSIONS_KEY, JSON.stringify({ [dayOld.id]: dayOld }))
+    const read = stored.get.bind(stored)
+    context.mock.method(stored, 'get', (key: string) => {
+      const value = read(key)
+      context.mock.timers.tick(1)
+      return value
+    })
+    context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
+
+    // Act
+    await runSlackPageCommand(CALL)
+
+    // Assert
+    assert.equal(read(SESSIONS_KEY), JSON.stringify({ [NEW_SESSION_ID]: storedSession(NEW_SESSION_ID, NOW, NOW) }))
+  })
+
   it("should answer a failure code, sending nothing, when the page's storage refuses the session", async (context) => {
     // Arrange
     const stored = openSlackPage(context, () => savedConfig('https://example.slack.com/'))

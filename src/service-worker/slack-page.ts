@@ -35,8 +35,8 @@ export type SlackPageCommand =
 // - no-client-query: the service worker has seen no Web API call of the page's client to the workspace's API, so it
 //   holds no query to send the call with, or the query it holds has no workspace route (slack_route), which the
 //   service worker never lends (slack-request-shape.ts borrowedQueryOf)
-// - activity-session-unreadable: Slack's activity sessions for the workspace are stored in a form on which Slack's
-//   client itself would throw, or lose the session it records
+// - activity-session-unreadable: Slack's client itself would throw on the workspace's stored activity sessions while
+//   recording activity or reading the session to send, or its write would lose the session it records
 // - activity-session-unsaved: the page's localStorage refused the activity session the command recorded
 // - deadline-passed: the caller's deadline passed before the request went out, so nothing was sent
 // - api-unreachable, api-refused, api-no-answer: a Web API call got no response, an HTTP status other than 2xx, or no
@@ -168,15 +168,6 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
   const SESSION_FIELD = '_x_csid'
   const ROUTE_FIELD = 'slack_route'
 
-  // A stored entry the command reads as a session, in the fields it reads; the rest stay as stored. Slack's client
-  // writes every session with a string id, and a start and a last activity in milliseconds.
-  interface IReadableSession {
-    readonly id?: unknown
-    readonly startTime: number
-    lastActivity: number
-    readonly ended?: unknown
-  }
-
   const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null
 
   // Runs step, and fails with failure in place of whatever error it threw.
@@ -191,20 +182,54 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
     }
   }
 
-  // An entry the command can select (getActiveSessionFromSessionObject): an object whose start and last activity are
-  // numbers, the values the client's selection compares. Any other entry is never selected, and stays as stored unless
-  // pruning removes it. The client's comparisons would coerce such a value instead (a numeric string's last activity
-  // included), a value it never writes.
-  const isReadableSession = (value: unknown): value is IReadableSession =>
-    isRecord(value) && typeof value.startTime === 'number' && typeof value.lastActivity === 'number'
+  // Slack's client handles its stored activity sessions with JavaScript's own semantics and lodash, whatever the stored
+  // JSON holds, so the command takes the same steps on the same values instead of predicting their outcome. The
+  // helpers below are JavaScript's operations on a value parsed from JSON, which holds no function or symbol:
+  // - propertyOf: reading value[name], which throws on null and undefined and reads a primitive's wrapper
+  // - assignProperty: strict-mode target[name] = value, which throws for a target that is no object
+  // - primitiveOf: the primitive an operator converts a value to; for an object or array parsed from JSON both the
+  //   number and the string hint reach its toString (its valueOf returns itself), which String calls, and which throws
+  //   where the operator throws (an own toString and valueOf that cannot be called)
+  // - isLess: a < b (IsLessThan): two strings compare as strings, anything else as numbers
+  // - plusOf: value + addend, which joins as strings when the value converts to a string
+  const propertyOf = (value: unknown, name: string): unknown => {
+    if (value === null || value === undefined) {
+      throw new TypeError('A property was read from null or undefined')
+    }
 
-  // A workspace's stored entries by name (getSessions): none when nothing is stored or what is stored does not parse,
-  // and none for a stored value that parses as nothing (JSON.parse(t) || {}). Any other value is taken as the client
-  // takes it, entry by entry, and fails the command only where recordSessionActivity itself throws or loses data:
-  // - an array, whose new session the client adds under a name JSON.stringify drops, so the write loses it
-  // - a number, a string or true, to which the client's strict-mode code cannot add the new session, and throws
-  // - an object with a null entry, whose ended isSessionActive reads, and throws
-  const storedSessions = (saved: string | null): Record<string, unknown> => {
+    const property: unknown = Reflect.get(Object(value), name)
+
+    return property
+  }
+
+  const assignProperty = (target: unknown, name: string, value: unknown): void => {
+    if (!isRecord(target)) {
+      throw new TypeError('A property was assigned to a value that is no object')
+    }
+
+    target[name] = value
+  }
+
+  const primitiveOf = (value: unknown): unknown => (isRecord(value) ? String(value) : value)
+
+  const isLess = (left: unknown, right: unknown): boolean => {
+    const leftPrimitive = primitiveOf(left)
+    const rightPrimitive = primitiveOf(right)
+    if (typeof leftPrimitive === 'string' && typeof rightPrimitive === 'string') {
+      return leftPrimitive < rightPrimitive
+    }
+
+    return Number(leftPrimitive) < Number(rightPrimitive)
+  }
+
+  const plusOf = (value: unknown, addend: number): number | string => {
+    const primitive = primitiveOf(value)
+
+    return typeof primitive === 'string' ? `${primitive}${addend}` : Number(primitive) + addend
+  }
+
+  // getSessions: no stored text, or text that does not parse, is no sessions; otherwise JSON.parse(t) || {}.
+  const storedSessions = (saved: string | null): unknown => {
     if (saved === null || saved === '') {
       return {}
     }
@@ -217,47 +242,94 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
     }
 
     const isTruthy = Boolean(parsed)
-    const sessions = isTruthy ? parsed : {}
-    if (!isRecord(sessions) || Array.isArray(sessions) || Object.values(sessions).includes(null)) {
-      throw new PageFailure('activity-session-unreadable')
+
+    return isTruthy ? parsed : {}
+  }
+
+  // The values lodash's filter and map visit (arrayFilter, baseEach, keys): an array-like value, one whose length is a
+  // safe integer from 0 (an array, a string, an object with such a length), by index; anything else by Object.keys.
+  // lodash's baseKeys leaves out constructor only for a prototype object, which no parsed value is.
+  const collectionValues = (collection: unknown): unknown[] => {
+    if (collection === null || collection === undefined) {
+      return []
     }
 
-    return sessions
+    const length = propertyOf(collection, 'length')
+    const isArrayLike = typeof length === 'number' && Number.isSafeInteger(length) && length > -1
+    const names = isArrayLike ? Array.from({ length }, (_, index) => String(index)) : Object.keys(collection)
+
+    return names.map((name) => propertyOf(collection, name))
   }
 
-  // isSessionActive: not ended, and less than SESSION_ACTIVE_MS since its last activity.
-  const isSessionActive = (session: IReadableSession, now: number): boolean => {
-    const hasEnded = Boolean(session.ended)
+  // isSessionActive: !e.ended && t < e.lastActivity + 6e4, with JavaScript's coercions.
+  const isSessionActive = (session: unknown, now: number): boolean => {
+    const hasEnded = Boolean(propertyOf(session, 'ended'))
 
-    return !hasEnded && now < session.lastActivity + SESSION_ACTIVE_MS
+    return !hasEnded && isLess(now, plusOf(propertyOf(session, 'lastActivity'), SESSION_ACTIVE_MS))
   }
 
-  // The session active at now (getActiveSessionFromSessionObject): of the active sessions, the one that started first,
-  // the first stored on a tie, as lodash's stable sortBy and head pick it.
-  const activeSessionOf = (sessions: Readonly<Record<string, unknown>>, now: number): IReadableSession | undefined =>
-    Object.values(sessions)
-      .filter(isReadableSession)
+  // lodash's compareAscending (module "bXh3"), which orders sortBy's criteria: undefined after everything else, null
+  // after every defined value but NaN, NaN last of all, and anything else by < and >. Parsed JSON holds no symbol, so
+  // its symbol clauses never apply.
+  const compareAscending = (value: unknown, other: unknown): number => {
+    if (value === other) {
+      return 0
+    }
+
+    const isValueDefined = value !== undefined
+    const isValueNull = value === null
+    const isValueReflexive = !Number.isNaN(value)
+    const isOtherDefined = other !== undefined
+    const isOtherNull = other === null
+    const isOtherReflexive = !Number.isNaN(other)
+    if (
+      (!isOtherNull && isLess(other, value)) ||
+      (isValueNull && isOtherDefined && isOtherReflexive) ||
+      (!isValueDefined && isOtherReflexive) ||
+      !isValueReflexive
+    ) {
+      return 1
+    }
+
+    // The block above answered for a NaN value, so lodash's checks that the value is not NaN hold here.
+    if (
+      (!isValueNull && isLess(value, other)) ||
+      (isOtherNull && isValueDefined) ||
+      !isOtherDefined ||
+      !isOtherReflexive
+    ) {
+      return -1
+    }
+
+    return 0
+  }
+
+  // getActiveSessionFromSessionObject: head(sortBy(filter(sessions, isSessionActive), e => e.startTime)), where sortBy
+  // sorts each value's criterion with compareAscending and then its position (baseOrderBy, compareMultiple).
+  const activeSessionOf = (sessions: unknown, now: number): unknown =>
+    collectionValues(sessions)
       .filter((session) => isSessionActive(session, now))
-      .toSorted((first, second) => first.startTime - second.startTime)[0]
+      .map((value, index) => ({ criterion: propertyOf(value, 'startTime'), index, value }))
+      .toSorted((first, second) => {
+        const order = compareAscending(first.criterion, second.criterion)
 
-  // The name a session's id gives its entry (a[i.id]), as JavaScript converts a property name: a value the conversion
-  // throws on (an object whose own toString and valueOf cannot be called) throws in the client too.
-  const entryNameOf = (id: unknown): string => {
-    try {
-      return String(id)
-    } catch {
-      throw new PageFailure('activity-session-unreadable')
+        return order === 0 ? first.index - second.index : order
+      })[0]?.value
+
+  // pruneStaleSessionsObject: every own key whose value is truthy and whose last activity, as subtraction converts it
+  // (Number), is more than SESSION_STALE_MS before the time it reads when it starts. A primitive's entries (a string's
+  // characters) have no last activity, so nothing of one is pruned.
+  const pruneStaleSessions = (sessions: unknown): void => {
+    const now = Date.now()
+    if (!isRecord(sessions)) {
+      return
     }
-  }
 
-  // The last activity pruneStaleSessionsObject subtracts from the time, as JavaScript's subtraction converts it: an
-  // entry that is no object has none (NaN, so it is never pruned). A value the conversion throws on (an object whose
-  // own toString and valueOf cannot be called) throws in the client too.
-  const prunedLastActivityOf = (entry: unknown): number => {
-    try {
-      return Number(isRecord(entry) ? entry.lastActivity : undefined)
-    } catch {
-      throw new PageFailure('activity-session-unreadable')
+    for (const name of Object.keys(sessions)) {
+      const session = sessions[name]
+      if (Boolean(session) && now - Number(propertyOf(session, 'lastActivity')) > SESSION_STALE_MS) {
+        Reflect.deleteProperty(sessions, name)
+      }
     }
   }
 
@@ -335,60 +407,78 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
     // Slack's client sends a Web API call with _x_csid, the id of the page's active activity session, only while one is
     // active (generateQueryString, given getActiveSession's session), and starts or extends a session only on a user's
     // input while its window has focus (listenForUserEvents). A tab Misha acts in is not one its owner has in focus, so
-    // right before each call the command records activity as the client does on input (recordSessionActivity), and
-    // answers the id of the session that is active now, as generateQueryString writes it: null for a session whose id
-    // is falsy (empty, 0, null or missing), for which it writes no _x_csid.
+    // right before each call the command records activity as the client does on input, then reads the session to send
+    // as the client's API path does, and answers its _x_csid value as generateQueryString writes it
+    // (encodeURIComponent): null when that session's id is falsy, or when no session is active, for which it writes none.
+    // A step the client itself would throw on fails the command with activity-session-unreadable, as does a recorded
+    // session the write loses (a new session named on an array, which JSON.stringify drops), since the id would name a
+    // session the client never reads.
     const recordedSessionId = (): string | null => {
       const storageKey = `${ACTIVITY_SESSION_PREFIX}${activitySessionKeyOf(teamId, team.enterprise_id)}`
-      const now = Date.now()
-      const sessions = storedSessions(localStorage.getItem(storageKey))
-      // The active session is extended, or else a new one is added with the client's fields in the client's order. The
-      // client extends the entry the selected session's id names (a[i.id]), so it throws when that id names no object,
-      // and extends another entry than the one it selected when the id names another; either fails the command.
-      const active = activeSessionOf(sessions, now)
-      const session = active ?? {
-        id: newSessionId(),
-        startTime: now,
-        lastActivity: now,
-        lastLogged: null,
-        definitionVersion: SESSION_DEFINITION_VERSION,
-      }
-      const entryName = entryNameOf(session.id)
-      const isOwnEntry = Object.hasOwn(sessions, entryName) && sessions[entryName] === session
-      if (active !== undefined && !isOwnEntry) {
+      let written: string
+      let recorded: string
+      try {
+        // recordSessionActivity: extend the active session the selected session's id names (a[i.id].lastActivity = n),
+        // or add a new one under its id with the client's fields in the client's order; then prune, then save.
+        const now = Date.now()
+        const sessions = storedSessions(localStorage.getItem(storageKey))
+        const active = activeSessionOf(sessions, now)
+        let session: unknown
+        if (active === undefined) {
+          const created = {
+            id: newSessionId(),
+            startTime: now,
+            lastActivity: now,
+            lastLogged: null,
+            definitionVersion: SESSION_DEFINITION_VERSION,
+          }
+          assignProperty(sessions, created.id, created)
+          session = created
+        } else {
+          session = propertyOf(sessions, String(propertyOf(active, 'id')))
+          assignProperty(session, 'lastActivity', now)
+        }
+        pruneStaleSessions(sessions)
+        written = JSON.stringify(sessions)
+        recorded = JSON.stringify(session)
+      } catch {
         throw new PageFailure('activity-session-unreadable')
       }
 
-      session.lastActivity = now
-      sessions[entryName] = session
-      // pruneStaleSessionsObject, after the session was extended or added, as the client prunes: at the time it reads
-      // when pruning starts, which is later than the activity's.
-      const pruneNow = Date.now()
-      for (const [name, entry] of Object.entries(sessions)) {
-        if (pruneNow - prunedLastActivityOf(entry) > SESSION_STALE_MS) {
-          Reflect.deleteProperty(sessions, name)
-        }
-      }
       // setSessions. When localStorage refuses the write, the client keeps the sessions in its own memory, which this
       // function cannot reach, so the id would name a session the client does not hold.
       try {
-        localStorage.setItem(storageKey, JSON.stringify(sessions))
+        localStorage.setItem(storageKey, written)
       } catch {
         throw new PageFailure('activity-session-unsaved')
       }
 
-      const isIdWritten = Boolean(session.id)
+      try {
+        // getActiveSession on what is stored now, read again, as the client's API path reads it.
+        const stored = storedSessions(localStorage.getItem(storageKey))
+        const isRecordedKept = collectionValues(stored).some((value) => JSON.stringify(value) === recorded)
+        if (!isRecordedKept) {
+          throw new TypeError('The write lost the recorded session')
+        }
 
-      return isIdWritten ? entryName : null
+        const session = activeSessionOf(stored, Date.now())
+        const id = session === undefined ? undefined : propertyOf(session, 'id')
+        const isIdWritten = Boolean(id)
+
+        return isIdWritten ? encodeURIComponent(String(id)) : null
+      } catch {
+        throw new PageFailure('activity-session-unreadable')
+      }
     }
 
     // Slack's client calls the Web API with a query of its own (_x_id, _x_csid, slack_route, _x_version_ts and the rest),
     // and Slack answers a call with cookies with credentialed CORS (the page's origin, allow-credentials) only when it
     // carries that query; without it the answer is "*", which a call with cookies cannot read. So a call goes out with
-    // the query the service worker borrowed from this page's client for the workspace's API, with the session just
-    // recorded in _x_csid (none for a session whose id is falsy), right before slack_route where generateQueryString
-    // writes it. A borrowed _x_csid, the session
-    // the client had when it made the call the query came from, gives way to it.
+    // the query the service worker borrowed from this page's client for the workspace's API, with the session the
+    // client's read gives after the activity is recorded in _x_csid (none for no session or a falsy id), right before
+    // slack_route where generateQueryString writes it. A borrowed _x_csid, the session the client had when it made the
+    // call the query came from, gives way to it. The borrowed fields were serialized by URLSearchParams
+    // (slack-request-shape.ts borrowedQueryString), so serializing them again keeps them as they were.
     // Slack answers 200 with ok false for its own errors; anything else (another status, no JSON, no ok) is no answer.
     const callSlack = async (
       method: string,
@@ -408,11 +498,13 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
 
       const sessionId = recordedSessionId()
       const url = new URL(method, apiUrl)
-      url.search = new URLSearchParams([
-        ...fields.slice(0, routeAt),
-        ...(sessionId === null ? [] : [[SESSION_FIELD, sessionId]]),
-        ...fields.slice(routeAt),
-      ]).toString()
+      url.search = [
+        new URLSearchParams(fields.slice(0, routeAt)).toString(),
+        ...(sessionId === null ? [] : [`${SESSION_FIELD}=${sessionId}`]),
+        new URLSearchParams(fields.slice(routeAt)).toString(),
+      ]
+        .filter((part) => part !== '')
+        .join('&')
       // A multipart body, as the client posts: the call's parameters, the token and the client's own fields.
       const body = new FormData()
       for (const [name, value] of Object.entries({

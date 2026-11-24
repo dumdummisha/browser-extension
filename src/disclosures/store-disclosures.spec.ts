@@ -38,16 +38,22 @@ describe('[disclosures] Store disclosures', () => {
     assert.ok(committed === rendered, 'docs/store-permissions.md is stale: run pnpm run disclosures')
   })
 
-  it('should disclose the client query where the observer keeps it, and no longer under webRequest', () => {
+  it('should disclose the client query where the observer keeps it, with its start time and upgrade, and none under webRequest', () => {
     // Arrange
     const kept = [
-      "It also receives the page's resource timing entries and reads each one's initiator type. It reads the address only of the XHR requests Slack's web client sends, keeps per workspace API the listed session fields of the client's latest Web API call (such as `_x_csid`, `slack_route` and `_x_version_ts`), and drops the rest of the address as it reads it.",
-      "Only those session fields leave the page, and only to the relay. They stay in the page's memory for the document's lifetime, also while the extension is off and across service worker and extension restarts, and are never written to disk.",
+      "It also receives the page's resource timing entries and reads each one's initiator type and start time. It reads the address only of the XHR requests Slack's web client sends, keeps per workspace API the listed session fields of the client's latest Web API call (such as `_x_csid`, `slack_route` and `_x_version_ts`), and drops the rest of the address as it reads it.",
+      "Of the page's resource timing entries it reads only the initiator type and start time, and the address only of XHR requests. Of a Web API call's address it keeps only the workspace API's origin and the listed session fields, each in its expected form: never the full address, the request id, the call's arguments or a value shaped like a known token or key, and no entry, body or header.",
+      "Beside each workspace API's session fields it keeps the start time of the call they came from, only to tell which of the client's calls is the latest. That time never leaves the page.",
+      "Only the workspace API's origin and its session fields leave the page, and only to the relay. They and the start time stay in the page's memory for the document's lifetime, also while the extension is off and across service worker and extension restarts, and are never written to disk.",
       'It receives those fields automatically, and the service worker reads them only for a Slack Web API call the Misha app asks for.',
+      'Re-attaching works for pages whose observer holds new messages under a sequence number (any build from commit `51b179f` on). A page still running an observer from before that captures again only once the tab reloads, so upgrading from such a build needs each open Slack tab reloaded once.',
+      "A page whose observer predates the client's session fields keeps capturing, but its Slack Web API calls fail with a message to reload the tab until it reloads once.",
     ]
     const dropped = [
       "The Slack transport sends its Web API calls with the query of Slack's client's own latest Web API call in the page",
       "per page the query of the client's latest Web API call cut down to its listed session fields",
+      "Of the page's resource timing entries it reads only the initiator type, and",
+      'Re-attaching works for pages that loaded with this version of the observer. A page still running an older version captures again only once the tab reloads',
     ]
 
     // Act

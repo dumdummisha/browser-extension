@@ -14,7 +14,8 @@ const TOKEN = 'xoxc-0000-example'
 // A caller's deadline that has not passed (2100-01-01) and one that has (2000-01-01).
 const LATER = 4_102_444_800_000
 const EARLIER = 946_684_800_000
-// The query the service worker borrowed for the workspace's API (slack-request-shape.ts borrowedQueryString).
+// The query the service worker sends for the workspace's API, as the page's observer kept it (borrowed-query.ts
+// borrowedQueryString).
 const CLIENT_QUERY =
   '_x_id=0f1e2d3c-1794900000.100&_x_csid=example-csid&slack_route=T0EXAMPLE1&_x_version_ts=1794800000&_x_gantry=true&fp=7a&_x_num_retries=0'
 const CALL: Extract<SlackPageCommand, { kind: 'call' }> = {

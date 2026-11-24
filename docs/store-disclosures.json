@@ -131,7 +131,7 @@
   },
   "contentScripts": {
     "observer.js": {
-      "capability": "Watches Slack's own real-time socket. It passes each new message to the relay, cut down to the fields the Misha app reads (listed under Slack transport limits), with the account the tab showed when it came, and reports whether the socket is open. It reads the signed-in user's id from Slack's saved client state to key each message. It also receives the page's resource timing entries and reads each one's initiator type. It reads the address only of the XHR requests Slack's web client sends, keeps per workspace API the listed session fields of the client's latest Web API call (such as `_x_csid`, `slack_route` and `_x_version_ts`), and drops the rest of the address as it reads it.",
+      "capability": "Watches Slack's own real-time socket. It passes each new message to the relay, cut down to the fields the Misha app reads (listed under Slack transport limits), with the account the tab showed when it came, and reports whether the socket is open. It reads the signed-in user's id from Slack's saved client state to key each message. It also receives the page's resource timing entries and reads each one's initiator type and start time. It reads the address only of the XHR requests Slack's web client sends, keeps per workspace API the listed session fields of the client's latest Web API call (such as `_x_csid`, `slack_route` and `_x_version_ts`), and drops the rest of the address as it reads it.",
       "justification": "Slack's web client receives new messages on this socket, and the Misha app needs them as they arrive to answer in Slack. The script runs before Slack's own scripts so it can watch the socket Slack opens. Slack answers a Slack Web API call made from the page only when it carries the session fields of the client's own calls, so the Slack transport sends its calls with the ones the observer kept. The observer runs for as long as the page does, so they outlast a restart of the service worker or a reload of the extension.",
       "collectionTiming": {
         "triggers": ["slack-tab"],
@@ -142,8 +142,9 @@
         "Nothing else the page received leaves it, such as file URLs, profiles or message formatting.",
         "Message text goes on as written, including any credential someone wrote into a message.",
         "It holds up to 50 messages no relay has taken yet, such as those that come while the extension reloads, in the page's memory, and hands them to the next relay; past that the oldest is dropped.",
-        "Of the page's resource timing entries it reads only the initiator type, and the address only of XHR requests. Of a Web API call's address it keeps only the listed session fields, each in its expected form: never the request id, the call's arguments or a value shaped like a known token or key, and no entry, body or header.",
-        "Only those session fields leave the page, and only to the relay. They stay in the page's memory for the document's lifetime, also while the extension is off and across service worker and extension restarts, and are never written to disk."
+        "Of the page's resource timing entries it reads only the initiator type and start time, and the address only of XHR requests. Of a Web API call's address it keeps only the workspace API's origin and the listed session fields, each in its expected form: never the full address, the request id, the call's arguments or a value shaped like a known token or key, and no entry, body or header.",
+        "Beside each workspace API's session fields it keeps the start time of the call they came from, only to tell which of the client's calls is the latest. That time never leaves the page.",
+        "Only the workspace API's origin and its session fields leave the page, and only to the relay. They and the start time stay in the page's memory for the document's lifetime, also while the extension is off and across service worker and extension restarts, and are never written to disk."
       ]
     },
     "relay.js": {
@@ -156,7 +157,7 @@
       "limits": [
         "It takes a channel only in the top frame of a page on `https://app.slack.com`.",
         "It passes on nothing that does not match the protocol's shapes, and reports the tab's capture as failed instead.",
-        "Re-attaching works for pages that loaded with this version of the observer. A page still running an older version captures again only once the tab reloads, so upgrading from such a build needs each open Slack tab reloaded once.",
+        "Re-attaching works for pages whose observer holds new messages under a sequence number (any build from commit `51b179f` on). A page still running an observer from before that captures again only once the tab reloads, so upgrading from such a build needs each open Slack tab reloaded once.",
         "A page whose observer predates the client's session fields keeps capturing, but its Slack Web API calls fail with a message to reload the tab until it reloads once. Downloads and upload bytes, which use no session fields, still work there."
       ]
     }

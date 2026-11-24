@@ -13,7 +13,8 @@ export type SlackPageCommand =
       readonly method: string
       readonly params: Readonly<Record<string, string>>
       // The query the call goes out with, by the origin of the workspace API it belongs to: the query of the page
-      // client's own latest call to that API, as the service worker borrowed it (slack-client-observer.ts).
+      // client's own latest call to that API, as the service worker borrowed it (slack-client-observer.ts). The page
+      // sends it with the activity session it records in _x_csid (callSlack).
       readonly queries: Readonly<Record<string, string>>
       readonly deadline: number
     }

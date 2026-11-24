@@ -29,6 +29,8 @@ const FIRST_ATTEMPT = '0'
 // (generateQueryString in its client bundle) from the page, the session and the team, never from the method called,
 // though a call may replace it with a query of its own: _x_gantry and _x_desktop_ia, then _x_csid, slack_route,
 // _x_version_ts, the focus field and _x_frontend_build_type, then fp and _x_num_retries as each attempt is sent.
+// - _x_csid is borrowed with the rest, and the page command sends the id of the activity session it records in its
+//   place (slack-page.ts).
 // - The focus field is _x_foreground=true or _x_background=true, which the client works out from its window's focus
 //   as it dispatches each call, or neither while the window was never focused. The transport carries the one the
 //   client's latest call carried, so its value is the client's as of that call, not as of Misha's.

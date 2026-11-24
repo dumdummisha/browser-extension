@@ -165,6 +165,232 @@ const decodeBase64InPage = (context: TestContext): void => {
   context.after(() => Reflect.deleteProperty(Uint8Array, 'fromBase64'))
 }
 
+// The time the activity-session cases run at (2026-11-17), and the localStorage key of the workspace's sessions.
+const NOW = 1_794_900_000_000
+const SESSIONS_KEY = 'activitySession_T0EXAMPLE1'
+// Slack's client's limits: a session is active for 60 s after its last activity and pruned a day after it.
+const ACTIVE_MS = 60_000
+const STALE_MS = 86_400_000
+
+// A session as Slack's client stores it.
+const storedSession = (
+  id: string,
+  startTime: number,
+  lastActivity: number,
+  fields: Record<string, unknown> = {}
+): Record<string, unknown> & { readonly id: string } => ({
+  id,
+  startTime,
+  lastActivity,
+  lastLogged: null,
+  definitionVersion: 1,
+  ...fields,
+})
+
+const queryOf = (fetched: { mock: { calls: { arguments: unknown[] }[] } }): string =>
+  new URL(String(fetched.mock.calls[0]?.arguments[0])).search.slice(1)
+
+describe('[service-worker] Slack page - activity session', () => {
+  it('should extend the active session and send its id in place of the borrowed _x_csid', async (context) => {
+    // Arrange
+    const stored = openSlackPage(context, () => savedConfig('https://example.slack.com/'))
+    context.mock.timers.enable({ apis: ['Date'], now: NOW })
+    const active = storedSession('Sactive0001', NOW - 300_000, NOW - ACTIVE_MS + 1)
+    stored.set(SESSIONS_KEY, JSON.stringify({ [active.id]: active }))
+    const fetched = context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
+
+    // Act
+    await runSlackPageCommand(CALL)
+
+    // Assert
+    assert.equal(queryOf(fetched), CLIENT_QUERY.replace('example-csid', 'Sactive0001'))
+    assert.equal(stored.get(SESSIONS_KEY), JSON.stringify({ [active.id]: { ...active, lastActivity: NOW } }))
+  })
+
+  it("should write _x_csid right before slack_route, where Slack's client writes it, when the borrowed query has none", async (context) => {
+    // Arrange
+    openSlackPage(context, () => savedConfig('https://example.slack.com/'))
+    context.mock.method(Math, 'random', () => 0)
+    const fetched = context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
+    const query = '_x_id=0f1e2d3c-1794900000.100&_x_gantry=true&slack_route=T0EXAMPLE1&_x_version_ts=1794800000'
+
+    // Act
+    await runSlackPageCommand({ ...CALL, queries: { 'https://example.slack.com': query } })
+
+    // Assert
+    assert.equal(
+      queryOf(fetched),
+      `_x_id=0f1e2d3c-1794900000.100&_x_gantry=true&_x_csid=${NEW_SESSION_ID}&slack_route=T0EXAMPLE1&_x_version_ts=1794800000`
+    )
+  })
+
+  it("should start a new session once the others expired or ended, keeping them as Slack's pruning leaves them", async (context) => {
+    // Arrange
+    const stored = openSlackPage(context, () => savedConfig('https://example.slack.com/'))
+    context.mock.timers.enable({ apis: ['Date'], now: NOW })
+    context.mock.method(Math, 'random', () => 0)
+    const expired = storedSession('Sexpired001', NOW - 600_000, NOW - ACTIVE_MS, {
+      lastLogged: NOW - 120_000,
+      v1Start: NOW - 600_000,
+    })
+    const ended = storedSession('Sended00001', NOW - 30_000, NOW - 1_000, { ended: true })
+    const lastKept = storedSession('Slastkept01', NOW - STALE_MS - 60_000, NOW - STALE_MS)
+    const stale = storedSession('Sstale00001', NOW - STALE_MS - 60_000, NOW - STALE_MS - 1)
+    stored.set(
+      SESSIONS_KEY,
+      JSON.stringify(Object.fromEntries([expired, stale, ended, lastKept].map((session) => [session.id, session])))
+    )
+    const fetched = context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
+
+    // Act
+    await runSlackPageCommand(CALL)
+
+    // Assert
+    assert.equal(queryOf(fetched), CLIENT_QUERY.replace('example-csid', NEW_SESSION_ID))
+    assert.equal(
+      stored.get(SESSIONS_KEY),
+      JSON.stringify({
+        [expired.id]: expired,
+        [ended.id]: ended,
+        [lastKept.id]: lastKept,
+        [NEW_SESSION_ID]: storedSession(NEW_SESSION_ID, NOW, NOW),
+      })
+    )
+  })
+
+  it('should extend the active session that started first when several are active', async (context) => {
+    // Arrange
+    const stored = openSlackPage(context, () => savedConfig('https://example.slack.com/'))
+    context.mock.timers.enable({ apis: ['Date'], now: NOW })
+    const later = storedSession('Slater00001', NOW - 10_000, NOW - 1_000)
+    const earlier = storedSession('Searlier001', NOW - 20_000, NOW - 2_000)
+    stored.set(SESSIONS_KEY, JSON.stringify({ [later.id]: later, [earlier.id]: earlier }))
+    const fetched = context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
+
+    // Act
+    await runSlackPageCommand(CALL)
+
+    // Assert
+    assert.equal(queryOf(fetched), CLIENT_QUERY.replace('example-csid', 'Searlier001'))
+    assert.equal(
+      stored.get(SESSIONS_KEY),
+      JSON.stringify({ [later.id]: later, [earlier.id]: { ...earlier, lastActivity: NOW } })
+    )
+  })
+
+  it("should keep an Enterprise Grid workspace's sessions under its enterprise id, from the saved team or the path", async (context) => {
+    // Arrange
+    context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
+    const enterpriseConfig = JSON.stringify({
+      teams: {
+        E0EXAMPLE1: { user_id: 'U0EXAMPLE1', name: 'Example', token: TOKEN, url: 'https://example.slack.com/' },
+      },
+    })
+
+    // Act
+    const fromTeam = openSlackPage(context, () =>
+      savedConfig('https://example.slack.com/', { enterprise_id: 'E0EXAMPLE1' })
+    )
+    await runSlackPageCommand(CALL)
+    const fromPath = openSlackPage(context, () => enterpriseConfig, '/client/E0EXAMPLE1/C0EXAMPLE1')
+    await runSlackPageCommand({ ...CALL, account: { teamId: 'E0EXAMPLE1', userId: 'U0EXAMPLE1' } })
+
+    // Assert
+    assert.deepEqual(
+      [[...fromTeam.keys()], [...fromPath.keys()]],
+      [['activitySession_E0EXAMPLE1'], ['activitySession_E0EXAMPLE1']]
+    )
+  })
+
+  it('should take stored sessions that do not parse as none, as the client does', async (context) => {
+    // Arrange
+    const stored = openSlackPage(context, () => savedConfig('https://example.slack.com/'))
+    context.mock.timers.enable({ apis: ['Date'], now: NOW })
+    context.mock.method(Math, 'random', () => 0)
+    stored.set(SESSIONS_KEY, '{"Sbroken0001":')
+    const fetched = context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
+
+    // Act
+    const result = await runSlackPageCommand(CALL)
+
+    // Assert
+    assert.deepEqual(result, { kind: 'answer', answer: { ok: true } })
+    assert.equal(queryOf(fetched), CLIENT_QUERY.replace('example-csid', NEW_SESSION_ID))
+    assert.equal(
+      stored.get(SESSIONS_KEY),
+      JSON.stringify({ [NEW_SESSION_ID]: storedSession(NEW_SESSION_ID, NOW, NOW) })
+    )
+  })
+
+  it("should answer a failure code, sending nothing, for stored sessions that parse but not as Slack's client writes them", async (context) => {
+    // Arrange
+    const stored = openSlackPage(context, () => savedConfig('https://example.slack.com/'))
+    const fetched = context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
+    const values = [
+      '[]',
+      '7',
+      '{"Sother00001":null}',
+      '{"Sother00001":{"id":"Snotitskey1","startTime":1,"lastActivity":1}}',
+    ]
+
+    // Act
+    const results: SlackPageResult[] = []
+    for (const value of values) {
+      stored.set(SESSIONS_KEY, value)
+      results.push(await runSlackPageCommand(CALL))
+    }
+
+    // Assert
+    assert.deepEqual(
+      results,
+      values.map(() => ({ kind: 'failed', failure: 'activity-session-unreadable', status: null }))
+    )
+    assert.equal(fetched.mock.callCount(), 0)
+  })
+
+  it("should answer a failure code, sending nothing, when the page's storage refuses the session", async (context) => {
+    // Arrange
+    const stored = openSlackPage(context, () => savedConfig('https://example.slack.com/'))
+    context.mock.method(stored, 'set', () => {
+      throw new DOMException('The quota has been exceeded.', 'QuotaExceededError')
+    })
+    const fetched = context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
+
+    // Act
+    const result = await runSlackPageCommand(CALL)
+
+    // Assert
+    assert.deepEqual(result, { kind: 'failed', failure: 'activity-session-unsaved', status: null })
+    assert.equal(fetched.mock.callCount(), 0)
+  })
+
+  it("should record no session for a file's download or upload, which Slack's client sends without _x_csid", async (context) => {
+    // Arrange
+    const stored = openSlackPage(context, () => savedConfig('https://example.slack.com/'))
+    decodeBase64InPage(context)
+    context.mock.method(globalThis, 'fetch', () => Promise.resolve(new Response('OK')))
+
+    // Act
+    await runSlackPageCommand({
+      kind: 'download',
+      account: ACCOUNT,
+      url: 'https://files.slack.com/files-pri/T0EXAMPLE1-F0EXAMPLE1/a.txt',
+      deadline: LATER,
+    })
+    await runSlackPageCommand({
+      kind: 'upload',
+      account: ACCOUNT,
+      uploadUrl: 'https://files.slack.com/upload/v1/example-grant',
+      filename: 'a.txt',
+      chunks: [Buffer.from('made-up').toString('base64')],
+      deadline: LATER,
+    })
+
+    // Assert
+    assert.deepEqual([...stored.keys()], [])
+  })
+})
+
 describe('[service-worker] Slack page - uploads', () => {
   const UPLOAD_URL = 'https://files.slack.com/upload/v1/example-grant'
   const UPLOAD: SlackPageCommand = {

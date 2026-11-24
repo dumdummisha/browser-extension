@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
+import { borrowedQueryString } from './borrowed-query.js'
 import { type IStartedRequest, SlackClientObserver } from './slack-client-observer.js'
-import { borrowedQueryString, type IRequestHeader } from './slack-request-shape.js'
+import { type IRequestHeader } from './slack-request-shape.js'
 
 const SLACK_ORIGIN = 'https://app.slack.com'
 const PAGE = { tabId: 7, documentId: 'DOC-A' }

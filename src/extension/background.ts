@@ -20,6 +20,7 @@ import {
   type SlackStatus,
   type SlackUploadMethod,
 } from '../protocol/slack.js'
+import { borrowedQueryString, freshRequestId } from '../service-worker/borrowed-query.js'
 import { answerRequest, type IAbandonment } from '../service-worker/bridge-requests.js'
 import { Forwarder } from '../service-worker/forwarder.js'
 import { captureHealthOf, ObservedMessageSchema } from '../service-worker/observed-message.js'
@@ -38,7 +39,6 @@ import {
   type SlackPageResult,
   SlackPageResultSchema,
 } from '../service-worker/slack-page.js'
-import { borrowedQueryString, freshRequestId } from '../service-worker/slack-request-shape.js'
 import {
   CAPTURE_QUERY,
   RECONNECT_ALARM,

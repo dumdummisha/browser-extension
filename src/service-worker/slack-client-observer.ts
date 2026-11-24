@@ -1,7 +1,6 @@
 import type { OperationParity, SlackOperation } from '../protocol/slack.js'
+import { type BorrowedQuery, borrowedQueryOf } from './borrowed-query.js'
 import {
-  type BorrowedQuery,
-  borrowedQueryOf,
   headerFieldsOf,
   type IRequestBody,
   type IRequestHeader,

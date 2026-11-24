@@ -144,13 +144,20 @@ const tick = async (context: TestContext, ms: number): Promise<void> => {
 }
 
 // An open Slack tab signed in as a workspace of its own, so no test waits on another's gap, whose page's client has
-// made a Web API call the transport borrows its query from. The clock stands at NOW.
+// made a Web API call the transport borrows its query from, and which keeps the activity sessions a page command
+// records beside its saved client state. The clock stands at NOW.
 const openSlackTab = (context: TestContext, tabId: number): ISlackTab => {
   const account = { teamId: `T0DISPATCH${tabId}`, userId: 'U0EXAMPLE1' }
   const saved = { name: 'Example', user_id: account.userId, token: 'xoxc-0000-made-up-token', url: `${API_ORIGIN}/` }
+  const stored = new Map([['localConfig_v2', JSON.stringify({ teams: { [account.teamId]: saved } })]])
   const page = {
     location: { pathname: `/client/${account.teamId}/C0EXAMPLE1` },
-    localStorage: { getItem: () => JSON.stringify({ teams: { [account.teamId]: saved } }) },
+    localStorage: {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        stored.set(key, value)
+      },
+    },
   }
   const descriptors = Object.keys(page).map(
     (name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const

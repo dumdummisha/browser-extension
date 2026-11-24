@@ -26,14 +26,28 @@ const CALL: Extract<SlackPageCommand, { kind: 'call' }> = {
   deadline: LATER,
 }
 
-const savedConfig = (url: string): string =>
-  JSON.stringify({ teams: { T0EXAMPLE1: { user_id: 'U0EXAMPLE1', name: 'Example', token: TOKEN, url } } })
+// The id of a session the command starts while Math.random answers 0 (Slack's makeSessionId).
+const NEW_SESSION_ID = 'AAAAAAAAAAA'
 
-// The Slack page the command runs in: the workspace's client, with what getItem answers as its saved client state.
-const openSlackPage = (context: TestContext, getItem: () => string | null): void => {
+const savedConfig = (url: string, team: Readonly<Record<string, string>> = {}): string =>
+  JSON.stringify({ teams: { T0EXAMPLE1: { user_id: 'U0EXAMPLE1', name: 'Example', token: TOKEN, url, ...team } } })
+
+// The Slack page the command runs in: the workspace's client, with what savedState answers as its saved client state,
+// and the page's other localStorage entries in the map it answers, which the command may change.
+const openSlackPage = (
+  context: TestContext,
+  savedState: () => string | null,
+  pathname = '/client/T0EXAMPLE1/C0EXAMPLE1'
+): Map<string, string> => {
+  const stored = new Map<string, string>()
   const page = {
-    location: { pathname: '/client/T0EXAMPLE1/C0EXAMPLE1' },
-    localStorage: { getItem },
+    location: { pathname },
+    localStorage: {
+      getItem: (key: string) => (key === 'localConfig_v2' ? savedState() : (stored.get(key) ?? null)),
+      setItem: (key: string, value: string) => {
+        stored.set(key, value)
+      },
+    },
   }
   const saved = Object.keys(page).map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const)
   for (const [name, value] of Object.entries(page)) {
@@ -49,6 +63,8 @@ const openSlackPage = (context: TestContext, getItem: () => string | null): void
       }
     }
   })
+
+  return stored
 }
 
 describe('[service-worker] Slack page - where the token goes', () => {
@@ -75,6 +91,7 @@ describe('[service-worker] Slack page - where the token goes', () => {
   it("should call as Slack's client does: with the query borrowed for the workspace's API, and a multipart body", async (context) => {
     // Arrange
     openSlackPage(context, () => savedConfig('https://example.slack.com/'))
+    context.mock.method(Math, 'random', () => 0)
     const fetched = context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
     const queries = { 'https://other.slack.com': 'slack_route=T0OTHER001', ...CALL.queries }
 
@@ -83,7 +100,10 @@ describe('[service-worker] Slack page - where the token goes', () => {
 
     // Assert
     const [url, init] = fetched.mock.calls[0]?.arguments ?? []
-    assert.equal(String(url), `https://example.slack.com/api/conversations.info?${CLIENT_QUERY}`)
+    assert.equal(
+      String(url),
+      `https://example.slack.com/api/conversations.info?${CLIENT_QUERY.replace('example-csid', NEW_SESSION_ID)}`
+    )
     assert.ok(init?.body instanceof FormData)
     assert.deepEqual(Object.fromEntries(init.body.entries()), {
       channel: 'D0EXAMPLE1',
@@ -318,6 +338,8 @@ describe('[service-worker] Slack page - what a result shows', () => {
       { kind: 'upload-refused', status: 413 },
       { kind: 'other-account' },
       { kind: 'failed', failure: 'no-client-query', status: null },
+      { kind: 'failed', failure: 'activity-session-unreadable', status: null },
+      { kind: 'failed', failure: 'activity-session-unsaved', status: null },
       { kind: 'failed', failure: 'deadline-passed', status: null },
       { kind: 'failed', failure: 'api-unreachable', status: null },
       { kind: 'failed', failure: 'api-refused', status: 429 },
@@ -331,6 +353,8 @@ describe('[service-worker] Slack page - what a result shows', () => {
     assert.deepEqual(shown, [
       [false, true],
       [false, true],
+      [true, false],
+      [true, false],
       [true, false],
       [true, false],
       [true, false],

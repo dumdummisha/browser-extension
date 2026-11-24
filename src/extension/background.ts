@@ -118,6 +118,9 @@ const PAGE_FAILURE_TEXT: Readonly<Record<SlackPageFailure, string>> = {
   'no-api-address': "Slack's client keeps no Slack API address for the workspace",
   'no-client-query':
     "The extension has seen no Web API call of Slack's own client in this page since it started; use Slack in the tab, or reload it",
+  'activity-session-unreadable':
+    "Slack's saved activity sessions for the workspace are not in the form Slack writes them",
+  'activity-session-unsaved': "The page's storage refused Slack's activity session, so nothing was sent",
   'deadline-passed': "The caller's deadline passed before the request went out, so nothing was sent",
   'api-unreachable': "Slack's Web API could not be reached",
   'api-refused': "Slack's Web API refused the call",

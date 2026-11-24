@@ -38,6 +38,31 @@ describe('[disclosures] Store disclosures', () => {
     assert.ok(committed === rendered, 'docs/store-permissions.md is stale: run pnpm run disclosures')
   })
 
+  it('should disclose the client query where the observer keeps it, and no longer under webRequest', () => {
+    // Arrange
+    const kept = [
+      "It also receives the page's resource timing entries and reads each one's initiator type. It reads the address only of the XHR requests Slack's web client sends, keeps per workspace API the listed session fields of the client's latest Web API call (such as `_x_csid`, `slack_route` and `_x_version_ts`), and drops the rest of the address as it reads it.",
+      "Only those session fields leave the page, and only to the relay. They stay in the page's memory for the document's lifetime, also while the extension is off and across service worker and extension restarts, and are never written to disk.",
+      'It receives those fields automatically, and the service worker reads them only for a Slack Web API call the Misha app asks for.',
+    ]
+    const dropped = [
+      "The Slack transport sends its Web API calls with the query of Slack's client's own latest Web API call in the page",
+      "per page the query of the client's latest Web API call cut down to its listed session fields",
+    ]
+
+    // Act
+    const rendered = renderStorePermissions(readDisclosureInputs())
+
+    // Assert
+    assert.deepEqual(
+      [
+        kept.filter((sentence) => !rendered.includes(sentence)),
+        dropped.filter((sentence) => rendered.includes(sentence)),
+      ],
+      [[], []]
+    )
+  })
+
   it('should report a declaration with no disclosure and a disclosure the manifest lacks', () => {
     // Arrange
     const { disclosures, manifest } = readDisclosureInputs()

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { borrowedQueryString } from './borrowed-query.js'
+import { borrowedQueryOf, borrowedQueryString } from './borrowed-query.js'
 import { type IStartedRequest, SlackClientObserver } from './slack-client-observer.js'
 import { type IRequestHeader } from './slack-request-shape.js'
 
@@ -15,10 +15,6 @@ const TOKEN = 'xoxc-0000-made-up-token'
 const COOKIE = 'd=xoxd-0000-made-up-cookie; d-s=1794800000'
 const MESSAGE = 'a made-up private message'
 const SECRETS = [TOKEN, COOKIE, MESSAGE]
-
-// Web API calls of Slack's client, with made-up values.
-const CLIENT_COUNTS = `${API_ORIGIN}/api/client.counts?_x_id=0f1e2d3c-1794900000.100&_x_csid=example-csid&slack_route=T0EXAMPLE1&_x_num_retries=0`
-const CLIENT_HISTORY = `${API_ORIGIN}/api/conversations.history?_x_id=1a2b3c4d-1794900002.000&_x_csid=other-csid&slack_route=T0EXAMPLE1`
 
 // The headers Chrome reports a fetch from Slack's page sent with, as a recorded client request, with made-up values.
 const HEADERS: readonly IRequestHeader[] = [
@@ -121,101 +117,6 @@ const mishaSent = (
   sent(observer, request)
   release(isAnswered)
 }
-
-describe('[service-worker] Slack client observer - borrowed query', () => {
-  const started = (url: string, request: Partial<IStartedRequest> = {}): IStartedRequest => ({
-    ...fileGet('request-1', url),
-    ...request,
-  })
-
-  it("should lend the query of the page client's latest Web API call of any method, by the API's origin", () => {
-    // Arrange
-    const { observer } = observe()
-    const otherApi = 'https://other.slack.com/api/client.counts?_x_id=2b3c4d5e-1794900003.000&slack_route=T0OTHER001'
-
-    // Act
-    observer.requestStarted(started(CLIENT_COUNTS, { requestId: 'request-1' }))
-    observer.requestStarted(started(otherApi, { requestId: 'request-2' }))
-    observer.requestStarted(started(CLIENT_HISTORY, { requestId: 'request-3' }))
-
-    // Assert
-    assert.deepEqual(
-      [...observer.clientQueries(PAGE)],
-      [
-        [
-          API_ORIGIN,
-          [
-            ['_x_id', null],
-            ['_x_csid', 'other-csid'],
-            ['slack_route', 'T0EXAMPLE1'],
-          ],
-        ],
-        [
-          'https://other.slack.com',
-          [
-            ['_x_id', null],
-            ['slack_route', 'T0OTHER001'],
-          ],
-        ],
-      ]
-    )
-  })
-
-  it('should lend nothing from a request another site, a subframe or a worker sent', () => {
-    // Arrange
-    const { observer } = observe()
-
-    // Act
-    observer.requestStarted(started(CLIENT_COUNTS, { requestId: 'request-1', initiator: 'https://attacker.example' }))
-    observer.requestStarted(started(CLIENT_COUNTS, { requestId: 'request-2', frameId: 3 }))
-    observer.requestStarted(started(CLIENT_COUNTS, { requestId: 'request-3', documentId: undefined }))
-
-    // Assert
-    assert.equal(observer.clientQueries(PAGE).size, 0)
-  })
-
-  it("should lend nothing from a request carrying a running command's key in its page, but lend it in another page", () => {
-    // Arrange
-    const { observer } = observe()
-    observer.exclude(PAGE, '0f1e2d3c-1794900000.100', true)
-
-    // Act
-    observer.requestStarted(started(CLIENT_COUNTS, { requestId: 'request-1' }))
-    observer.requestStarted(started(CLIENT_COUNTS, { requestId: 'request-2', ...OTHER_PAGE }))
-
-    // Assert
-    assert.deepEqual([observer.clientQueries(PAGE).size, observer.clientQueries(OTHER_PAGE).size], [0, 1])
-  })
-
-  it("should take a request as the client's again once the command released its key", () => {
-    // Arrange
-    const { observer } = observe()
-    const release = observer.exclude(PAGE, '0f1e2d3c-1794900000.100', true)
-
-    // Act
-    release(false)
-    observer.requestStarted(started(CLIENT_COUNTS))
-
-    // Assert
-    assert.equal(observer.clientQueries(PAGE).size, 1)
-  })
-
-  it("should keep a page's queries to its document, and drop them with the tab", () => {
-    // Arrange
-    const { observer } = observe()
-    const reloaded = { ...PAGE, documentId: 'DOC-A2' }
-    observer.requestStarted(started(CLIENT_COUNTS, { requestId: 'request-1' }))
-
-    // Act
-    const beforeReload = observer.clientQueries(reloaded).size
-    observer.requestStarted(started(CLIENT_HISTORY, { requestId: 'request-2', ...reloaded }))
-    const afterReload = [observer.clientQueries(PAGE).size, observer.clientQueries(reloaded).size]
-    observer.forget(PAGE.tabId)
-
-    // Assert
-    assert.deepEqual([beforeReload, afterReload, observer.clientQueries(reloaded).size], [0, [0, 1], 0])
-  })
-})
 
 describe('[service-worker] Slack client observer - transport check', () => {
   it("should report an operation unchecked until the client sends it, then check Misha's first request once", () => {
@@ -347,7 +248,7 @@ describe('[service-worker] Slack client observer - transport check', () => {
     mishaSent(observer, mishaPost('misha-1'), MISHA_CALL)
 
     // Assert
-    const kept = JSON.stringify([observer.parity(), [...observer.clientQueries(PAGE)]]).toLowerCase()
+    const kept = JSON.stringify(observer.parity()).toLowerCase()
     assert.ok([TOKEN, 'akiaabcd', 'aizaaaaa'].every((secret) => !kept.includes(secret)))
     assert.deepEqual(observer.parity(), [
       {
@@ -425,14 +326,10 @@ describe('[service-worker] Slack client observer - transport check', () => {
     const { observer } = observe()
     const clientQuery =
       '_x_gantry=true&_x_desktop_ia=4&_x_csid=example-csid&slack_route=T0EXAMPLE1&_x_version_ts=1794800000&_x_foreground=true&_x_frontend_build_type=next-0a1b2c3d&fp=7a'
-    sent(
-      observer,
-      clientPost('client-1', {
-        url: `${API_ORIGIN}/api/conversations.history?_x_id=0f1e2d3c-1794900000.100&${clientQuery}&_x_num_retries=0`,
-      })
-    )
-    const borrowed = observer.clientQueries(PAGE).get(API_ORIGIN)
-    assert.ok(borrowed !== undefined)
+    const clientUrl = `${API_ORIGIN}/api/conversations.history?_x_id=0f1e2d3c-1794900000.100&${clientQuery}&_x_num_retries=0`
+    sent(observer, clientPost('client-1', { url: clientUrl }))
+    const borrowed = borrowedQueryOf(new URL(clientUrl))
+    assert.ok(borrowed !== null)
 
     // Act
     mishaSent(
@@ -456,14 +353,10 @@ describe('[service-worker] Slack client observer - transport check', () => {
         url: `${API_ORIGIN}/api/conversations.history?_x_id=0f1e2d3c-1794900000.100&slack_route=T0EXAMPLE1&_x_foreground=true`,
       })
     )
-    sent(
-      observer,
-      clientPost('client-2', {
-        url: `${API_ORIGIN}/api/client.counts?_x_id=2b3c4d5e-1794900003.000&slack_route=T0EXAMPLE1&_x_background=true`,
-      })
-    )
-    const borrowed = observer.clientQueries(PAGE).get(API_ORIGIN)
-    assert.ok(borrowed !== undefined)
+    const lendingUrl = `${API_ORIGIN}/api/client.counts?_x_id=2b3c4d5e-1794900003.000&slack_route=T0EXAMPLE1&_x_background=true`
+    sent(observer, clientPost('client-2', { url: lendingUrl }))
+    const borrowed = borrowedQueryOf(new URL(lendingUrl))
+    assert.ok(borrowed !== null)
 
     // Act
     mishaSent(

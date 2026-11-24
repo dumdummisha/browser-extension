@@ -23,7 +23,12 @@ import {
 import { borrowedQueryString, freshRequestId } from '../service-worker/borrowed-query.js'
 import { answerRequest, type IAbandonment } from '../service-worker/bridge-requests.js'
 import { Forwarder } from '../service-worker/forwarder.js'
-import { captureHealthOf, ObservedMessageSchema } from '../service-worker/observed-message.js'
+import {
+  captureHealthOf,
+  type ClientQueries,
+  ObservedMessageSchema,
+  RelayClientQuerySchema,
+} from '../service-worker/observed-message.js'
 import { openPendingQueue, PendingQueueWriter } from '../service-worker/pending-queue-writer.js'
 import { attachRelay, type IRelayScripting, probeRelay, RelayProbeSchema } from '../service-worker/relay-attachment.js'
 import { serially } from '../service-worker/serially.js'
@@ -41,6 +46,7 @@ import {
 } from '../service-worker/slack-page.js'
 import {
   CAPTURE_QUERY,
+  CLIENT_QUERY,
   RECONNECT_ALARM,
   RECONNECT_PERIOD_MINUTES,
   RELAY_RUNNING_KEY,
@@ -54,7 +60,8 @@ import { startTabTracking, TAB_HANDLERS } from './tab-commands.js'
 // The service worker: the native port to the host, the pending queue and its forwarding, the status, the Slack bridge
 // methods, each run in a Slack tab signed in as the account it names and at a person's pace (slack-pace.ts), and the
 // tab commands of the browser tools (tab-commands.ts). What the page reports is data: it becomes events and status,
-// never a native command.
+// never a native command, and the client query its relay holds only shapes the envelope of a Web API call the Misha
+// app asked for (callSlack).
 
 // zod compiles its parsers with new Function unless told not to, and an extension's CSP refuses that.
 z.config({ jitless: true })
@@ -117,7 +124,7 @@ const PAGE_FAILURE_TEXT: Readonly<Record<SlackPageFailure, string>> = {
   'no-api-session': "Slack's client keeps no API session for the workspace",
   'no-api-address': "Slack's client keeps no Slack API address for the workspace",
   'no-client-query':
-    "The extension has seen no Web API call of Slack's own client in this page since it started; use Slack in the tab, or reload it",
+    "Misha hasn't seen Slack in this tab make a request to this workspace yet. Wait for Slack to finish loading, then try again.",
   'activity-session-unreadable':
     "Slack's own client would fail on its saved activity sessions for the workspace, or lose the session it records, so nothing was sent",
   'activity-session-unsaved': "The page's storage refused Slack's activity session, so nothing was sent",
@@ -216,14 +223,39 @@ const relayScripting: IRelayScripting = {
 
 // Chrome puts the manifest's content scripts only into documents that load after the extension did, and cuts the relay
 // of every open tab off from the extension once it reloads, updates or is turned off and on, which starts a new worker.
-// The observer a tab loaded with keeps watching Slack's socket, so each open Slack page with no relay of this load of
-// the extension gets a new one, which asks the observer for a channel of its own (capture-handshake.ts). A page that
-// loaded before the extension did, or with an observer that answers only its first relay, gives the new relay no
-// channel, and stays detached until it reloads. A discarded tab holds no page, and runs the manifest's scripts once it
-// loads again.
-const attachRelays = async (): Promise<void> => {
+// The observer a tab loaded with keeps watching Slack's socket and keeping the client's query, so each open Slack page
+// with no relay of this load of the extension gets a new one, which asks the observer for a channel of its own
+// (capture-handshake.ts). A page that loaded before the extension did, or with an observer that answers only its first
+// relay, gives the new relay no channel, and stays detached until it reloads. A discarded tab holds no page, and runs
+// the manifest's scripts once it loads again. Every tab's attempt runs at once, and each failure is taken as that tab's
+// outcome, so the answer comes once every attempt settled: the tabs whose attempt failed, each with its error.
+const attachRelays = async (): Promise<readonly { readonly tabId: number; readonly error: unknown }[]> => {
   const tabs = (await slackTabs()).filter((tab) => !tab.discarded)
-  await Promise.all(tabs.map(({ id }) => attachRelay(relayScripting, id, SLACK_ORIGIN)))
+  const failures = await Promise.all(
+    tabs.map(({ id }) =>
+      attachRelay(relayScripting, id, SLACK_ORIGIN).then(
+        () => null,
+        (error: unknown) => ({ tabId: id, error })
+      )
+    )
+  )
+
+  return failures.filter((failure) => failure !== null)
+}
+
+// The client queries the page's relay holds for that document, by the origin of each workspace API; null when no relay
+// of this load answers there (none was attached, or the tab navigated since its identity was read), when its relay has
+// none to give (relay.ts), or when it answered what does not read. The relay answers at once, or once its observer's
+// greeting, already queued on its port, is read. A worker Chrome stopped and started again finds the relays of its load
+// still running, so its startup pass attaches none and settles at once.
+const relayQueries = async (page: ISlackPage): Promise<ClientQueries | null> => {
+  await Promise.allSettled([relaysAttached])
+  const answer: unknown = await chrome.tabs
+    .sendMessage(page.tabId, CLIENT_QUERY, { documentId: page.documentId })
+    .catch(() => null)
+  const read = RelayClientQuerySchema.safeParse(answer)
+
+  return read.success ? read.data.queries : null
 }
 
 // The pages signed in as the account, each in the document its identity was read in.
@@ -246,7 +278,9 @@ interface IPageRequest {
 // it once the command settled.
 // The command is handed to the page with nothing asynchronous before it, so the pace's check that its caller still
 // waits comes right before the hand-off, from which the pace counts the request as sent (slack-pace.ts). unsent: tells
-// the pace that the page's result, read, shows nothing went out to Slack.
+// the pace that the page's result, read, shows nothing went out to Slack. A page that held no client query for the
+// workspace answers its no-client-query failure as the result, as one signed in as another account answers
+// other-account, so inSlackTab can try the next page; every other failure is thrown.
 const requestInPage = async (
   page: ISlackPage,
   { key, command }: IPageRequest,
@@ -264,53 +298,119 @@ const requestInPage = async (
 
     isAnswered = isAnsweredBySlack(result)
 
-    return unlessFailed(page.tabId, command, result)
+    return isUnqueried(result) ? result : unlessFailed(page.tabId, command, result)
   } finally {
     release(isAnswered)
   }
 }
 
-// Runs a request in a page signed in as the account and in no other, and answers the page with what it answered; null
-// when there is none. Pages are tried one at a time, so a write goes out at most once: a page whose user changed since
-// its identity was read answers other-account without sending anything, and the next one is tried, while a page that
-// fails during the command fails the call, since the command may have reached Slack. Each request goes out through
-// send, at the pace of its turn, and is handed to the page only while its caller still waits; the page checks the
-// deadline once more right before its fetch. The request is built as it goes, so its id is fresh and its query the
-// latest.
+const isUnqueried = (result: SlackPageResult): boolean =>
+  result.kind === 'failed' && result.failure === 'no-client-query'
+
+// What a page needs before its turn to send: the function that builds its request inside send, or null when the page
+// cannot send it, which skips the page without handing it anything.
+type PageRequestPreparation = (page: ISlackPage) => Promise<(() => IPageRequest) | null>
+
+// No page answered a request: the tabs skipped as needing a reload, and those whose page held no client query for the
+// workspace.
+interface IUnanswered {
+  readonly kind: 'unanswered'
+  readonly reloadTabs: readonly number[]
+  readonly unqueriedTabs: readonly number[]
+}
+
+type SlackTabOutcome =
+  | { readonly kind: 'answered'; readonly page: ISlackPage; readonly result: SlackPageResult }
+  | IUnanswered
+
+// Runs a request in a page signed in as the account and in no other, and answers the page with what it answered. Pages
+// are tried one at a time, so a write goes out at most once: a page its preparation skips is handed nothing, and a
+// page whose user changed since its identity was read (other-account) or that holds no client query for the workspace
+// (no-client-query) sends nothing, so the next one is tried, while a page that fails during the command fails the
+// call, since the command may have reached Slack. Each request goes out through send, at the pace of its turn, and is
+// handed to the page only while its caller still waits; the page checks the deadline once more right before its fetch.
+// The request is built as it goes, so its id is fresh, while a call's client query is the one its page's relay held
+// when the call was prepared, before the pace's gap.
 const inSlackTab = async (
   account: SlackAccount,
   send: PacedSend,
-  requestFor: (page: ISlackPage) => IPageRequest
-): Promise<{ readonly page: ISlackPage; readonly result: SlackPageResult } | null> => {
+  prepare: PageRequestPreparation
+): Promise<SlackTabOutcome> => {
+  const reloadTabs: number[] = []
+  const unqueriedTabs: number[] = []
   for (const page of await signedInPages(account)) {
-    const result = await send((unsent) => requestInPage(page, requestFor(page), unsent))
-    if (result.kind !== 'other-account') {
-      return { page, result }
+    const requestFor = await prepare(page)
+    if (requestFor === null) {
+      reloadTabs.push(page.tabId)
+      continue
+    }
+
+    const result = await send((unsent) => requestInPage(page, requestFor(), unsent))
+    if (isUnqueried(result)) {
+      unqueriedTabs.push(page.tabId)
+    } else if (result.kind !== 'other-account') {
+      return { kind: 'answered', page, result }
     }
   }
 
-  return null
+  return { kind: 'unanswered', reloadTabs, unqueriedTabs }
 }
 
-// A Web API call in a page: a fresh request id, and for each workspace API the query its client lent the transport.
-const callRequest =
+// A request whose page needs nothing prepared: a download, which uses no client query.
+const unprepared =
+  (request: IPageRequest): PageRequestPreparation =>
+  () =>
+    Promise.resolve(() => request)
+
+// A Web API call in a page: prepared with the client queries the page's relay holds, and skipped when it has none to
+// give; then built inside send, with a fresh request id and, for each workspace API, the query its client called it
+// with.
+const callPreparation =
   (
     account: SlackAccount,
     method: SlackMethod | SlackUploadMethod,
     params: Readonly<Record<string, string>>,
     deadline: number
-  ) =>
-  (page: ISlackPage): IPageRequest => {
-    const requestId = freshRequestId()
-    const queries = Object.fromEntries(
-      [...clientObserver.clientQueries(page)].map(([origin, query]): [string, string] => [
-        origin,
-        borrowedQueryString(query, requestId),
-      ])
-    )
+  ): PageRequestPreparation =>
+  async (page) => {
+    const clientQueries = await relayQueries(page)
+    if (clientQueries === null) {
+      return null
+    }
 
-    return { key: requestId, command: { kind: 'call', account, method, params, queries, deadline } }
+    return () => {
+      const requestId = freshRequestId()
+      const queries = Object.fromEntries(
+        Object.entries(clientQueries).map(([origin, query]): [string, string] => [
+          origin,
+          borrowedQueryString(query, requestId),
+        ])
+      )
+
+      return { key: requestId, command: { kind: 'call', account, method, params, queries, deadline } }
+    }
   }
+
+// A Web API call no page answered: the failure of a page that held no client query for the workspace, whose observer
+// works and only waits for Slack's client to call it; else the tabs to reload; else Slack's answer that no tab is
+// signed in as the account.
+const unansweredCall = (
+  account: SlackAccount,
+  { reloadTabs, unqueriedTabs }: IUnanswered
+): { readonly ok: false; readonly error: typeof NO_SLACK_TAB_ERROR } => {
+  const [unqueriedTab] = unqueriedTabs
+  if (unqueriedTab !== undefined) {
+    throw new Error(`The Slack page in tab ${unqueriedTab} failed call: ${PAGE_FAILURE_TEXT['no-client-query']}`)
+  }
+
+  if (reloadTabs.length > 0) {
+    throw new Error(
+      `No Slack tab signed in as ${slackAccountId(account)} can send Misha's calls until it is reloaded (tab ${reloadTabs.join(', tab ')}). Reload the Slack tab, then try again.`
+    )
+  }
+
+  return { ok: false, error: NO_SLACK_TAB_ERROR }
+}
 
 const answerOf = (result: SlackPageResult): SlackAnswer => {
   if (result.kind !== 'answer') {
@@ -327,9 +427,9 @@ const callSlack = (
   abandonment: IAbandonment
 ): Promise<SlackAnswer> =>
   pace.turn(account.teamId, abandonment, async (send) => {
-    const answered = await inSlackTab(account, send, callRequest(account, method, params, abandonment.deadline))
+    const outcome = await inSlackTab(account, send, callPreparation(account, method, params, abandonment.deadline))
 
-    return answered === null ? { ok: false, error: NO_SLACK_TAB_ERROR } : answerOf(answered.result)
+    return outcome.kind === 'answered' ? answerOf(outcome.result) : unansweredCall(account, outcome)
   })
 
 // The pushed chunks of an upload in order, or null when they do not add up to byteLength bytes.
@@ -395,10 +495,10 @@ const uploadToSlack = (
 ): Promise<PreparedUpload> =>
   pace.turn(account.teamId, abandonment, async (send) => {
     const { deadline } = abandonment
-    const ticketRequest = callRequest(account, 'files.getUploadURLExternal', params, deadline)
+    const ticketRequest = callPreparation(account, 'files.getUploadURLExternal', params, deadline)
     const answered = await inSlackTab(account, send, ticketRequest)
-    if (answered === null) {
-      return { ok: false, error: NO_SLACK_TAB_ERROR }
+    if (answered.kind === 'unanswered') {
+      return unansweredCall(account, answered)
     }
 
     const ticket = uploadTicketOf(answerOf(answered.result))
@@ -426,12 +526,16 @@ const slackHandlers: Handlers = {
   slackDownload: async (raw, abandonment) => {
     const { account, url } = SLACK_BRIDGE_METHODS.slackDownload.params.parse(raw)
     const answered = await pace.turn(account.teamId, abandonment, (send) =>
-      inSlackTab(account, send, () => ({
-        key: new URL(url).href,
-        command: { kind: 'download', account, url, deadline: abandonment.deadline },
-      }))
+      inSlackTab(
+        account,
+        send,
+        unprepared({
+          key: new URL(url).href,
+          command: { kind: 'download', account, url, deadline: abandonment.deadline },
+        })
+      )
     )
-    if (answered === null) {
+    if (answered.kind === 'unanswered') {
       throw new Error(`${NO_SLACK_TAB_ERROR}: no open Slack tab is signed in as ${slackAccountId(account)}`)
     }
 
@@ -672,8 +776,7 @@ chrome.webRequest.onCompleted.addListener(({ requestId }) => {
 chrome.webRequest.onErrorOccurred.addListener(({ requestId }) => {
   clientObserver.requestEnded(requestId)
 }, SLACK_REQUESTS)
-chrome.tabs.onRemoved.addListener((tabId) => {
-  clientObserver.forget(tabId)
+chrome.tabs.onRemoved.addListener(() => {
   void pushStatus()
 })
 chrome.tabs.onUpdated.addListener((_tabId, change, tab) => {
@@ -686,5 +789,19 @@ startTabTracking()
 void chrome.alarms.create(RECONNECT_ALARM, { periodInMinutes: RECONNECT_PERIOD_MINUTES })
 chrome.alarms.onAlarm.addListener(() => connect())
 void writer.recover()
-void attachRelays()
+// The pass of attachRelays the service worker makes when it starts, which a Web API call waits for before it asks any
+// relay (relayQueries). It settles only once every tab's attempt has, so a tab whose attempt fails early cannot let a
+// call ask another tab whose new relay is still going in, and take that tab for one to reload. A tab whose attempt
+// failed has no relay of this load to answer, and a call skips it as one to reload; the failure is thrown on its own,
+// so Chrome lists it with the extension's errors.
+const relaysAttached = attachRelays()
+void relaysAttached.then((failures) => {
+  if (failures.length > 0) {
+    const tabs = failures.map(({ tabId }) => tabId).join(', tab ')
+    throw new AggregateError(
+      failures.map(({ error }) => error),
+      `No relay could be attached in Slack tab ${tabs}`
+    )
+  }
+})
 connect()

@@ -6,10 +6,11 @@ import {
 } from '../protocol/slack.js'
 import { apiMethodOf, formedValue, holdsSecret, REQUEST_ID_FIELD } from './borrowed-query.js'
 
-// What the service worker reads from a request a Slack page sends, as Chrome's webRequest reports it: a safe
-// projection made inside the listener, before anything keeps it. Only the fields named here keep a value, each only in
-// the form it must have; every other value (the token, the cookie, a call's arguments, a file's address) is dropped
-// where it is read.
+// What the transport check reads from a request a Slack page sends, as Chrome's webRequest reports it: a safe
+// projection made inside the listener, before anything keeps it. Only the fields named here and in borrowed-query.ts
+// keep a value, each only in the form it must have; every other value (the token, the cookie, a call's arguments, a
+// file's address) is dropped where it is read. The query a call of Misha's borrows is not taken from these requests:
+// the page's observer keeps it (client-query-keeper.ts).
 
 // Slack's private files and upload URLs (protocol slack.ts), where a request is known by its whole address.
 const SLACK_FILES_ORIGIN = 'https://files.slack.com'

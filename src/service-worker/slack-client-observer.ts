@@ -1,5 +1,4 @@
 import type { OperationParity, SlackOperation } from '../protocol/slack.js'
-import { type BorrowedQuery, borrowedQueryOf } from './borrowed-query.js'
 import {
   headerFieldsOf,
   type IRequestBody,
@@ -61,12 +60,6 @@ interface IPendingRequest {
   readonly exclusion: IExclusion | null
 }
 
-interface IPageQueries {
-  readonly documentId: string
-  // By the origin of the workspace API the client called.
-  readonly byOrigin: Map<string, BorrowedQuery>
-}
-
 // Where the check of an operation stands: the client's latest request while Misha has sent none (reference), Misha's
 // first request while the client has sent none (waiting), or the result, which no later request changes (checked).
 type OperationCheck =
@@ -75,11 +68,10 @@ type OperationCheck =
   | { readonly state: 'checked'; readonly parity: OperationParity }
 
 // What Slack's client sends from its own pages, as the service worker observes it, beside Misha's requests, which run
-// in the same pages:
-// - Each page's latest Web API call lends the transport its query (slack-request-shape.ts).
-// - The transport check: the client's latest request of each operation is its reference, and Misha's first request of
-//   each operation since the service worker started is compared with it once, as soon as both are known. The result
-//   per operation is a status of names only (protocol slack.ts OperationParitySchema).
+// in the same pages, for the transport check: the client's latest request of each operation is its reference, and
+// Misha's first request of each operation since the service worker started is compared with it once, as soon as both
+// are known. The result per operation is a status of names only (protocol slack.ts OperationParitySchema). The query
+// a call of Misha's borrows comes from the page's own observer, not from here (client-query-keeper.ts).
 // A request is Misha's when it carries the key of a command of Misha's running in that same page. A command whose
 // request cannot be told apart (a second request carried its key, whether or not either sent its headers, or it did
 // not reach Slack while one did) supplies no shape: neither those requests nor the command count as the client's or as
@@ -87,7 +79,6 @@ type OperationCheck =
 export class SlackClientObserver {
   private readonly exclusions = new Set<IExclusion>()
   private readonly pending = new Map<string, IPendingRequest>()
-  private readonly queries = new Map<number, IPageQueries>()
   private readonly checks = new Map<SlackOperation, OperationCheck>()
 
   // pageOrigin: where the Slack pages are (config.ts SLACK_ORIGIN); a request any other page sends is not the client's.
@@ -140,7 +131,6 @@ export class SlackClientObserver {
       return
     }
 
-    this.lendQuery({ tabId, documentId }, parsed)
     if (started !== null) {
       this.pending.set(requestId, { started, exclusion: null })
     }
@@ -175,14 +165,6 @@ export class SlackClientObserver {
     }
   }
 
-  // The query each workspace API's latest client call in the page lent, by the API's origin; none for a page whose
-  // client the observer has not seen call the Web API since the service worker started.
-  public clientQueries({ tabId, documentId }: ISlackPage): ReadonlyMap<string, BorrowedQuery> {
-    const known = this.queries.get(tabId)
-
-    return known?.documentId === documentId ? known.byOrigin : new Map()
-  }
-
   // The check per operation Misha sent, in the operations' order: unchecked while the client has not sent it.
   public parity(): OperationParity[] {
     return [...this.checks]
@@ -196,26 +178,10 @@ export class SlackClientObserver {
       .toSorted((first, second) => (first.operation < second.operation ? -1 : 1))
   }
 
-  public forget(tabId: number): void {
-    this.queries.delete(tabId)
-  }
-
   private exclusionOf(page: ISlackPage, key: string): IExclusion | undefined {
     return [...this.exclusions].find(
       (exclusion) => exclusion.tabId === page.tabId && exclusion.documentId === page.documentId && exclusion.key === key
     )
-  }
-
-  private lendQuery({ tabId, documentId }: ISlackPage, url: URL): void {
-    const borrowed = borrowedQueryOf(url)
-    if (borrowed === null) {
-      return
-    }
-
-    const known = this.queries.get(tabId)
-    const page = known?.documentId === documentId ? known : { documentId, byOrigin: new Map<string, BorrowedQuery>() }
-    page.byOrigin.set(url.origin, borrowed)
-    this.queries.set(tabId, page)
   }
 
   private leave(exclusion: IExclusion): void {

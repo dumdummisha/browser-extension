@@ -12,9 +12,9 @@ export type SlackPageCommand =
       readonly account: SlackAccount
       readonly method: string
       readonly params: Readonly<Record<string, string>>
-      // The query the call goes out with, by the origin of the workspace API it belongs to: the query of the page
-      // client's own latest call to that API, as the service worker borrowed it (slack-client-observer.ts). The page
-      // sends it with the activity session it records in _x_csid (callSlack).
+      // The query the call goes out with, by the origin of the workspace API it belongs to: the borrowed fields of the
+      // page client's latest call to that API, as the page's observer kept them (client-query-keeper.ts), with the
+      // call's own request id. The page sends it with the activity session it records in _x_csid (callSlack).
       readonly queries: Readonly<Record<string, string>>
       readonly deadline: number
     }
@@ -32,9 +32,8 @@ export type SlackPageCommand =
 // holds becomes one: the service worker words each code (background.ts).
 // - client-state-unreadable: Slack's saved client state is not JSON
 // - no-api-session, no-api-address: the saved state keeps no token, or no https address on a workspace's Slack host
-// - no-client-query: the service worker has seen no Web API call of the page's client to the workspace's API, so it
-//   holds no query to send the call with, or the query it holds has no workspace route (slack_route), which the
-//   service worker never lends (slack-request-shape.ts borrowedQueryOf)
+// - no-client-query: the page's observer has seen no Web API call of its client to the workspace's API since the page
+//   loaded, or the query it holds has no workspace route (slack_route)
 // - activity-session-unreadable: Slack's client itself would throw on the workspace's stored activity sessions while
 //   recording activity or reading the session to send, or its write would lose the session it records
 // - activity-session-unsaved: the page's localStorage refused the activity session the command recorded
@@ -474,11 +473,11 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
     // Slack's client calls the Web API with a query of its own (_x_id, _x_csid, slack_route, _x_version_ts and the rest),
     // and Slack answers a call with cookies with credentialed CORS (the page's origin, allow-credentials) only when it
     // carries that query; without it the answer is "*", which a call with cookies cannot read. So a call goes out with
-    // the query the service worker borrowed from this page's client for the workspace's API, with the session the
+    // the query this page's observer kept from its client's latest call to the workspace's API, with the session the
     // client's read gives after the activity is recorded in _x_csid (none for no session or a falsy id), right before
     // slack_route where generateQueryString writes it. A borrowed _x_csid, the session the client had when it made the
     // call the query came from, gives way to it. The borrowed fields were serialized by URLSearchParams
-    // (slack-request-shape.ts borrowedQueryString), so serializing them again keeps them as they were.
+    // (borrowed-query.ts borrowedQueryString), so serializing them again keeps them as they were.
     // Slack answers 200 with ok false for its own errors; anything else (another status, no JSON, no ok) is no answer.
     const callSlack = async (
       method: string,

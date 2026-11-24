@@ -444,6 +444,22 @@ describe('[service-worker] Slack page - activity session', () => {
     assert.equal(read(SESSIONS_KEY), JSON.stringify({ [NEW_SESSION_ID]: storedSession(NEW_SESSION_ID, NOW, NOW) }))
   })
 
+  it("should make a new session's id as Slack's makeSessionId does, masking the last character's index with 60", async (context) => {
+    // Arrange - the draws land on Z a z 0 9 - _ A M q, then on _ (63), which the mask turns into 8 (60)
+    const stored = openSlackPage(context, () => savedConfig('https://example.slack.com/'))
+    context.mock.timers.enable({ apis: ['Date'], now: NOW })
+    const draws = [25, 26, 51, 52, 61, 62, 63, 0, 12, 42, 63].map((index) => (index + 0.5) / 64)
+    context.mock.method(Math, 'random', () => draws.shift() ?? Number.NaN)
+    const fetched = context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
+
+    // Act
+    await runSlackPageCommand(CALL)
+
+    // Assert
+    assert.equal(queryOf(fetched), CLIENT_QUERY.replace('example-csid', 'Zaz09-_AMq8'))
+    assert.equal(stored.get(SESSIONS_KEY), JSON.stringify({ 'Zaz09-_AMq8': storedSession('Zaz09-_AMq8', NOW, NOW) }))
+  })
+
   it("should answer a failure code, sending nothing, when the page's storage refuses the session", async (context) => {
     // Arrange
     const stored = openSlackPage(context, () => savedConfig('https://example.slack.com/'))

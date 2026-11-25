@@ -79,8 +79,24 @@ type IdentifiedTab = chrome.tabs.Tab & { id: number }
 
 let port: chrome.runtime.Port | null = null
 
-const post = (frame: ExtensionFrame): void => {
-  port?.postMessage(frame)
+// One native port and its handshake. Normal frames go out on a link only while its handshake is ready, which it stops
+// being for good once the port turns incompatible or disconnects.
+interface INativeLink {
+  readonly port: chrome.runtime.Port
+  readonly handshake: HostHandshake
+}
+
+// The link a listener attached on, whose events and status the forwarder and the status pushes send; null while no
+// listener is attached on a ready link.
+let listenerLink: INativeLink | null = null
+
+const isReady = (link: INativeLink): boolean => link.handshake.state === 'ready'
+
+// Sends a normal frame on the link, and nothing once its handshake is no longer ready.
+const postOn = (link: INativeLink, frame: ExtensionFrame): void => {
+  if (isReady(link)) {
+    link.port.postMessage(frame)
+  }
 }
 
 // Files on their way through the extension, by the id of their transfer: a download until its last chunk is pulled,
@@ -616,7 +632,15 @@ const writer = new PendingQueueWriter(() => openPendingQueue(indexedDB), {
     void pushStatus()
   },
 })
-const forwarder = new Forwarder(post, (id) => writer.isPending(id))
+// The forwarder runs only between a listener attaching on a ready link and that link's end (stopPortTraffic).
+const forwarder = new Forwarder(
+  (event) => {
+    if (listenerLink !== null) {
+      postOn(listenerLink, event)
+    }
+  },
+  (id) => writer.isPending(id)
+)
 const statusQueue = serially()
 const intake = serially()
 
@@ -637,22 +661,38 @@ const statusSnapshot = async (): Promise<SlackStatus> => {
   }
 }
 
-// Status goes only to a listener; snapshots go out in the order they were taken.
+// Status goes only to a listener; snapshots go out in the order they were taken, each on the link it was taken for, and
+// only while that link still has the listener and is ready.
 const pushStatus = (): Promise<void> =>
   statusQueue(async () => {
-    if (forwarder.hasListener) {
-      post(await statusSnapshot())
+    const link = listenerLink
+    if (link === null) {
+      return
+    }
+
+    const snapshot = await statusSnapshot()
+    if (listenerLink === link) {
+      postOn(link, snapshot)
     }
   })
 
-// A listener attached: it gets the status, then every event still waiting for its ack. The events go out even when the
-// status could not be taken, so nothing a tab reports can keep them from the app.
-const attachListener = (): Promise<void> =>
+// A listener attached on link: it gets the status, then every event still waiting for its ack. The events go out even
+// when the status could not be taken, so nothing a tab reports can keep them from the app. The snapshot takes time,
+// during which the link may turn incompatible or disconnect; the status is then not sent and the forwarder not attached,
+// so the pending events wait for a listener on a ready link.
+const attachListener = (link: INativeLink): Promise<void> =>
   statusQueue(async () => {
+    if (!isReady(link)) {
+      return
+    }
+
     try {
-      post(await statusSnapshot())
+      postOn(link, await statusSnapshot())
     } finally {
-      forwarder.attach(writer.pending())
+      if (isReady(link)) {
+        listenerLink = link
+        forwarder.attach(writer.pending())
+      }
     }
   })
 
@@ -676,24 +716,16 @@ const admitFrame = async (
   }
 }
 
-// A reply goes back only on the port its request came on, while that port is open and its leg ready. A newer port
-// belongs to a new relay, which numbers its requests from 1 again, so a reply sent there could reach a caller that never
+// A reply goes back only on the link its request came on, while its leg is ready. A newer port belongs to a new relay, which numbers its requests from 1 again, so a reply sent there could reach a caller that never
 // asked. Each request of the port runs with a controller in running, which a cancel from the relay aborts.
-const onHostFrame = (
-  source: chrome.runtime.Port,
-  handshake: HostHandshake,
-  running: Map<number, AbortController>,
-  frame: HostFrame
-): void => {
+const onHostFrame = (link: INativeLink, running: Map<number, AbortController>, frame: HostFrame): void => {
   switch (frame.type) {
     case 'request': {
       const controller = new AbortController()
       running.set(frame.id, controller)
       void answerRequest(handlers, frame, controller.signal).then((reply) => {
         running.delete(frame.id)
-        if (port === source && handshake.state === 'ready') {
-          source.postMessage(reply)
-        }
+        postOn(link, reply)
       })
       return
     }
@@ -710,18 +742,21 @@ const onHostFrame = (
       })
       return
     case 'listener':
-      void attachListener()
+      void attachListener(link)
   }
 }
 
-// The requests of a port whose callers can no longer take a reply are aborted, and its listener is gone.
-const stopPortTraffic = (running: Map<number, AbortController>): void => {
+// The requests of a link whose callers can no longer take a reply are aborted, and a listener attached on it is gone.
+const stopPortTraffic = (link: INativeLink, running: Map<number, AbortController>): void => {
   for (const controller of running.values()) {
     controller.abort()
   }
 
   running.clear()
-  forwarder.detach()
+  if (listenerLink === link) {
+    listenerLink = null
+    forwarder.detach()
+  }
 }
 
 // The extension's badge and title show the latest incompatibility of its native leg, kept through disconnects until a
@@ -742,31 +777,34 @@ const connect = (): void => {
 
   const opened = chrome.runtime.connectNative(NATIVE_HOST_NAME)
   const running = new Map<number, AbortController>()
-  const handshake = new HostHandshake(
-    { role: 'extension', componentVersion: chrome.runtime.getManifest().version },
-    {
-      send: (frame) => opened.postMessage(frame),
-      onReady: () => showIncompatibility(null),
-      onIncompatible: (diagnostic) => {
-        stopPortTraffic(running)
-        showIncompatibility(diagnostic)
-      },
-    }
-  )
+  const link: INativeLink = {
+    port: opened,
+    handshake: new HostHandshake(
+      { role: 'extension', componentVersion: chrome.runtime.getManifest().version },
+      {
+        send: (frame) => opened.postMessage(frame),
+        onReady: () => showIncompatibility(null),
+        onIncompatible: (diagnostic) => {
+          stopPortTraffic(link, running)
+          showIncompatibility(diagnostic)
+        },
+      }
+    ),
+  }
   opened.onMessage.addListener((message: unknown) => {
-    const frame = handshake.receive(message)
+    const frame = link.handshake.receive(message)
     if (frame !== null) {
-      onHostFrame(opened, handshake, running, frame)
+      onHostFrame(link, running, frame)
     }
   })
   // A port that dropped took its relay with it, and every caller of its requests lost the connection.
   opened.onDisconnect.addListener(() => {
     port = null
-    handshake.close()
-    stopPortTraffic(running)
+    link.handshake.close()
+    stopPortTraffic(link, running)
   })
   port = opened
-  handshake.start()
+  link.handshake.start()
 }
 
 // Only the relay in a Slack tab's top frame sends messages here. A frame is answered once its admission ran, and only

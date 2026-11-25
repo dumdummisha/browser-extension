@@ -14,10 +14,6 @@ export class Forwarder {
     private readonly isPending: (id: string) => boolean
   ) {}
 
-  public get hasListener(): boolean {
-    return this.isListening
-  }
-
   public attach(events: readonly SlackEvent[]): void {
     this.clear()
     this.isListening = true

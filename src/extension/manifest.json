@@ -11,6 +11,7 @@
     "48": "icons/misha-48.png",
     "128": "icons/misha-128.png"
   },
+  "action": { "default_title": "Misha Browser" },
   "background": { "service_worker": "background.js", "type": "module" },
   "permissions": [
     "nativeMessaging",

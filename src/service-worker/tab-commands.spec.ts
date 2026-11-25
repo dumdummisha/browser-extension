@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { before, beforeEach, describe, it } from 'node:test'
+import { PROTOCOL_REVISION } from '../protocol/messages.js'
 import type { FieldState, PageCommand, PageFind, PageOutcome, PointerState } from '../protocol/tab.js'
 
 // The service worker's tab commands (extension/tab-commands.ts), driven through its native port as the relay drives
@@ -126,7 +127,9 @@ const fakeChrome = {
       postMessage: (reply: { readonly id: number }) => replies.get(reply.id)?.(reply),
     }),
     onMessage: chromeEvent(),
+    getManifest: () => ({ name: 'Misha Browser', version: '1.2.3' }),
   },
+  action: { setBadgeText: () => Promise.resolve(), setTitle: () => Promise.resolve() },
   tabs: {
     query: () => Promise.resolve([]),
     get: () =>
@@ -209,6 +212,13 @@ const assertNoSecret = (answer: unknown): void => {
 before(async () => {
   Object.defineProperty(globalThis, 'chrome', { value: fakeChrome, configurable: true })
   await import('../extension/background.js')
+  emit(portMessages, {
+    type: 'hello',
+    role: 'host',
+    protocolRevision: PROTOCOL_REVISION,
+    componentVersion: '9.8.7',
+    browserApp: null,
+  })
 })
 
 beforeEach(() => {

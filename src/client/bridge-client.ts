@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto'
-import { createConnection, type Socket } from 'node:net'
 import { Readable } from 'node:stream'
 import type { z } from 'zod'
-import { createLineReader, encodeLine } from '../protocol/framing.js'
-import { type ClientMessage, type RelayMessage, RelayMessageSchema } from '../protocol/messages.js'
+import { COMPONENT_VERSION } from '../host/component-version.js'
+import type { ConnectionState } from '../protocol/handshake.js'
+import type { BridgeIncompatible, RelayMessage } from '../protocol/messages.js'
 import {
   chunkCount,
   chunkRange,
@@ -23,28 +23,34 @@ import {
   type TabBridgeParams,
   type TabBridgeResult,
 } from '../protocol/tab.js'
+import { BridgeError, RelayConnection } from './relay-connection.js'
+
+export { BridgeError, BridgeIncompatibleError } from './relay-connection.js'
 
 // A client of the relay's socket (src/host/relay.ts): the app's Slack calls, file transfers and, once it listens, the
-// extension's events and status, and the browser tools' tab commands. One connection carries all of it; while the
-// client listens, it connects again after the relay went away (the browser quit, the extension reloaded) and sends
-// listen again, so it stays the listener. A client that does not listen connects again on its next request.
+// extension's events and status, and the browser tools' tab commands. One connection carries all of it, once its
+// handshake completed (relay-connection.ts); while the client listens, it connects again after the relay went away
+// (the browser quit, the extension reloaded) and sends listen again once ready, so it stays the listener. A client that
+// does not listen connects again on its next request.
 
 // The default request timeout: an upload's bytes go to Slack within one request.
 export const REQUEST_TIMEOUT_MS = 120_000
 export const RECONNECT_DELAY_MS = 2_000
 
-export class BridgeError extends Error {
-  constructor(message: string, options?: ErrorOptions) {
-    super(message, options)
-    this.name = 'BridgeError'
-  }
-}
-
 // Takes one event. The client acknowledges it only once the promise resolves, which the app makes happen only after it
 // committed the event; a rejection leaves it unacknowledged, and the extension forwards it again.
 export type EventHandler = (event: SlackEvent) => Promise<void>
-// Every status snapshot the extension pushes, and undefined each time the connection to the relay drops.
+// Every status snapshot the extension pushes, and undefined each time a ready connection to the relay stops being
+// ready (it dropped, or turned out incompatible).
 export type StatusListener = (status: SlackStatus | undefined) => void
+
+// The bridge's own state, apart from Slack's: the state of the client's current connection (closed when it has none),
+// and the latest incompatibility it learned, kept through disconnects until a later handshake completes.
+export interface IBridgeState {
+  readonly connection: ConnectionState
+  readonly incompatibility: BridgeIncompatible | null
+}
+export type BridgeStateListener = (state: IBridgeState) => void
 export type UploadShare = Omit<SlackBridgeParams<'slackUploadFinish'>, 'account'>
 
 export interface IBridgeClientOptions {
@@ -57,29 +63,15 @@ export interface IBridgeClientOptions {
 
 type BridgeMethod = SlackBridgeMethod | TabBridgeMethod
 
-interface IPendingCall {
-  readonly method: BridgeMethod
-  readonly resolve: (result: unknown) => void
-  readonly reject: (error: Error) => void
-  // Stops the call's timer and stops listening to its caller's signal, once the call is answered or its connection
-  // closed.
-  readonly release: () => void
-}
-
-interface IConnection {
-  readonly socket: Socket
-  // The browser's .app bundle, which the native host reads from its parent process; set by the relay's hello.
-  browserApp: string | null
-  readonly calls: Map<number, IPendingCall>
-}
-
 const parseWith = <TSchema extends z.ZodType>(schema: TSchema, value: unknown): z.output<TSchema> => schema.parse(value)
 
 export class BridgeClient {
-  private connection: Promise<IConnection> | null = null
+  private connection: RelayConnection | null = null
   private handler: EventHandler | null = null
   private latestStatus: SlackStatus | undefined
+  private incompatibility: BridgeIncompatible | null = null
   private readonly statusListeners = new Set<StatusListener>()
+  private readonly bridgeStateListeners = new Set<BridgeStateListener>()
   private events: Promise<void> = Promise.resolve()
   private reconnectTimer: NodeJS.Timeout | undefined
   private nextId = 1
@@ -88,10 +80,16 @@ export class BridgeClient {
   constructor(private readonly options: IBridgeClientOptions) {}
 
   // Starts taking events. The client connects in the background and keeps connecting while the relay is away; the
-  // status stream says when it is connected.
+  // status stream says when it is connected. Each connection's handshake is waited for within the client's request
+  // timeout, as a request would wait for it.
   public listen(handler: EventHandler): void {
+    const connection = this.current()
     this.handler = handler
-    this.sendListen()
+    if (connection.state === 'ready') {
+      connection.write({ type: 'listen' })
+    } else {
+      this.awaitListenerReadiness(connection)
+    }
   }
 
   // The latest status snapshot; undefined while the client is not connected or has had none since it connected.
@@ -104,6 +102,20 @@ export class BridgeClient {
 
     return () => {
       this.statusListeners.delete(listener)
+    }
+  }
+
+  public bridgeState(): IBridgeState {
+    return { connection: this.connection?.state ?? 'closed', incompatibility: this.incompatibility }
+  }
+
+  // Every change of the bridge's own state: a connection that became ready, turned out incompatible or closed, and a
+  // caller's deadline that passed before the handshake completed.
+  public onBridgeState(listener: BridgeStateListener): () => void {
+    this.bridgeStateListeners.add(listener)
+
+    return () => {
+      this.bridgeStateListeners.delete(listener)
     }
   }
 
@@ -172,21 +184,22 @@ export class BridgeClient {
     return parseWith(result, await this.request(method, parseWith(paramsSchema, params)))
   }
 
-  // The app a client brings to the front to raise the browser; null when the native host could not tell.
+  // The app a client brings to the front to raise the browser; null when the native host could not tell. It waits for
+  // the connection's handshake within the client's request timeout.
   public async browserApp(): Promise<string | null> {
-    return (await this.connect()).browserApp
+    const connection = await this.ready(Date.now() + this.options.requestTimeoutMs, undefined, 'browserApp')
+
+    return connection.browserApp
   }
 
-  public async close(): Promise<void> {
+  public close(): Promise<void> {
     this.isClosed = true
     this.handler = null
     clearTimeout(this.reconnectTimer)
-    const current = this.connection
+    this.connection?.destroy()
     this.connection = null
 
-    // A connection that never opened has nothing to close.
-    const opened = await current?.catch(() => null)
-    opened?.socket.destroy()
+    return Promise.resolve()
   }
 
   private async *downloadChunks(downloadId: string, byteLength: number, signal?: AbortSignal): AsyncGenerator<Buffer> {
@@ -198,133 +211,114 @@ export class BridgeClient {
     }
   }
 
-  // Resolves with the extension's result. Rejects when no answer came: the connection dropped, the call timed out, the
-  // caller abandoned it, or the extension answered an error; for a write, the outcome is then unknown. The request
-  // carries its deadline, the moment the timeout fires, so the extension sends nothing of it to Slack once the client
-  // stopped waiting; an abandoned call is cancelled at the extension.
+  // Resolves with the extension's result. Rejects when no answer came: the connection dropped or turned out
+  // incompatible, the call timed out, the caller abandoned it, or the extension answered an error; for a write, the
+  // outcome is then unknown. The deadline is set before the connection is, and bounds the handshake, the request and
+  // its reply alike: the request carries it, so the extension sends nothing of it to Slack once the client stopped
+  // waiting; an abandoned call is cancelled at the extension.
   private async request(method: BridgeMethod, params: unknown, signal?: AbortSignal): Promise<unknown> {
-    const { socket, calls } = await this.connect()
+    const deadline = Date.now() + this.options.requestTimeoutMs
     if (signal?.aborted === true) {
       throw new BridgeError(`The caller abandoned ${method} before it was sent`)
     }
 
+    const connection = await this.ready(deadline, signal, method)
+
     const id = this.nextId
     this.nextId += 1
-    const deadline = Date.now() + this.options.requestTimeoutMs
 
     return new Promise((resolve, reject) => {
       const abandon = (): void => {
-        calls.delete(id)
+        connection.calls.delete(id)
         clearTimeout(timer)
-        this.write(socket, { type: 'cancel', id })
+        connection.write({ type: 'cancel', id })
         reject(new BridgeError(`The caller abandoned ${method}`))
       }
       const timer = setTimeout(() => {
-        calls.delete(id)
+        connection.calls.delete(id)
         signal?.removeEventListener('abort', abandon)
         reject(new BridgeError(`The extension did not answer ${method} within ${this.options.requestTimeoutMs}ms`))
-      }, this.options.requestTimeoutMs)
+      }, deadline - Date.now())
       const release = (): void => {
         clearTimeout(timer)
         signal?.removeEventListener('abort', abandon)
       }
-      calls.set(id, { method, resolve, reject, release })
+      connection.calls.set(id, { method, resolve, reject, release })
       signal?.addEventListener('abort', abandon, { once: true })
-      this.write(socket, { type: 'request', id, method, params, deadline })
+      connection.write({ type: 'request', id, method, params, deadline })
     })
   }
 
-  private write(socket: Socket, message: ClientMessage): void {
-    socket.write(encodeLine(message))
+  // The current connection once it is ready, waited for within deadline and signal.
+  private async ready(deadline: number, signal: AbortSignal | undefined, what: string): Promise<RelayConnection> {
+    const connection = this.current()
+    await connection.whenReady(deadline, signal, what)
+
+    return connection
   }
 
-  // Connection failures are left to the close handler, which tries again while the client listens.
-  private sendListen(): void {
-    void this.connect().then(
-      ({ socket }) => this.write(socket, { type: 'listen' }),
-      () => undefined
-    )
-  }
-
-  private connect(): Promise<IConnection> {
+  // The connection a caller uses: the current one unless it closed, else a new one. An incompatible connection stays
+  // current, so callers get its diagnostic at once until the relay ends it.
+  private current(): RelayConnection {
     if (this.isClosed) {
-      return Promise.reject(new BridgeError('The bridge client is closed'))
+      throw new BridgeError('The bridge client is closed')
     }
 
-    if (this.connection === null) {
-      const opening = this.open(() => {
-        if (this.connection === opening) {
-          this.connection = null
-        }
+    if (this.connection === null || this.connection.state === 'closed') {
+      this.connection = new RelayConnection(this.options.socketPath, COMPONENT_VERSION, {
+        onMessage: (connection, message) => this.receive(connection, message),
+        onReady: (connection) => this.connectionReady(connection),
+        onIncompatible: (diagnostic) => this.connectionIncompatible(diagnostic),
+        onClose: (connection, wasReady) => this.connectionClosed(connection, wasReady),
       })
-      this.connection = opening
     }
 
     return this.connection
   }
 
-  private open(onClose: () => void): Promise<IConnection> {
-    return new Promise((resolve, reject) => {
-      const socket = createConnection(this.options.socketPath)
-      const connection: IConnection = { socket, browserApp: null, calls: new Map() }
-      const state: { isGreeted: boolean; failure?: Error } = { isGreeted: false }
-      const readLines = createLineReader((raw) => {
-        const message = RelayMessageSchema.parse(raw)
-        if (message.type === 'hello' && !state.isGreeted) {
-          state.isGreeted = true
-          connection.browserApp = message.browserApp
-          resolve(connection)
-          return
-        }
-
-        this.receive(connection, message)
-      })
-
-      socket.setEncoding('utf8')
-      socket.on('data', (chunk: string) => {
-        try {
-          readLines(chunk)
-        } catch (error) {
-          socket.destroy(new BridgeError('The relay sent a message this client cannot read', { cause: error }))
-        }
-      })
-      socket.on('error', (error) => {
-        state.failure = error
-      })
-      socket.on('close', () => {
-        const error = state.isGreeted
-          ? new BridgeError('The browser bridge closed (the browser quit or the extension reloaded)', {
-              cause: state.failure,
-            })
-          : new BridgeError(
-              `Could not reach the browser bridge at ${this.options.socketPath}. Is the browser running with the ` +
-                'Misha extension loaded and its native host installed?',
-              { cause: state.failure }
-            )
-        reject(error)
-        onClose()
-        for (const call of connection.calls.values()) {
-          call.release()
-          call.reject(error)
-        }
-
-        connection.calls.clear()
-        this.disconnected(state.isGreeted)
-      })
-    })
+  // The listener's wait for a connection's handshake. Its failure is the connection's to report; once ready, the
+  // connection sends listen (connectionReady).
+  private awaitListenerReadiness(connection: RelayConnection): void {
+    connection.whenReady(Date.now() + this.options.requestTimeoutMs, undefined, 'listen').catch(() => undefined)
   }
 
-  private receive({ socket, calls }: IConnection, message: RelayMessage): void {
+  private connectionReady(connection: RelayConnection): void {
+    this.incompatibility = null
+    if (this.handler !== null) {
+      connection.write({ type: 'listen' })
+    }
+
+    this.publishBridgeState()
+  }
+
+  // Only a ready connection brings status, so a status still held came over the connection that just failed.
+  private connectionIncompatible(diagnostic: BridgeIncompatible): void {
+    this.incompatibility = diagnostic
+    if (this.latestStatus !== undefined) {
+      this.publishStatus(undefined)
+    }
+
+    this.publishBridgeState()
+  }
+
+  private connectionClosed(connection: RelayConnection, wasReady: boolean): void {
+    if (this.connection === connection) {
+      this.connection = null
+    }
+
+    this.disconnected(wasReady)
+    this.publishBridgeState()
+  }
+
+  private receive(connection: RelayConnection, message: RelayMessage): void {
     switch (message.type) {
-      case 'hello':
-        throw new BridgeError('The relay greeted this connection twice')
       case 'reply': {
-        const call = calls.get(message.id)
+        const call = connection.calls.get(message.id)
         if (call === undefined) {
           return
         }
 
-        calls.delete(message.id)
+        connection.calls.delete(message.id)
         call.release()
         if ('error' in message) {
           call.reject(new BridgeError(`The extension failed ${call.method}: ${message.error}`))
@@ -335,7 +329,7 @@ export class BridgeClient {
         return
       }
       case 'event': {
-        const next = this.events.then(() => this.deliver(socket, message))
+        const next = this.events.then(() => this.deliver(connection, message))
         this.events = next.catch(() => undefined)
         void next
         return
@@ -346,8 +340,9 @@ export class BridgeClient {
   }
 
   // Events are handled one at a time, in the order they came. The ack goes back on the connection that brought the
-  // event; if it closed meanwhile, the extension forwards the event again and the app's commit takes the repeat.
-  private async deliver(socket: Socket, event: SlackEvent): Promise<void> {
+  // event while it is still ready; if it closed or turned out incompatible meanwhile, the extension forwards the event
+  // again to a compatible listener, and the app's commit takes the repeat.
+  private async deliver(connection: RelayConnection, event: SlackEvent): Promise<void> {
     const { handler } = this
     if (handler === null) {
       return
@@ -360,8 +355,8 @@ export class BridgeClient {
       return
     }
 
-    if (!socket.destroyed) {
-      this.write(socket, { type: 'ack', id: event.id })
+    if (connection.state === 'ready') {
+      connection.write({ type: 'ack', id: event.id })
     }
   }
 
@@ -371,7 +366,19 @@ export class BridgeClient {
     }
 
     if (this.handler !== null && !this.isClosed) {
-      this.reconnectTimer = setTimeout(() => this.sendListen(), this.options.reconnectDelayMs)
+      this.reconnectTimer = setTimeout(() => this.reconnect(), this.options.reconnectDelayMs)
+    }
+  }
+
+  // A connection a request opened meanwhile already sent listen once it became ready.
+  private reconnect(): void {
+    if (this.handler === null || this.isClosed) {
+      return
+    }
+
+    const connection = this.current()
+    if (connection.state === 'awaiting-hello') {
+      this.awaitListenerReadiness(connection)
     }
   }
 
@@ -379,6 +386,13 @@ export class BridgeClient {
     this.latestStatus = status
     for (const listener of this.statusListeners) {
       listener(status)
+    }
+  }
+
+  private publishBridgeState(): void {
+    const state = this.bridgeState()
+    for (const listener of this.bridgeStateListeners) {
+      listener(state)
     }
   }
 }

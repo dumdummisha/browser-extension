@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { COMPONENT_VERSION } from './component-version.js'
 import { SOCKET_PATH } from './paths.js'
 import { startNativeHostRelay } from './relay.js'
 
@@ -15,4 +16,5 @@ await startNativeHostRelay({
   output: process.stdout,
   socketPath: SOCKET_PATH,
   browserApp: detectBrowserApp(),
+  componentVersion: COMPONENT_VERSION,
 })

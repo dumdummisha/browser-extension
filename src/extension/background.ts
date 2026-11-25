@@ -1,6 +1,7 @@
 /// <reference types="chrome" />
 import { z } from 'zod'
-import { type ExtensionFrame, HostFrameSchema, NATIVE_HOST_NAME } from '../protocol/messages.js'
+import { incompatibilityMessage } from '../protocol/handshake.js'
+import { type BridgeIncompatible, type ExtensionFrame, type HostFrame, NATIVE_HOST_NAME } from '../protocol/messages.js'
 import {
   type CaptureHealth,
   chunkCount,
@@ -23,6 +24,7 @@ import {
 import { borrowedQueryString, freshRequestId } from '../service-worker/borrowed-query.js'
 import { answerRequest, type IAbandonment } from '../service-worker/bridge-requests.js'
 import { Forwarder } from '../service-worker/forwarder.js'
+import { HostHandshake } from '../service-worker/host-handshake.js'
 import {
   captureHealthOf,
   type ClientQueries,
@@ -674,18 +676,22 @@ const admitFrame = async (
   }
 }
 
-// A reply goes back only on the port its request came on, while that port is open. A newer port belongs to a new
-// relay, which numbers its requests from 1 again, so a reply sent there could reach a caller that never asked. Each
-// request of the port runs with a controller in running, which a cancel from the relay aborts.
-const onHostFrame = (source: chrome.runtime.Port, running: Map<number, AbortController>, message: unknown): void => {
-  const frame = HostFrameSchema.parse(message)
+// A reply goes back only on the port its request came on, while that port is open and its leg ready. A newer port
+// belongs to a new relay, which numbers its requests from 1 again, so a reply sent there could reach a caller that never
+// asked. Each request of the port runs with a controller in running, which a cancel from the relay aborts.
+const onHostFrame = (
+  source: chrome.runtime.Port,
+  handshake: HostHandshake,
+  running: Map<number, AbortController>,
+  frame: HostFrame
+): void => {
   switch (frame.type) {
     case 'request': {
       const controller = new AbortController()
       running.set(frame.id, controller)
       void answerRequest(handlers, frame, controller.signal).then((reply) => {
         running.delete(frame.id)
-        if (port === source) {
+        if (port === source && handshake.state === 'ready') {
           source.postMessage(reply)
         }
       })
@@ -708,7 +714,27 @@ const onHostFrame = (source: chrome.runtime.Port, running: Map<number, AbortCont
   }
 }
 
-// An open native port keeps the service worker alive; once it drops, the alarm reconnects.
+// The requests of a port whose callers can no longer take a reply are aborted, and its listener is gone.
+const stopPortTraffic = (running: Map<number, AbortController>): void => {
+  for (const controller of running.values()) {
+    controller.abort()
+  }
+
+  running.clear()
+  forwarder.detach()
+}
+
+// The extension's badge and title show the latest incompatibility of its native leg, kept through disconnects until a
+// later handshake agrees, which clears them.
+const showIncompatibility = (diagnostic: BridgeIncompatible | null): void => {
+  const { name } = chrome.runtime.getManifest()
+  void chrome.action.setBadgeText({ text: diagnostic === null ? '' : '!' })
+  void chrome.action.setTitle({ title: diagnostic === null ? name : `${name}: ${incompatibilityMessage(diagnostic)}` })
+}
+
+// An open native port keeps the service worker alive; once it drops, the alarm reconnects. A port whose leg is
+// incompatible stays open, so the alarm leaves it be, until the host goes away or the extension reloads. The port's
+// listeners go in before the extension's hello.
 const connect = (): void => {
   if (port !== null) {
     return
@@ -716,18 +742,31 @@ const connect = (): void => {
 
   const opened = chrome.runtime.connectNative(NATIVE_HOST_NAME)
   const running = new Map<number, AbortController>()
-  opened.onMessage.addListener((message: unknown) => onHostFrame(opened, running, message))
+  const handshake = new HostHandshake(
+    { role: 'extension', componentVersion: chrome.runtime.getManifest().version },
+    {
+      send: (frame) => opened.postMessage(frame),
+      onReady: () => showIncompatibility(null),
+      onIncompatible: (diagnostic) => {
+        stopPortTraffic(running)
+        showIncompatibility(diagnostic)
+      },
+    }
+  )
+  opened.onMessage.addListener((message: unknown) => {
+    const frame = handshake.receive(message)
+    if (frame !== null) {
+      onHostFrame(opened, handshake, running, frame)
+    }
+  })
   // A port that dropped took its relay with it, and every caller of its requests lost the connection.
   opened.onDisconnect.addListener(() => {
     port = null
-    for (const controller of running.values()) {
-      controller.abort()
-    }
-
-    running.clear()
-    forwarder.detach()
+    handshake.close()
+    stopPortTraffic(running)
   })
   port = opened
+  handshake.start()
 }
 
 // Only the relay in a Slack tab's top frame sends messages here. A frame is answered once its admission ran, and only

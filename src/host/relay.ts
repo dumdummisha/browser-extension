@@ -12,11 +12,28 @@ import {
   HOST_MESSAGE_MAX_BYTES,
 } from '../protocol/framing.js'
 import {
-  type ClientMessage,
+  type IHandshakeEnd,
+  incompatibility,
+  incompatibilityMessage,
+  isHello,
+  readHello,
+} from '../protocol/handshake.js'
+import {
+  type BridgeIncompatible,
+  BridgeIncompatibleSchema,
+  type ClientHello,
+  ClientHelloSchema,
   ClientMessageSchema,
   ExtensionFrameSchema,
+  ExtensionHelloSchema,
   type HostFrame,
+  type HostHello,
+  HostHelloSchema,
+  PROTOCOL_REVISION,
+  type RelayControl,
   type RelayMessage,
+  type Takeover,
+  TakeoverSchema,
 } from '../protocol/messages.js'
 import { ensurePrivateDir } from './paths.js'
 
@@ -26,6 +43,21 @@ export interface IRelayOptions {
   readonly output: Writable
   readonly socketPath: string
   readonly browserApp: string | null
+  // The package version the host names in its hello (component-version.ts).
+  readonly componentVersion: string
+}
+
+// The host's extension leg (protocol handshake.ts). It never returns to awaiting-hello, and an incompatible leg stays so
+// until the browser's pipe ends, which ends this host.
+type ExtensionLegState =
+  | { readonly state: 'awaiting-hello' | 'ready' }
+  | { readonly state: 'incompatible'; readonly diagnostic: BridgeIncompatible }
+
+// A client connection and its leg: awaiting its hello, agreed as a client or as a host taking the socket over, or
+// refused, once the relay sent it the diagnostic and ended it.
+interface IClientConnection {
+  readonly socket: Socket
+  leg: 'awaiting-hello' | ClientHello['role'] | 'refused'
 }
 
 interface IPendingRequest {
@@ -62,13 +94,74 @@ const lockBridge = (socketPath: string): Promise<FileHandle> => {
   return open(`${socketPath}.lock`, LOCK_OPEN_FLAGS, 0o600)
 }
 
+// The protocol fields of an end's hello.
+const protocolOf = ({ componentVersion }: IHandshakeEnd): Pick<HostHello, 'protocolRevision' | 'componentVersion'> => ({
+  protocolRevision: PROTOCOL_REVISION,
+  componentVersion,
+})
+
+// Asks the relay holding the socket to let go, as a host taking it over (messages.ts takeover). The holder's hello must
+// agree before takeover goes out; a holder of another revision, or one whose hello does not read, is refused with the
+// diagnostic and keeps the socket, since the browser-restart recovery is what ends a host this one cannot talk to. A
+// holder that refuses this host's hello sends its diagnostic before it ends the connection. The holder's extension-leg
+// state, which follows its hello, says nothing about the takeover and is dropped.
+const takeOver = (holder: Socket, socketPath: string, local: IHandshakeEnd): Promise<void> =>
+  new Promise((resolve, reject) => {
+    const state: { isGreeted: boolean; refusal: BridgeIncompatible | null; failure?: Error } = {
+      isGreeted: false,
+      refusal: null,
+    }
+    const readLines = createLineReader((raw) => {
+      if (state.isGreeted) {
+        const diagnostic = BridgeIncompatibleSchema.safeParse(raw)
+        if (diagnostic.success && diagnostic.data.leg === 'host-client') {
+          state.refusal = diagnostic.data
+        }
+
+        return
+      }
+
+      state.isGreeted = true
+      const reading = readHello(raw, HostHelloSchema, local, 'host-client')
+      if (reading.kind === 'incompatible') {
+        state.refusal = reading.diagnostic
+        holder.end(encodeLine(reading.diagnostic))
+        return
+      }
+
+      const hello: ClientHello = { type: 'hello', role: 'takeover', ...protocolOf(local) }
+      holder.end(`${encodeLine(hello)}${encodeLine({ type: 'takeover' } satisfies Takeover)}`)
+    }, CLIENT_LINE_MAX_LENGTH)
+
+    holder.setEncoding('utf8')
+    holder.on('data', (chunk: string) => {
+      try {
+        readLines(chunk)
+      } catch (error) {
+        holder.destroy(error instanceof Error ? error : new Error(String(error)))
+      }
+    })
+    holder.on('error', (error) => {
+      state.failure = error
+    })
+    holder.once('close', () => {
+      if (state.refusal !== null) {
+        reject(new Error(`Could not take ${socketPath} over: ${incompatibilityMessage(state.refusal)}`))
+      } else if (state.isGreeted) {
+        resolve()
+      } else {
+        reject(new Error(`The relay holding ${socketPath} closed before its hello`, { cause: state.failure }))
+      }
+    })
+  })
+
 // Clears the socket path for this host, which holds the bridge lock, so no other host binds the path meanwhile. A relay
-// listening there, another browser's host, is asked to let go (messages.ts takeover), and this host goes on only once
-// that relay closed the connection, which it does after closing its server. Node removes a server's path when the
+// listening there, another browser's host, is asked to let go (takeOver), and this host goes on only once that relay
+// closed the connection, which it does after closing its server. Node removes a server's path when the
 // server closes, so the path must be the other relay's to remove before this host binds it, never after. A socket
 // nothing listens on, left by a host that crashed, is removed while it is still the file that refused the connection;
 // anything else at the path is left alone.
-const clearSocketPath = async (socketPath: string): Promise<void> => {
+const clearSocketPath = async (socketPath: string, componentVersion: string): Promise<void> => {
   const probed = lstatSync(socketPath, { throwIfNoEntry: false })
   if (probed === undefined) {
     return
@@ -80,10 +173,7 @@ const clearSocketPath = async (socketPath: string): Promise<void> => {
     holder.on('error', resolve)
   })
   if (failure === null) {
-    // The holder's hello is read and dropped, so the connection can end.
-    holder.resume()
-    holder.end(encodeLine({ type: 'takeover' } satisfies ClientMessage))
-    await new Promise((resolve) => holder.once('close', resolve))
+    await takeOver(holder, socketPath, { role: 'takeover', componentVersion })
     return
   }
 
@@ -100,27 +190,36 @@ const clearSocketPath = async (socketPath: string): Promise<void> => {
   rmSync(socketPath)
 }
 
-// The browser starts one host per extension connection, and every client process connects to its socket. The relay
-// renumbers the clients' requests so each reply from the extension finds its way back to the client that asked, tells
-// the extension when a request's caller has given up (the client cancelled it, or its connection closed), and
-// passes what the extension sends unasked, events and status, to the one listener: the newest client to send listen.
-// It tells the extension each time a listener attaches, so the extension sends its status and every waiting event. The
-// relay lives as long as the browser's pipe: when input ends, the socket closes and the process can exit.
+// The browser starts one host per extension connection, and every client process connects to its socket. Each leg
+// opens with both hellos (protocol handshake.ts): the extension's native leg, and each client's socket leg, which the
+// relay greets at once whatever its extension leg says, followed by that leg's state. Once a client agreed and the
+// extension leg is ready, the relay renumbers the clients' requests so each reply from the extension finds its way back
+// to the client that asked, tells the extension when a request's caller has given up (the client cancelled it, or its
+// connection closed), and passes what the extension sends unasked, events and status, to the one listener: the newest
+// client to send listen. It tells the extension each time a listener attaches, so the extension sends its status and
+// every waiting event. An incompatible extension leg carries no normal traffic, while the socket keeps listening to
+// hand its diagnostic to every client that connects. The relay lives as long as the browser's pipe: when input ends,
+// the socket closes and the process can exit.
 export const startNativeHostRelay = async ({
   input,
   output,
   socketPath,
   browserApp,
+  componentVersion,
 }: IRelayOptions): Promise<Server> => {
+  const local: IHandshakeEnd = { role: 'host', componentVersion }
+  const hello: HostHello = { type: 'hello', role: 'host', ...protocolOf(local), browserApp }
   const pending = new Map<number, IPendingRequest>()
-  const clients = new Set<Socket>()
+  const clients = new Set<IClientConnection>()
+  // Held in an object, since the pipe's end handler changes it while the socket is being taken.
+  const pipe = { isOpen: true }
+  let extensionLeg: ExtensionLegState = { state: 'awaiting-hello' }
   let listener: Socket | null = null
   let nextId = 1
-  let isPipeOpen = true
 
   // Chrome closes the pipe on a frame larger than HOST_MESSAGE_MAX_BYTES, which would cut off the listener and every
   // caller; such a frame is refused here instead, and false says nothing of it went out.
-  const toExtension = (frame: HostFrame): boolean => {
+  const toExtension = (frame: HostFrame | HostHello | BridgeIncompatible): boolean => {
     const encoded = encodeFrame(frame)
     if (encoded.length - FRAME_HEADER_BYTES > HOST_MESSAGE_MAX_BYTES) {
       return false
@@ -131,8 +230,21 @@ export const startNativeHostRelay = async ({
     return true
   }
 
-  const toClient = (client: Socket, message: RelayMessage): void => {
+  const toClient = (client: Socket, message: RelayMessage | RelayControl | HostHello): void => {
     client.write(encodeLine(message))
+  }
+
+  const extensionLegControl = (): RelayControl =>
+    extensionLeg.state === 'incompatible'
+      ? extensionLeg.diagnostic
+      : { type: 'extension-leg', state: extensionLeg.state }
+
+  const announceExtensionLeg = (): void => {
+    for (const { socket, leg } of clients) {
+      if (leg !== 'refused') {
+        toClient(socket, extensionLegControl())
+      }
+    }
   }
 
   // Tells the extension the caller of each pending request that matches has given up, and forgets the request, so a
@@ -141,15 +253,34 @@ export const startNativeHostRelay = async ({
     for (const [id, request] of pending) {
       if (isGivenUp(request)) {
         pending.delete(id)
-        if (isPipeOpen) {
+        if (pipe.isOpen) {
           toExtension({ type: 'cancel', id })
         }
       }
     }
   }
 
+  // The extension leg cannot be used: every client learns it, and the requests in flight and the listener are dropped
+  // without a word to the extension, since no normal traffic crosses an incompatible leg.
+  const extensionLegFailed = (diagnostic: BridgeIncompatible): void => {
+    extensionLeg = { state: 'incompatible', diagnostic }
+    pending.clear()
+    listener = null
+    announceExtensionLeg()
+  }
+
+  // The client gets the diagnostic and the end of its connection: its leg carries nothing more.
+  const refuse = (client: IClientConnection, diagnostic: BridgeIncompatible): void => {
+    client.leg = 'refused'
+    client.socket.end(encodeLine(diagnostic))
+  }
+
   const relayClientMessage = (client: Socket, raw: unknown): void => {
     const message = ClientMessageSchema.parse(raw)
+    if (extensionLeg.state !== 'ready') {
+      throw new Error(`A client sent ${message.type} while the extension leg is ${extensionLeg.state}`)
+    }
+
     switch (message.type) {
       case 'request': {
         const id = nextId
@@ -179,14 +310,88 @@ export const startNativeHostRelay = async ({
         if (client === listener && !toExtension(message)) {
           throw new Error(`An ack is larger than the ${HOST_MESSAGE_MAX_BYTES} bytes the extension takes from its host`)
         }
+    }
+  }
+
+  // A client's line in the state of its leg. A diagnostic from the client, which found this host's hello wrong, ends
+  // its connection in any state. A second hello is a protocol failure, and closes the connection like any other.
+  const receiveClientLine = (client: IClientConnection, raw: unknown): void => {
+    if (client.leg === 'refused') {
+      return
+    }
+
+    const diagnostic = BridgeIncompatibleSchema.safeParse(raw)
+    if (diagnostic.success) {
+      warn(`A client cannot use this host: ${incompatibilityMessage(diagnostic.data)}`)
+      client.leg = 'refused'
+      client.socket.end()
+      return
+    }
+
+    switch (client.leg) {
+      case 'awaiting-hello': {
+        const reading = readHello(raw, ClientHelloSchema, local, 'host-client')
+        if (reading.kind === 'incompatible') {
+          refuse(client, reading.diagnostic)
+        } else {
+          client.leg = reading.hello.role
+        }
 
         return
+      }
       case 'takeover':
+        // A takeover never waits for the extension leg: the host that takes the socket over has its own.
+        TakeoverSchema.parse(raw)
         server.close()
-        for (const connected of clients) {
-          connected.destroy()
+        for (const { socket } of clients) {
+          socket.destroy()
         }
+
+        return
+      case 'client':
+        if (isHello(raw)) {
+          throw new Error('A client said hello twice')
+        }
+
+        relayClientMessage(client.socket, raw)
     }
+  }
+
+  // The extension's frame in the state of its leg. A diagnostic from the extension, which found this host's hello
+  // wrong, makes the leg incompatible in any state; so does a second hello, with this host's own diagnostic.
+  const receiveExtensionFrame = (raw: unknown): void => {
+    if (extensionLeg.state === 'incompatible') {
+      return
+    }
+
+    const diagnostic = BridgeIncompatibleSchema.safeParse(raw)
+    if (diagnostic.success) {
+      warn(`The extension cannot use this host: ${incompatibilityMessage(diagnostic.data)}`)
+      extensionLegFailed(diagnostic.data)
+      return
+    }
+
+    if (extensionLeg.state === 'awaiting-hello') {
+      const reading = readHello(raw, ExtensionHelloSchema, local, 'extension-host')
+      if (reading.kind === 'incompatible') {
+        toExtension(reading.diagnostic)
+        extensionLegFailed(reading.diagnostic)
+        return
+      }
+
+      extensionLeg = { state: 'ready' }
+      announceExtensionLeg()
+      return
+    }
+
+    if (isHello(raw)) {
+      const repeated = incompatibility('unexpected-frame', 'extension-host', local, raw)
+      toExtension(repeated)
+      extensionLegFailed(repeated)
+      return
+    }
+
+    relayExtensionFrame(raw)
   }
 
   const relayExtensionFrame = (raw: unknown): void => {
@@ -209,10 +414,12 @@ export const startNativeHostRelay = async ({
     toClient(request.client, { ...frame, id: request.clientId })
   }
 
+  // Each client's listeners go in before its hello, then the state of the extension leg follows.
   const server = createServer((client) => {
-    clients.add(client)
+    const connection: IClientConnection = { socket: client, leg: 'awaiting-hello' }
+    clients.add(connection)
     client.setEncoding('utf8')
-    const readLines = createLineReader((raw) => relayClientMessage(client, raw), CLIENT_LINE_MAX_LENGTH)
+    const readLines = createLineReader((raw) => receiveClientLine(connection, raw), CLIENT_LINE_MAX_LENGTH)
     // A client that breaks the protocol loses its connection; the browser's host and the other clients carry on.
     client.on('data', (chunk: string) => {
       try {
@@ -225,7 +432,7 @@ export const startNativeHostRelay = async ({
     client.on('error', (error) => warn(`A client connection failed: ${error.message}`))
     // A client whose connection closed can take no reply, so its pending requests are given up.
     client.on('close', () => {
-      clients.delete(client)
+      clients.delete(connection)
       if (listener === client) {
         listener = null
       }
@@ -233,14 +440,32 @@ export const startNativeHostRelay = async ({
       cancelPending((request) => request.client === client)
     })
 
-    toClient(client, { type: 'hello', browserApp })
+    toClient(client, hello)
+    toClient(client, extensionLegControl())
   })
 
-  // The newest browser to start its host takes the socket over. Only this user may open the folder or the socket.
+  // The extension's listeners go in before the host's hello, which goes out before the socket is taken, since a
+  // takeover may wait on the relay holding it.
+  input.on('data', createFrameReader(receiveExtensionFrame))
+  input.on('end', () => {
+    pipe.isOpen = false
+    server.close()
+    for (const { socket } of clients) {
+      socket.destroy()
+    }
+  })
+  toExtension(hello)
+
+  // The newest browser to start its host takes the socket over. Only this user may open the folder or the socket. A
+  // pipe that ended meanwhile leaves the socket to whoever holds it.
   ensurePrivateDir(dirname(socketPath))
   const lock = await lockBridge(socketPath)
   try {
-    await clearSocketPath(socketPath)
+    await clearSocketPath(socketPath, componentVersion)
+    if (!pipe.isOpen) {
+      return server
+    }
+
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject)
       server.listen(socketPath, resolve)
@@ -249,15 +474,6 @@ export const startNativeHostRelay = async ({
   } finally {
     await lock.close()
   }
-
-  input.on('data', createFrameReader(relayExtensionFrame))
-  input.on('end', () => {
-    isPipeOpen = false
-    server.close()
-    for (const client of clients) {
-      client.destroy()
-    }
-  })
 
   return server
 }

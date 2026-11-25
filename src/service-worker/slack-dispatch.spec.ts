@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { after, before, describe, it, type Mock, type TestContext } from 'node:test'
+import { PROTOCOL_REVISION } from '../protocol/messages.js'
 import type { SlackPageCommand } from './slack-page.js'
 
 // The service worker's Slack dispatch (extension/background.ts), driven through its native port as the relay drives
@@ -217,7 +218,9 @@ const fakeChrome = (): object => {
         postMessage: (reply: { readonly id: number }) => replies.get(reply.id)?.(reply),
       }),
       onMessage: chromeEvent(),
+      getManifest: () => ({ name: 'Misha Browser', version: '1.2.3' }),
     },
+    action: { setBadgeText: () => Promise.resolve(), setTitle: () => Promise.resolve() },
     tabs: {
       query: () =>
         Promise.resolve(
@@ -316,6 +319,13 @@ const startWorker = async (context: TestContext, tabs: IFakeTab[]): Promise<void
   Object.defineProperty(globalThis, 'chrome', { value: fakeChrome(), configurable: true })
   workers += 1
   await import(`../extension/background.js?worker=${workers}`)
+  emit(workerPort.portMessages, {
+    type: 'hello',
+    role: 'host',
+    protocolRevision: PROTOCOL_REVISION,
+    componentVersion: '9.8.7',
+    browserApp: null,
+  })
 }
 
 // A worker's startup on one open Slack tab whose relay of this load runs, as after Chrome stopped an idle worker.

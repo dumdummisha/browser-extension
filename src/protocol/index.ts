@@ -1,3 +1,4 @@
+export * from './handshake.js'
 export * from './messages.js'
 export * from './pending-queue.js'
 export * from './slack.js'

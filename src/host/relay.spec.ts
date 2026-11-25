@@ -2,11 +2,12 @@ import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import { chmod, lstat, mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises'
-import { createConnection, type Server, type Socket } from 'node:net'
+import { createConnection, createServer, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { describe, it, type TestContext } from 'node:test'
+import { isDeepStrictEqual } from 'node:util'
 import {
   createFrameReader,
   createLineReader,
@@ -14,11 +15,28 @@ import {
   encodeLine,
   HOST_MESSAGE_MAX_BYTES,
 } from '../protocol/framing.js'
+import { PROTOCOL_REVISION } from '../protocol/messages.js'
 import { type SlackEvent, slackEventKey } from '../protocol/slack.js'
 import { startNativeHostRelay } from './relay.js'
 
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 const BROWSER_APP = 'Example Browser.app'
+// The host's package version, unlike the clients' and the extension's: equal revisions talk whatever versions say.
+const HOST_VERSION = '9.8.7'
+const HOST_HELLO = {
+  type: 'hello',
+  role: 'host',
+  protocolRevision: PROTOCOL_REVISION,
+  componentVersion: HOST_VERSION,
+  browserApp: BROWSER_APP,
+}
+const EXTENSION_HELLO = {
+  type: 'hello',
+  role: 'extension',
+  protocolRevision: PROTOCOL_REVISION,
+  componentVersion: '1.2.3',
+}
+const CLIENT_HELLO = { type: 'hello', role: 'client', protocolRevision: PROTOCOL_REVISION, componentVersion: '1.2.4' }
 // A caller's deadline that has not passed (2100-01-01).
 const DEADLINE = 4_102_444_800_000
 const STATUS = {
@@ -32,6 +50,8 @@ const STATUS = {
 interface IInbox {
   readonly put: (message: unknown) => void
   readonly next: () => Promise<unknown>
+  // How many messages arrived that nobody took yet.
+  readonly size: () => number
 }
 
 interface IRelay {
@@ -70,6 +90,7 @@ const createInbox = (): IInbox => {
     },
     next: () =>
       messages.length > 0 ? Promise.resolve(messages.shift()) : new Promise((resolve) => waiters.push(resolve)),
+    size: () => messages.length,
   }
 }
 
@@ -80,41 +101,86 @@ const tempDir = async (context: TestContext): Promise<string> => {
   return dir
 }
 
-// A relay still listening when the test ends sees its browser's pipe end, and closes.
-const startRelayAt = async (context: TestContext, socketPath: string): Promise<IRelay> => {
+const send = ({ socket }: IClient, message: unknown): void => {
+  socket.write(encodeLine(message))
+}
+
+const fromExtension = ({ input }: IRelay, frame: unknown): void => {
+  input.write(encodeFrame(frame))
+}
+
+// A relay whose extension has not said hello yet, with the host's hello it sent the extension taken. A relay still
+// listening when the test ends sees its browser's pipe end, and closes.
+const openRelayAt = async (context: TestContext, socketPath: string): Promise<IRelay> => {
   const input = new PassThrough()
   const output = new PassThrough()
   const extension = createInbox()
   output.on('data', createFrameReader(extension.put))
-  const server = await startNativeHostRelay({ input, output, socketPath, browserApp: BROWSER_APP })
+  const server = await startNativeHostRelay({
+    input,
+    output,
+    socketPath,
+    browserApp: BROWSER_APP,
+    componentVersion: HOST_VERSION,
+  })
   context.after(async () => {
     if (server.listening) {
       input.end()
       await once(server, 'close')
     }
   })
+  assert.deepEqual(await extension.next(), HOST_HELLO)
 
   return { server, socketPath, input, extension }
+}
+
+const openRelay = async (context: TestContext): Promise<IRelay> =>
+  openRelayAt(context, join(await tempDir(context), 'bridge', 'bridge.sock'))
+
+// A relay whose extension said hello, so its extension leg is ready.
+const startRelayAt = async (context: TestContext, socketPath: string): Promise<IRelay> => {
+  const relay = await openRelayAt(context, socketPath)
+  fromExtension(relay, EXTENSION_HELLO)
+
+  return relay
 }
 
 const startRelay = async (context: TestContext): Promise<IRelay> =>
   startRelayAt(context, join(await tempDir(context), 'bridge', 'bridge.sock'))
 
 const startRelayIn = (socketPath: string): Promise<Server> =>
-  startNativeHostRelay({ input: new PassThrough(), output: new PassThrough(), socketPath, browserApp: BROWSER_APP })
+  startNativeHostRelay({
+    input: new PassThrough(),
+    output: new PassThrough(),
+    socketPath,
+    browserApp: BROWSER_APP,
+    componentVersion: HOST_VERSION,
+  })
 
-const connectClient = async ({ socketPath }: IRelay): Promise<IClient> => {
+// A connection that has not said hello, with the relay's hello taken.
+const openClient = async ({ socketPath }: IRelay): Promise<IClient> => {
   const socket = createConnection(socketPath)
   const inbox = createInbox()
   socket.setEncoding('utf8')
   socket.on('data', createLineReader(inbox.put))
-  assert.deepEqual(await inbox.next(), { type: 'hello', browserApp: BROWSER_APP })
+  assert.deepEqual(await inbox.next(), HOST_HELLO)
 
   return { socket, inbox }
 }
 
-const send = ({ socket }: IClient, message: unknown): void => {
-  socket.write(encodeLine(message))
+// A client whose hello agreed, once the relay reports a ready extension leg: the leg may still have been awaiting the
+// extension's hello, already on its way, when the client connected.
+const connectClient = async (relay: IRelay): Promise<IClient> => {
+  const client = await openClient(relay)
+  send(client, CLIENT_HELLO)
+  const leg = await client.inbox.next()
+  if (isDeepStrictEqual(leg, { type: 'extension-leg', state: 'awaiting-hello' })) {
+    assert.deepEqual(await client.inbox.next(), { type: 'extension-leg', state: 'ready' })
+  } else {
+    assert.deepEqual(leg, { type: 'extension-leg', state: 'ready' })
+  }
+
+  return client
 }
 
 // Resolves once the relay closed the client's connection; a write cut off by it is no failure of the test.
@@ -122,10 +188,6 @@ const closeOf = ({ socket }: IClient): Promise<unknown> => {
   socket.on('error', () => undefined)
 
   return new Promise((resolve) => socket.once('close', resolve))
-}
-
-const fromExtension = ({ input }: IRelay, frame: unknown): void => {
-  input.write(encodeFrame(frame))
 }
 
 // A request that went through and its reply came back proves the relay handled everything the client sent before it,
@@ -510,4 +572,331 @@ describe('[host] Relay - callers that gave up', () => {
     // Assert
     await roundTrip(relay, second)
   })
+})
+
+// The host's diagnostic for a leg, as the relay sends it.
+const hostDiagnostic = (
+  reason: string,
+  leg: string,
+  peer: Readonly<Record<string, unknown>>,
+  recovery: string
+): Readonly<Record<string, unknown>> => ({
+  type: 'bridge-incompatible',
+  reason,
+  leg,
+  local: { role: 'host', protocolRevision: PROTOCOL_REVISION, componentVersion: HOST_VERSION },
+  peer,
+  recovery,
+})
+
+// Lets the output the relay already wrote reach the inbox, so an inbox that stays empty means nothing went out.
+const drained = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
+
+describe('[host] Relay - client handshake', () => {
+  it("should greet a client at once with its hello and the extension leg's state, before the extension said hello", async (context) => {
+    // Arrange
+    const relay = await openRelay(context)
+    const client = await openClient(relay)
+
+    // Act
+    const awaiting = await client.inbox.next()
+    send(client, CLIENT_HELLO)
+    fromExtension(relay, EXTENSION_HELLO)
+    const ready = await client.inbox.next()
+
+    // Assert
+    assert.deepEqual(
+      [awaiting, ready],
+      [
+        { type: 'extension-leg', state: 'awaiting-hello' },
+        { type: 'extension-leg', state: 'ready' },
+      ]
+    )
+    await roundTrip(relay, client)
+  })
+
+  for (const revision of [PROTOCOL_REVISION - 1, PROTOCOL_REVISION + 1]) {
+    it(`should refuse a client of revision ${revision} with its diagnostic and end its connection`, async (context) => {
+      // Arrange
+      const relay = await startRelay(context)
+      const client = await openClient(relay)
+      await client.inbox.next()
+      const closed = closeOf(client)
+
+      // Act
+      send(client, { type: 'hello', role: 'client', protocolRevision: revision, componentVersion: '1.2.4' })
+      const refusal = await client.inbox.next()
+      await closed
+
+      // Assert
+      assert.deepEqual(
+        refusal,
+        hostDiagnostic(
+          'revision-mismatch',
+          'host-client',
+          { role: 'client', protocolRevision: revision, componentVersion: '1.2.4' },
+          'restart-browser-and-app'
+        )
+      )
+      await roundTrip(relay, await connectClient(relay))
+    })
+  }
+
+  it('should refuse a hello with no revision or one that does not read, naming only what read', async (context) => {
+    // Arrange
+    const relay = await startRelay(context)
+    const [missing, malformed] = [await openClient(relay), await openClient(relay)]
+    await Promise.all([missing.inbox.next(), malformed.inbox.next()])
+
+    // Act
+    send(missing, { type: 'hello', role: 'client', componentVersion: '1.2.4' })
+    send(malformed, { type: 'hello', role: 'client', protocolRevision: PROTOCOL_REVISION, componentVersion: 7 })
+    const refusals = [await missing.inbox.next(), await malformed.inbox.next()]
+
+    // Assert
+    assert.deepEqual(refusals, [
+      hostDiagnostic(
+        'malformed-hello',
+        'host-client',
+        { role: 'client', componentVersion: '1.2.4' },
+        'versions-unchecked'
+      ),
+      hostDiagnostic(
+        'malformed-hello',
+        'host-client',
+        { role: 'client', protocolRevision: PROTOCOL_REVISION },
+        'versions-unchecked'
+      ),
+    ])
+  })
+
+  it('should refuse a client that sends a request before its hello, and pass nothing on', async (context) => {
+    // Arrange
+    const relay = await startRelay(context)
+    const client = await openClient(relay)
+    await client.inbox.next()
+
+    // Act
+    send(client, { type: 'request', id: 1, method: 'slackCall', params: {}, deadline: DEADLINE })
+    const refusal = await client.inbox.next()
+    await drained()
+
+    // Assert
+    assert.deepEqual(refusal, hostDiagnostic('unexpected-frame', 'host-client', {}, 'versions-unchecked'))
+    assert.equal(relay.extension.size(), 0)
+  })
+
+  it('should close a client that says hello twice, and keep serving the others', async (context) => {
+    // Arrange
+    const relay = await startRelay(context)
+    const [repeating, other] = [await connectClient(relay), await connectClient(relay)]
+    const closed = closeOf(repeating)
+
+    // Act
+    send(repeating, CLIENT_HELLO)
+    await closed
+
+    // Assert
+    await roundTrip(relay, other)
+  })
+
+  it('should close a client that sends a request while the extension leg awaits its hello', async (context) => {
+    // Arrange
+    const relay = await openRelay(context)
+    const client = await openClient(relay)
+    await client.inbox.next()
+    send(client, CLIENT_HELLO)
+    const closed = closeOf(client)
+
+    // Act
+    send(client, { type: 'request', id: 1, method: 'slackCall', params: {}, deadline: DEADLINE })
+    await closed
+    await drained()
+
+    // Assert
+    assert.equal(relay.extension.size(), 0)
+  })
+})
+
+describe('[host] Relay - extension handshake', () => {
+  for (const [revision, recovery] of [
+    [PROTOCOL_REVISION - 1, 'update-extension'],
+    [PROTOCOL_REVISION + 1, 'update-app'],
+  ] as const) {
+    it(`should answer an extension of revision ${revision} with its diagnostic, which says ${recovery}`, async (context) => {
+      // Arrange
+      const relay = await openRelay(context)
+
+      // Act
+      fromExtension(relay, { ...EXTENSION_HELLO, protocolRevision: revision })
+      const diagnostic = await relay.extension.next()
+
+      // Assert
+      assert.deepEqual(
+        diagnostic,
+        hostDiagnostic(
+          'revision-mismatch',
+          'extension-host',
+          { role: 'extension', protocolRevision: revision, componentVersion: '1.2.3' },
+          recovery
+        )
+      )
+    })
+  }
+
+  it('should answer an extension whose first frame is no hello with its diagnostic', async (context) => {
+    // Arrange
+    const relay = await openRelay(context)
+
+    // Act
+    fromExtension(relay, STATUS)
+    const diagnostic = await relay.extension.next()
+
+    // Assert
+    assert.deepEqual(diagnostic, hostDiagnostic('unexpected-frame', 'extension-host', {}, 'versions-unchecked'))
+  })
+
+  it('should make the leg incompatible on a second hello from the extension', async (context) => {
+    // Arrange
+    const relay = await startRelay(context)
+    const client = await connectClient(relay)
+
+    // Act
+    fromExtension(relay, EXTENSION_HELLO)
+    const [toExtension, toClient] = [await relay.extension.next(), await client.inbox.next()]
+
+    // Assert
+    const diagnostic = hostDiagnostic(
+      'unexpected-frame',
+      'extension-host',
+      { role: 'extension', protocolRevision: PROTOCOL_REVISION, componentVersion: '1.2.3' },
+      'versions-unchecked'
+    )
+    assert.deepEqual([toExtension, toClient], [diagnostic, diagnostic])
+  })
+
+  it("should hand a client that connects after the extension's mismatch the diagnostic at once, and pass none of its traffic on", async (context) => {
+    // Arrange
+    const relay = await openRelay(context)
+    fromExtension(relay, { ...EXTENSION_HELLO, protocolRevision: PROTOCOL_REVISION + 1 })
+    const diagnostic = await relay.extension.next()
+    const client = await openClient(relay)
+
+    // Act
+    const retained = await client.inbox.next()
+    send(client, CLIENT_HELLO)
+    const closed = closeOf(client)
+    send(client, { type: 'listen' })
+    await closed
+    await drained()
+
+    // Assert
+    assert.deepEqual(retained, diagnostic)
+    assert.equal(relay.extension.size(), 0)
+  })
+
+  it('should tell its clients when the extension finds the host incompatible, and drop their requests and listener', async (context) => {
+    // Arrange
+    const relay = await startRelay(context)
+    const client = await connectClient(relay)
+    send(client, { type: 'listen' })
+    await relay.extension.next()
+    send(client, { type: 'request', id: 1, method: 'slackCall', params: {}, deadline: DEADLINE })
+    await relay.extension.next()
+    const fromTheExtension = {
+      type: 'bridge-incompatible',
+      reason: 'malformed-hello',
+      leg: 'extension-host',
+      local: { role: 'extension', protocolRevision: PROTOCOL_REVISION, componentVersion: '1.2.3' },
+      peer: { role: 'host' },
+      recovery: 'versions-unchecked',
+    }
+
+    // Act
+    fromExtension(relay, fromTheExtension)
+    const told = await client.inbox.next()
+    fromExtension(relay, { type: 'reply', id: 1, result: { ok: true } })
+    fromExtension(relay, eventAt('1700000001.000100'))
+    const closed = closeOf(client)
+    send(client, { type: 'ack', id: eventAt('1700000001.000100').id })
+    await closed
+    await drained()
+
+    // Assert
+    assert.deepEqual(told, fromTheExtension)
+    assert.equal(client.inbox.size(), 0)
+    assert.equal(relay.extension.size(), 0)
+  })
+})
+
+describe('[host] Relay - takeover handshake', () => {
+  it("should let a host take the socket over while the holder's extension has not said hello", async (context) => {
+    // Arrange
+    const socketPath = join(await tempDir(context), 'bridge', 'bridge.sock')
+    const older = await openRelayAt(context, socketPath)
+
+    // Act
+    const newer = await startRelayAt(context, socketPath)
+
+    // Assert
+    assert.equal(older.server.listening, false)
+    await roundTrip(newer, await connectClient(newer))
+  })
+
+  it('should refuse a takeover peer of another revision with its diagnostic, and keep the socket', async (context) => {
+    // Arrange
+    const relay = await startRelay(context)
+    const peer = await openClient(relay)
+    await peer.inbox.next()
+    const closed = closeOf(peer)
+
+    // Act
+    send(peer, { type: 'hello', role: 'takeover', protocolRevision: PROTOCOL_REVISION + 1, componentVersion: '9.9.9' })
+    send(peer, { type: 'takeover' })
+    const refusal = await peer.inbox.next()
+    await closed
+
+    // Assert
+    assert.deepEqual(
+      refusal,
+      hostDiagnostic(
+        'revision-mismatch',
+        'host-client',
+        { role: 'takeover', protocolRevision: PROTOCOL_REVISION + 1, componentVersion: '9.9.9' },
+        'restart-browser-and-app'
+      )
+    )
+    assert.equal(relay.server.listening, true)
+    await roundTrip(relay, await connectClient(relay))
+  })
+
+  for (const [holderHello, reason] of [
+    [{ ...HOST_HELLO, protocolRevision: PROTOCOL_REVISION + 1 }, 'revision-mismatch'],
+    [{ type: 'hello', browserApp: BROWSER_APP }, 'malformed-hello'],
+  ] as const) {
+    it(`should not take the socket from a holder whose hello is a ${reason}, telling it why`, async (context) => {
+      // Arrange - a holder that greets each connection and keeps what it is sent
+      const socketPath = join(await tempDir(context), 'bridge', 'bridge.sock')
+      await mkdir(dirname(socketPath), { mode: 0o700 })
+      const received = createInbox()
+      const holder = createServer((socket) => {
+        socket.setEncoding('utf8')
+        socket.on('data', createLineReader(received.put))
+        socket.on('end', () => socket.end())
+        socket.write(encodeLine(holderHello))
+      })
+      await new Promise<void>((resolve) => holder.listen(socketPath, resolve))
+      context.after(() => new Promise((resolve) => holder.close(resolve)))
+
+      // Act + Assert
+      await assert.rejects(startRelayIn(socketPath), { message: new RegExp(`^Could not take ${socketPath} over`, 'u') })
+      const told = await received.next()
+      assert.ok(typeof told === 'object' && told !== null && 'reason' in told && 'local' in told)
+      assert.deepEqual(
+        [told.reason, told.local],
+        [reason, { role: 'takeover', protocolRevision: PROTOCOL_REVISION, componentVersion: HOST_VERSION }]
+      )
+      assert.equal(holder.listening, true)
+    })
+  }
 })

@@ -110,7 +110,7 @@ export class RelayConnection {
         protocolRevision: PROTOCOL_REVISION,
         componentVersion,
       }
-      this.write(hello)
+      this.socket.write(encodeLine(hello))
     })
   }
 
@@ -135,8 +135,21 @@ export class RelayConnection {
     return this.status.state
   }
 
-  public write(message: ClientMessage | ClientHello | BridgeIncompatible): void {
-    this.socket.write(encodeLine(message))
+  // Sends normal traffic, which only a ready connection carries: otherwise it throws what keeps the connection from
+  // being ready, the diagnostic of an incompatible one included, and sends nothing.
+  public send(message: ClientMessage): void {
+    const { status } = this
+    switch (status.state) {
+      case 'ready':
+        this.socket.write(encodeLine(message))
+        return
+      case 'incompatible':
+        throw new BridgeIncompatibleError(status.diagnostic)
+      case 'closed':
+        throw status.error
+      case 'awaiting-hello':
+        throw new BridgeError(`The browser bridge's handshake has not completed, so ${message.type} was not sent`)
+    }
   }
 
   public destroy(): void {
@@ -253,7 +266,7 @@ export class RelayConnection {
 
   // This end found the failure: the relay is told before the connection turns incompatible.
   private failOwnHandshake(diagnostic: BridgeIncompatible): void {
-    this.write(diagnostic)
+    this.socket.write(encodeLine(diagnostic))
     this.incompatible(diagnostic)
   }
 

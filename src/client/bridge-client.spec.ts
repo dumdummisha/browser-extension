@@ -41,6 +41,8 @@ interface IRejectedEvent {
 interface IQueue<TItem> {
   readonly put: (item: TItem) => void
   readonly next: () => Promise<TItem>
+  // How many items came that nobody took yet.
+  readonly size: () => number
 }
 
 // The relay with the extension's end of its pipe in the test's hands: frames written to input reach the relay, and
@@ -75,6 +77,7 @@ const createQueue = <TItem>(): IQueue<TItem> => {
 
       return box === undefined ? new Promise((resolve) => waiters.push(resolve)) : Promise.resolve(box.item)
     },
+    size: () => boxes.length,
   }
 }
 
@@ -678,5 +681,101 @@ describe('[client] Bridge client - handshake', () => {
     // Assert
     assert.deepEqual(ready, { connection: 'ready', incompatibility: null })
     assert.deepEqual(told, { type: 'listener' })
+  })
+})
+
+// Lets the lines a client already wrote reach the relay, so a queue that stays empty means nothing more went out.
+const drained = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
+
+describe('[client] Bridge client - send boundary', () => {
+  it('should send nothing of a call whose signal aborts right after it was made on a ready connection', async (context) => {
+    // Arrange - the connection is ready before the call
+    const { client, extension } = await startClient(context)
+    const warmUp = client.tab('closeTab', { tabId: 4 })
+    await extension.next()
+    fromExtension(extension, { type: 'reply', id: 1, result: { tabId: 4 } })
+    await warmUp
+    const controller = new AbortController()
+
+    // Act
+    const abandoned = client.call(ACCOUNT, 'chat.postMessage', { channel: 'C0EXAMPLE1', text: 'hi' }, controller.signal)
+    controller.abort()
+    await assert.rejects(abandoned, {
+      name: 'BridgeError',
+      message: 'The caller abandoned slackCall before it was sent',
+    })
+    const next = client.tab('closeTab', { tabId: 5 })
+    const request = await extension.next()
+    fromExtension(extension, { type: 'reply', id: 2, result: { tabId: 5 } })
+
+    // Assert
+    assert.ok(typeof request === 'object' && request !== null && 'method' in request && 'id' in request)
+    assert.deepEqual([request.method, request.id], ['closeTab', 2])
+    assert.deepEqual(await next, { tabId: 5 })
+  })
+
+  for (const [last, reason, isToldBack] of [
+    [
+      {
+        type: 'bridge-incompatible',
+        reason: 'malformed-hello',
+        leg: 'extension-host',
+        local: { role: 'host', protocolRevision: PROTOCOL_REVISION, componentVersion: HOST_VERSION },
+        peer: { role: 'extension' },
+        recovery: 'versions-unchecked',
+      },
+      'malformed-hello',
+      false,
+    ],
+    [hostHello(PROTOCOL_REVISION), 'unexpected-frame', true],
+  ] as const) {
+    it(`should fail with the typed diagnostic and send nothing when ready and a ${reason} arrive in one chunk`, async (context) => {
+      // Arrange
+      const socketPath = await tempSocketPath(context)
+      const relay = await startFakeRelay(context, socketPath, (socket) => {
+        socket.write(`${encodeLine(hostHello(PROTOCOL_REVISION))}${encodeLine(READY_LEG)}${encodeLine(last)}`)
+      })
+      const { client } = createClient(context, socketPath, REQUEST_TIMEOUT_MS)
+
+      // Act
+      const diagnostic = await diagnosticOf(client.tab('closeTab', { tabId: 4 }))
+      await relay.received.next()
+      const toldBack = isToldBack ? await relay.received.next() : null
+      await drained()
+
+      // Assert
+      assert.ok(typeof diagnostic === 'object' && diagnostic !== null && 'reason' in diagnostic)
+      assert.equal(diagnostic.reason, reason)
+      assert.deepEqual(toldBack, isToldBack ? diagnostic : null)
+      assert.equal(relay.received.size(), 0)
+      assert.equal(client.bridgeState().connection, 'incompatible')
+    })
+  }
+
+  it('should send nothing of a call whose deadline passed between the ready connection and the send', async (context) => {
+    // Arrange - the connection is ready, and the clock is the test's from here
+    const { client, extension } = await startClient(context)
+    const warmUp = client.tab('closeTab', { tabId: 4 })
+    await extension.next()
+    fromExtension(extension, { type: 'reply', id: 1, result: { tabId: 4 } })
+    await warmUp
+    context.mock.timers.enable({ apis: ['Date'], now: Date.now() })
+
+    // Act
+    const late = client.tab('closeTab', { tabId: 5 })
+    context.mock.timers.tick(REQUEST_TIMEOUT_MS)
+    await assert.rejects(late, {
+      name: 'BridgeError',
+      message: "The caller's deadline passed before closeTab was sent",
+    })
+    context.mock.timers.reset()
+    const next = client.tab('closeTab', { tabId: 6 })
+    const request = await extension.next()
+    fromExtension(extension, { type: 'reply', id: 2, result: { tabId: 6 } })
+
+    // Assert
+    assert.ok(typeof request === 'object' && request !== null && 'params' in request)
+    assert.deepEqual(request.params, { tabId: 6 })
+    assert.deepEqual(await next, { tabId: 6 })
   })
 })

@@ -86,7 +86,7 @@ export class BridgeClient {
     const connection = this.current()
     this.handler = handler
     if (connection.state === 'ready') {
-      connection.write({ type: 'listen' })
+      connection.send({ type: 'listen' })
     } else {
       this.awaitListenerReadiness(connection)
     }
@@ -224,28 +224,46 @@ export class BridgeClient {
 
     const connection = await this.ready(deadline, signal, method)
 
-    const id = this.nextId
-    this.nextId += 1
-
+    // Nothing asynchronous runs from here until the request is sent and registered, so the signal, the deadline and
+    // the connection's state are checked where they hold for the send itself.
     return new Promise((resolve, reject) => {
+      if (signal?.aborted === true) {
+        reject(new BridgeError(`The caller abandoned ${method} before it was sent`))
+        return
+      }
+
+      const remainingMs = deadline - Date.now()
+      if (remainingMs <= 0) {
+        reject(new BridgeError(`The caller's deadline passed before ${method} was sent`))
+        return
+      }
+
+      const id = this.nextId
+      try {
+        connection.send({ type: 'request', id, method, params, deadline })
+      } catch (error) {
+        reject(error instanceof Error ? error : new BridgeError(String(error)))
+        return
+      }
+
+      this.nextId += 1
       const abandon = (): void => {
         connection.calls.delete(id)
         clearTimeout(timer)
-        connection.write({ type: 'cancel', id })
+        connection.send({ type: 'cancel', id })
         reject(new BridgeError(`The caller abandoned ${method}`))
       }
       const timer = setTimeout(() => {
         connection.calls.delete(id)
         signal?.removeEventListener('abort', abandon)
         reject(new BridgeError(`The extension did not answer ${method} within ${this.options.requestTimeoutMs}ms`))
-      }, deadline - Date.now())
+      }, remainingMs)
       const release = (): void => {
         clearTimeout(timer)
         signal?.removeEventListener('abort', abandon)
       }
       connection.calls.set(id, { method, resolve, reject, release })
       signal?.addEventListener('abort', abandon, { once: true })
-      connection.write({ type: 'request', id, method, params, deadline })
     })
   }
 
@@ -285,7 +303,7 @@ export class BridgeClient {
   private connectionReady(connection: RelayConnection): void {
     this.incompatibility = null
     if (this.handler !== null) {
-      connection.write({ type: 'listen' })
+      connection.send({ type: 'listen' })
     }
 
     this.publishBridgeState()
@@ -356,7 +374,7 @@ export class BridgeClient {
     }
 
     if (connection.state === 'ready') {
-      connection.write({ type: 'ack', id: event.id })
+      connection.send({ type: 'ack', id: event.id })
     }
   }
 

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { chmod, lstat, mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { chmod, lstat, mkdir, mkdtemp, open, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { createConnection, createServer, type Server, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -923,15 +924,15 @@ const startHolder = async (
   const accepted = createInbox()
   const received = createInbox()
   const ends = createInbox()
-  const open = new Set<Socket>()
+  const connected = new Set<Socket>()
   const server = createServer({ allowHalfOpen: true }, (socket) => {
-    open.add(socket)
+    connected.add(socket)
     accepted.put('accepted')
     socket.setEncoding('utf8')
     socket.on('data', createLineReader(received.put))
     socket.on('error', () => undefined)
     socket.on('end', () => ends.put('ended'))
-    socket.on('close', () => open.delete(socket))
+    socket.on('close', () => connected.delete(socket))
     if (greeting !== null) {
       socket.write(encodeLine(greeting))
     }
@@ -939,7 +940,7 @@ const startHolder = async (
   await new Promise<void>((resolve) => server.listen(socketPath, resolve))
   context.after(async () => {
     const closed = new Promise((resolve) => server.close(resolve))
-    for (const socket of open) {
+    for (const socket of connected) {
       socket.destroy()
     }
 
@@ -971,14 +972,14 @@ describe('[host] Relay - takeover bounds', () => {
     // Act
     const first = takeOverWith(socketPath, new PassThrough(), SHORT_TAKEOVER_DEADLINE_MS)
     await assert.rejects(first, {
-      message: `Could not take ${socketPath} over: the relay holding it did not let go within ${SHORT_TAKEOVER_DEADLINE_MS} ms`,
+      message: `Could not take ${socketPath} over: the takeover did not finish within ${SHORT_TAKEOVER_DEADLINE_MS} ms`,
     })
     await holder.ends.next()
     const second = takeOverWith(socketPath, new PassThrough(), SHORT_TAKEOVER_DEADLINE_MS)
 
     // Assert - the second host got the lock, so the first released it
     await assert.rejects(second, {
-      message: new RegExp(`did not let go within ${SHORT_TAKEOVER_DEADLINE_MS} ms$`, 'u'),
+      message: new RegExp(`the takeover did not finish within ${SHORT_TAKEOVER_DEADLINE_MS} ms$`, 'u'),
     })
     assert.equal(holder.server.listening, true)
     assert.equal((await lstat(socketPath)).isSocket(), true)
@@ -1021,8 +1022,91 @@ describe('[host] Relay - takeover bounds', () => {
 
     // Assert - a later host gets the lock, so the one whose pipe ended released it
     await assert.rejects(takeOverWith(socketPath, new PassThrough(), SHORT_TAKEOVER_DEADLINE_MS), {
-      message: new RegExp(`did not let go within ${SHORT_TAKEOVER_DEADLINE_MS} ms$`, 'u'),
+      message: new RegExp(`the takeover did not finish within ${SHORT_TAKEOVER_DEADLINE_MS} ms$`, 'u'),
     })
     assert.equal(holder.server.listening, true)
+  })
+})
+
+// The bridge lock as relay.ts takes it: macOS's O_EXLOCK (0x20 in sys/fcntl.h) opens the file with an exclusive flock,
+// waiting while another open file holds one. Each flag is its own bit, so their sum is the mask.
+const O_EXLOCK = 0x20
+const LOCK_OPEN_FLAGS = constants.O_RDWR + constants.O_CREAT + O_EXLOCK
+
+// Takes the bridge lock twice in a row and lets it go each time. Whichever order the test and a host's late lock open
+// take it in, the second take returns only once that late open got the lock and closed it again.
+const lockTakenTwice = async (socketPath: string): Promise<void> => {
+  for (let take = 0; take < 2; take += 1) {
+    const lock = await open(`${socketPath}.lock`, LOCK_OPEN_FLAGS, 0o600)
+    await lock.close()
+  }
+}
+
+describe('[host] Relay - takeover acquisition', () => {
+  it('should give up at its deadline while another host holds the bridge lock, and close the lock it gets later without binding', async (context) => {
+    // Arrange - the test holds the bridge lock as another host would
+    const socketPath = join(await tempDir(context), 'bridge', 'bridge.sock')
+    await mkdir(dirname(socketPath), { mode: 0o700 })
+    const held = await open(`${socketPath}.lock`, LOCK_OPEN_FLAGS, 0o600)
+
+    // Act
+    await assert.rejects(takeOverWith(socketPath, new PassThrough(), SHORT_TAKEOVER_DEADLINE_MS), {
+      message: `Could not take ${socketPath} over: the takeover did not finish within ${SHORT_TAKEOVER_DEADLINE_MS} ms`,
+    })
+    await held.close()
+    await lockTakenTwice(socketPath)
+
+    // Assert - the late lock was closed, and nothing was bound at the path
+    assert.equal(await lstat(socketPath).catch(() => null), null)
+  })
+
+  it("should give up when the browser's pipe ends while another host holds the bridge lock, with no deadline set", async (context) => {
+    // Arrange
+    const socketPath = join(await tempDir(context), 'bridge', 'bridge.sock')
+    await mkdir(dirname(socketPath), { mode: 0o700 })
+    const held = await open(`${socketPath}.lock`, LOCK_OPEN_FLAGS, 0o600)
+    const input = new PassThrough()
+    const taking = takeOverWith(socketPath, input, null)
+
+    // Act
+    input.end()
+    await assert.rejects(taking, { message: `Could not take ${socketPath} over: the browser's native pipe ended` })
+    await held.close()
+    await lockTakenTwice(socketPath)
+
+    // Assert
+    assert.equal(await lstat(socketPath).catch(() => null), null)
+  })
+
+  it("should give up when the browser's pipe ends before its connect to the holder completed, leaving the holder's socket", async (context) => {
+    // Arrange - the holder ends the new host's pipe as it accepts, before the new host's side sees its connect
+    const socketPath = join(await tempDir(context), 'bridge', 'bridge.sock')
+    await mkdir(dirname(socketPath), { mode: 0o700 })
+    const input = new PassThrough()
+    const accepted: Socket[] = []
+    const holder = createServer({ allowHalfOpen: true }, (socket) => {
+      accepted.push(socket)
+      socket.on('error', () => undefined)
+      input.end()
+    })
+    await new Promise<void>((resolve) => holder.listen(socketPath, resolve))
+    context.after(async () => {
+      const closed = new Promise((resolve) => holder.close(resolve))
+      for (const socket of accepted) {
+        socket.destroy()
+      }
+
+      await closed
+    })
+
+    // Act
+    await assert.rejects(takeOverWith(socketPath, input, null), {
+      message: `Could not take ${socketPath} over: the browser's native pipe ended`,
+    })
+    await lockTakenTwice(socketPath)
+
+    // Assert
+    assert.equal(holder.listening, true)
+    assert.equal((await lstat(socketPath)).isSocket(), true)
   })
 })

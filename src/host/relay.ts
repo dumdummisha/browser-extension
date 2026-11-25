@@ -89,15 +89,40 @@ const O_EXLOCK = 0x20
 // Each flag is its own bit, so their sum is the mask open(2) takes.
 const LOCK_OPEN_FLAGS = constants.O_RDWR + constants.O_CREAT + constants.O_NOFOLLOW + O_EXLOCK
 
+// How a takeover ends when stop fires: its deadline passed or the browser's pipe ended, as stop's reason says.
+const takeoverStopped = (socketPath: string, stop: AbortSignal): Error =>
+  new Error(`Could not take ${socketPath} over: ${errorMessage(stop.reason)}`)
+
 // Locks the bridge for this host, waiting while another host holds it, until the returned file closes. Hosts the
 // browsers start together clear and bind the socket path one at a time under it, so none acts on what it found at the
-// path while another changes it.
-const lockBridge = (socketPath: string): Promise<FileHandle> => {
+// path while another changes it. The wait ends with stop. The open itself cannot be interrupted, so a lock it takes
+// after stop fired is closed at once and goes no further.
+const lockBridge = (socketPath: string, stop: AbortSignal): Promise<FileHandle> => {
   if (process.platform !== 'darwin') {
     throw new Error(`The bridge's lock takes macOS's O_EXLOCK, which ${process.platform} does not have`)
   }
 
-  return open(`${socketPath}.lock`, LOCK_OPEN_FLAGS, 0o600)
+  return new Promise((resolve, reject) => {
+    const onStop = (): void => reject(takeoverStopped(socketPath, stop))
+    stop.addEventListener('abort', onStop, { once: true })
+    open(`${socketPath}.lock`, LOCK_OPEN_FLAGS, 0o600).then(
+      (lock) => {
+        stop.removeEventListener('abort', onStop)
+        if (stop.aborted) {
+          void lock.close()
+        } else {
+          resolve(lock)
+        }
+      },
+      (error: unknown) => {
+        stop.removeEventListener('abort', onStop)
+        reject(error instanceof Error ? error : new Error(String(error)))
+      }
+    )
+    if (stop.aborted) {
+      onStop()
+    }
+  })
 }
 
 // The protocol fields of an end's hello.
@@ -118,11 +143,11 @@ const takeOver = (holder: Socket, socketPath: string, local: IHandshakeEnd, stop
     const state: {
       isGreeted: boolean
       refusal: BridgeIncompatible | null
-      stopped: unknown
+      isStopped: boolean
       failure?: Error
-    } = { isGreeted: false, refusal: null, stopped: null }
+    } = { isGreeted: false, refusal: null, isStopped: false }
     const onStop = (): void => {
-      state.stopped = stop.reason
+      state.isStopped = true
       holder.destroy()
     }
     const readLines = createLineReader((raw) => {
@@ -163,8 +188,8 @@ const takeOver = (holder: Socket, socketPath: string, local: IHandshakeEnd, stop
       stop.removeEventListener('abort', onStop)
       if (state.refusal !== null) {
         reject(new Error(`Could not take ${socketPath} over: ${incompatibilityMessage(state.refusal)}`))
-      } else if (state.stopped !== null) {
-        reject(new Error(`Could not take ${socketPath} over: ${errorMessage(state.stopped)}`))
+      } else if (state.isStopped) {
+        reject(takeoverStopped(socketPath, stop))
       } else if (state.isGreeted) {
         resolve()
       } else {
@@ -190,10 +215,23 @@ const clearSocketPath = async (socketPath: string, componentVersion: string, sto
     return
   }
 
+  // The connect ends with stop too: the connection is destroyed, so one that would complete later goes no further.
   const holder = createConnection(socketPath)
-  const failure = await new Promise<NodeJS.ErrnoException | null>((resolve) => {
-    holder.once('connect', () => resolve(null))
-    holder.on('error', resolve)
+  const failure = await new Promise<NodeJS.ErrnoException | null>((resolve, reject) => {
+    const onStop = (): void => {
+      holder.destroy()
+      reject(takeoverStopped(socketPath, stop))
+    }
+    const settle = (outcome: NodeJS.ErrnoException | null): void => {
+      stop.removeEventListener('abort', onStop)
+      resolve(outcome)
+    }
+    holder.once('connect', () => settle(null))
+    holder.on('error', settle)
+    stop.addEventListener('abort', onStop, { once: true })
+    if (stop.aborted) {
+      onStop()
+    }
   })
   if (failure === null) {
     await takeOver(holder, socketPath, { role: 'takeover', componentVersion }, stop)
@@ -483,30 +521,34 @@ export const startNativeHostRelay = async ({
   })
   toExtension(hello)
 
-  // The newest browser to start its host takes the socket over. Only this user may open the folder or the socket. A
-  // pipe that ended meanwhile leaves the socket to whoever holds it.
+  // The newest browser to start its host takes the socket over. Only this user may open the folder or the socket. One
+  // deadline and the pipe's end stop the whole takeover: the wait for the bridge lock, the connect to the holder and the
+  // exchange with it. A pipe that ended meanwhile leaves the socket to whoever holds it.
   ensurePrivateDir(dirname(socketPath))
-  const lock = await lockBridge(socketPath)
   const deadline =
     takeoverDeadlineMs === null
       ? undefined
       : setTimeout(() => {
-          takeoverStop.abort(new Error(`the relay holding it did not let go within ${takeoverDeadlineMs} ms`))
+          takeoverStop.abort(new Error(`the takeover did not finish within ${takeoverDeadlineMs} ms`))
         }, takeoverDeadlineMs)
   try {
-    await clearSocketPath(socketPath, componentVersion, takeoverStop.signal)
-    if (!pipe.isOpen) {
-      return server
-    }
+    const lock = await lockBridge(socketPath, takeoverStop.signal)
+    try {
+      await clearSocketPath(socketPath, componentVersion, takeoverStop.signal)
+      if (!pipe.isOpen) {
+        return server
+      }
 
-    await new Promise<void>((resolve, reject) => {
-      server.once('error', reject)
-      server.listen(socketPath, resolve)
-    })
-    chmodSync(socketPath, 0o600)
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject)
+        server.listen(socketPath, resolve)
+      })
+      chmodSync(socketPath, 0o600)
+    } finally {
+      await lock.close()
+    }
   } finally {
     clearTimeout(deadline)
-    await lock.close()
   }
 
   return server

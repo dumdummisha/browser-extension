@@ -7,7 +7,7 @@
 - **Setting up the Misha app?** Follow [Get started](https://docs.dumdummisha.ai/start/get-started) in the docs. Misha's Set up page checks the extension and installs the native host, and you don't need the build steps below.
 - **Using the tools in your own agent?** Build this repository and register [the MCP server](#the-mcp-server). This route needs neither the private Misha app nor an invite.
 
-Status: macOS only, in Chrome or Brave. You load the extension unpacked from a build of this repository; it has no Chrome Web Store listing yet. Apache-2.0.
+Status: macOS only, in Chrome or Brave. You load the extension unpacked from a build of this repository; it has no Chrome Web Store listing yet, and [`docs/store/`](docs/store/README.md) holds what the listing will need. Apache-2.0.
 
 ## How it connects
 

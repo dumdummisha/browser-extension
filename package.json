@@ -35,6 +35,7 @@
   },
   "scripts": {
     "build": "tsc && node scripts/build-extension.js",
+    "store-archive": "tsc && node scripts/build-extension.js --store",
     "install-host": "node dist/host/install.js",
     "disclosures": "tsc && node dist/disclosures/generate.js",
     "render-icons": "tsc && node scripts/render-icons.js",
@@ -64,6 +65,8 @@
   "files": [
     "dist",
     "!dist/**/*.spec.*",
-    "!dist/disclosures"
+    "!dist/disclosures",
+    "!dist/store",
+    "!dist/store-archive"
   ]
 }

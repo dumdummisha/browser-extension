@@ -136,6 +136,8 @@ The extension's icons in `src/extension/icons/` are rendered from `misha.svg` be
 pnpm run render-icons
 ```
 
+`pnpm run store-archive` packs the built extension for the Chrome Web Store, without uploading anything; [`docs/store/`](docs/store/README.md) describes the archive and the listing.
+
 ## Related repositories
 
 - [dumdummisha/docs](https://github.com/dumdummisha/docs): the documentation site at [docs.dumdummisha.ai](https://docs.dumdummisha.ai), including the Misha app's setup, privacy policy and architecture.

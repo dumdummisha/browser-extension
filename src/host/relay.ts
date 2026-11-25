@@ -45,6 +45,12 @@ export interface IRelayOptions {
   readonly browserApp: string | null
   // The package version the host names in its hello (component-version.ts).
   readonly componentVersion: string
+  // How long a host taking the socket over waits for the holder's hello and for the holder to let go, in milliseconds;
+  // when it passes, this host gives up, releases the bridge lock and leaves the holder's socket in place. null sets no
+  // deadline, so only a refusal, an answer or the end of the browser's pipe ends the takeover. Its production value
+  // has to come from a measurement of host startup and takeover on the supported Macs, or from the owner: none exists
+  // yet, which is a release-readiness prerequisite (native-host.ts).
+  readonly takeoverDeadlineMs: number | null
 }
 
 // The host's extension leg (protocol handshake.ts). It never returns to awaiting-hello, and an incompatible leg stays so
@@ -103,19 +109,28 @@ const protocolOf = ({ componentVersion }: IHandshakeEnd): Pick<HostHello, 'proto
 // Asks the relay holding the socket to let go, as a host taking it over (messages.ts takeover). The holder's hello must
 // agree before takeover goes out; a holder of another revision, or one whose hello does not read, is refused with the
 // diagnostic and keeps the socket, since the browser-restart recovery is what ends a host this one cannot talk to. A
-// holder that refuses this host's hello sends its diagnostic before it ends the connection. The holder's extension-leg
-// state, which follows its hello, says nothing about the takeover and is dropped.
-const takeOver = (holder: Socket, socketPath: string, local: IHandshakeEnd): Promise<void> =>
+// holder that refuses this host's hello sends its diagnostic before it ends the connection. Either refusal closes the
+// connection at once, whether or not the holder ends its side. The holder's extension-leg state, which follows its
+// hello, says nothing about the takeover and is dropped. stop ends the exchange from outside (its deadline passed, or
+// the browser's pipe ended): the connection is destroyed and the takeover fails with stop's reason.
+const takeOver = (holder: Socket, socketPath: string, local: IHandshakeEnd, stop: AbortSignal): Promise<void> =>
   new Promise((resolve, reject) => {
-    const state: { isGreeted: boolean; refusal: BridgeIncompatible | null; failure?: Error } = {
-      isGreeted: false,
-      refusal: null,
+    const state: {
+      isGreeted: boolean
+      refusal: BridgeIncompatible | null
+      stopped: unknown
+      failure?: Error
+    } = { isGreeted: false, refusal: null, stopped: null }
+    const onStop = (): void => {
+      state.stopped = stop.reason
+      holder.destroy()
     }
     const readLines = createLineReader((raw) => {
       if (state.isGreeted) {
         const diagnostic = BridgeIncompatibleSchema.safeParse(raw)
         if (diagnostic.success && diagnostic.data.leg === 'host-client') {
           state.refusal = diagnostic.data
+          holder.destroy()
         }
 
         return
@@ -125,7 +140,7 @@ const takeOver = (holder: Socket, socketPath: string, local: IHandshakeEnd): Pro
       const reading = readHello(raw, HostHelloSchema, local, 'host-client')
       if (reading.kind === 'incompatible') {
         state.refusal = reading.diagnostic
-        holder.end(encodeLine(reading.diagnostic))
+        holder.end(encodeLine(reading.diagnostic), () => holder.destroy())
         return
       }
 
@@ -145,14 +160,22 @@ const takeOver = (holder: Socket, socketPath: string, local: IHandshakeEnd): Pro
       state.failure = error
     })
     holder.once('close', () => {
+      stop.removeEventListener('abort', onStop)
       if (state.refusal !== null) {
         reject(new Error(`Could not take ${socketPath} over: ${incompatibilityMessage(state.refusal)}`))
+      } else if (state.stopped !== null) {
+        reject(new Error(`Could not take ${socketPath} over: ${errorMessage(state.stopped)}`))
       } else if (state.isGreeted) {
         resolve()
       } else {
         reject(new Error(`The relay holding ${socketPath} closed before its hello`, { cause: state.failure }))
       }
     })
+    if (stop.aborted) {
+      onStop()
+    } else {
+      stop.addEventListener('abort', onStop, { once: true })
+    }
   })
 
 // Clears the socket path for this host, which holds the bridge lock, so no other host binds the path meanwhile. A relay
@@ -161,7 +184,7 @@ const takeOver = (holder: Socket, socketPath: string, local: IHandshakeEnd): Pro
 // server closes, so the path must be the other relay's to remove before this host binds it, never after. A socket
 // nothing listens on, left by a host that crashed, is removed while it is still the file that refused the connection;
 // anything else at the path is left alone.
-const clearSocketPath = async (socketPath: string, componentVersion: string): Promise<void> => {
+const clearSocketPath = async (socketPath: string, componentVersion: string, stop: AbortSignal): Promise<void> => {
   const probed = lstatSync(socketPath, { throwIfNoEntry: false })
   if (probed === undefined) {
     return
@@ -173,7 +196,7 @@ const clearSocketPath = async (socketPath: string, componentVersion: string): Pr
     holder.on('error', resolve)
   })
   if (failure === null) {
-    await takeOver(holder, socketPath, { role: 'takeover', componentVersion })
+    await takeOver(holder, socketPath, { role: 'takeover', componentVersion }, stop)
     return
   }
 
@@ -206,6 +229,7 @@ export const startNativeHostRelay = async ({
   socketPath,
   browserApp,
   componentVersion,
+  takeoverDeadlineMs,
 }: IRelayOptions): Promise<Server> => {
   const local: IHandshakeEnd = { role: 'host', componentVersion }
   const hello: HostHello = { type: 'hello', role: 'host', ...protocolOf(local), browserApp }
@@ -213,6 +237,8 @@ export const startNativeHostRelay = async ({
   const clients = new Set<IClientConnection>()
   // Held in an object, since the pipe's end handler changes it while the socket is being taken.
   const pipe = { isOpen: true }
+  // Ends a takeover still under way when the browser's pipe ends or the takeover's deadline passes.
+  const takeoverStop = new AbortController()
   let extensionLeg: ExtensionLegState = { state: 'awaiting-hello' }
   let listener: Socket | null = null
   let nextId = 1
@@ -449,6 +475,7 @@ export const startNativeHostRelay = async ({
   input.on('data', createFrameReader(receiveExtensionFrame))
   input.on('end', () => {
     pipe.isOpen = false
+    takeoverStop.abort(new Error("the browser's native pipe ended"))
     server.close()
     for (const { socket } of clients) {
       socket.destroy()
@@ -460,8 +487,14 @@ export const startNativeHostRelay = async ({
   // pipe that ended meanwhile leaves the socket to whoever holds it.
   ensurePrivateDir(dirname(socketPath))
   const lock = await lockBridge(socketPath)
+  const deadline =
+    takeoverDeadlineMs === null
+      ? undefined
+      : setTimeout(() => {
+          takeoverStop.abort(new Error(`the relay holding it did not let go within ${takeoverDeadlineMs} ms`))
+        }, takeoverDeadlineMs)
   try {
-    await clearSocketPath(socketPath, componentVersion)
+    await clearSocketPath(socketPath, componentVersion, takeoverStop.signal)
     if (!pipe.isOpen) {
       return server
     }
@@ -472,6 +505,7 @@ export const startNativeHostRelay = async ({
     })
     chmodSync(socketPath, 0o600)
   } finally {
+    clearTimeout(deadline)
     await lock.close()
   }
 

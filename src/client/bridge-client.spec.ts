@@ -17,6 +17,9 @@ import { BridgeClient, BridgeIncompatibleError, type IBridgeState } from './brid
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 // The request timeout of a client in these tests, well inside the test runner's timeout.
 const REQUEST_TIMEOUT_MS = 5000
+// The takeover deadline of a relay in these tests, well inside the test runner's timeout: no relay here takes a socket
+// over from another.
+const TAKEOVER_DEADLINE_MS = 5000
 // The host's and the extension's package versions, unlike the client's: equal revisions talk whatever versions say.
 const HOST_VERSION = '9.8.7'
 const EXTENSION_HELLO = {
@@ -101,6 +104,7 @@ const openRelay = async (
     socketPath,
     browserApp,
     componentVersion: HOST_VERSION,
+    takeoverDeadlineMs: TAKEOVER_DEADLINE_MS,
   })
   context.after(async () => {
     if (server.listening) {

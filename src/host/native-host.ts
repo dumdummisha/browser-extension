@@ -17,4 +17,8 @@ await startNativeHostRelay({
   socketPath: SOCKET_PATH,
   browserApp: detectBrowserApp(),
   componentVersion: COMPONENT_VERSION,
+  // No deadline yet: the bound has to come from a measurement of host startup and takeover on the supported Macs, or
+  // from the owner, and neither exists. This is a release-readiness prerequisite. Until it is set, a takeover still
+  // ends on the holder's answer or refusal and when the browser's pipe ends.
+  takeoverDeadlineMs: null,
 })

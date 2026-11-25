@@ -21,6 +21,9 @@ import { startNativeHostRelay } from './relay.js'
 
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 const BROWSER_APP = 'Example Browser.app'
+// The takeover deadline of a relay in these tests, well inside the test runner's timeout: a takeover between two
+// relays here settles within milliseconds.
+const TAKEOVER_DEADLINE_MS = 5000
 // The host's package version, unlike the clients' and the extension's: equal revisions talk whatever versions say.
 const HOST_VERSION = '9.8.7'
 const HOST_HELLO = {
@@ -122,6 +125,7 @@ const openRelayAt = async (context: TestContext, socketPath: string): Promise<IR
     socketPath,
     browserApp: BROWSER_APP,
     componentVersion: HOST_VERSION,
+    takeoverDeadlineMs: TAKEOVER_DEADLINE_MS,
   })
   context.after(async () => {
     if (server.listening) {
@@ -155,6 +159,7 @@ const startRelayIn = (socketPath: string): Promise<Server> =>
     socketPath,
     browserApp: BROWSER_APP,
     componentVersion: HOST_VERSION,
+    takeoverDeadlineMs: TAKEOVER_DEADLINE_MS,
   })
 
 // A connection that has not said hello, with the relay's hello taken.
@@ -899,4 +904,125 @@ describe('[host] Relay - takeover handshake', () => {
       assert.equal(holder.listening, true)
     })
   }
+})
+
+// A holder of the socket path that the test controls: it greets each connection with greeting, or stays silent when
+// greeting is null, keeps every line it is sent, and keeps its side of each connection open whatever the peer does.
+// ends: one entry each time a peer ended its side of a connection.
+const startHolder = async (
+  context: TestContext,
+  socketPath: string,
+  greeting: unknown
+): Promise<{
+  readonly server: Server
+  readonly accepted: IInbox
+  readonly received: IInbox
+  readonly ends: IInbox
+}> => {
+  await mkdir(dirname(socketPath), { recursive: true, mode: 0o700 })
+  const accepted = createInbox()
+  const received = createInbox()
+  const ends = createInbox()
+  const open = new Set<Socket>()
+  const server = createServer({ allowHalfOpen: true }, (socket) => {
+    open.add(socket)
+    accepted.put('accepted')
+    socket.setEncoding('utf8')
+    socket.on('data', createLineReader(received.put))
+    socket.on('error', () => undefined)
+    socket.on('end', () => ends.put('ended'))
+    socket.on('close', () => open.delete(socket))
+    if (greeting !== null) {
+      socket.write(encodeLine(greeting))
+    }
+  })
+  await new Promise<void>((resolve) => server.listen(socketPath, resolve))
+  context.after(async () => {
+    const closed = new Promise((resolve) => server.close(resolve))
+    for (const socket of open) {
+      socket.destroy()
+    }
+
+    await closed
+  })
+
+  return { server, accepted, received, ends }
+}
+
+const takeOverWith = (socketPath: string, input: PassThrough, takeoverDeadlineMs: number | null): Promise<Server> =>
+  startNativeHostRelay({
+    input,
+    output: new PassThrough(),
+    socketPath,
+    browserApp: BROWSER_APP,
+    componentVersion: HOST_VERSION,
+    takeoverDeadlineMs,
+  })
+
+// A deadline far shorter than the tests' own, for the takeovers that are meant to run into it.
+const SHORT_TAKEOVER_DEADLINE_MS = 100
+
+describe('[host] Relay - takeover bounds', () => {
+  it('should give up on a silent holder at its deadline, leave its socket in place and release the bridge lock', async (context) => {
+    // Arrange
+    const socketPath = join(await tempDir(context), 'bridge', 'bridge.sock')
+    const holder = await startHolder(context, socketPath, null)
+
+    // Act
+    const first = takeOverWith(socketPath, new PassThrough(), SHORT_TAKEOVER_DEADLINE_MS)
+    await assert.rejects(first, {
+      message: `Could not take ${socketPath} over: the relay holding it did not let go within ${SHORT_TAKEOVER_DEADLINE_MS} ms`,
+    })
+    await holder.ends.next()
+    const second = takeOverWith(socketPath, new PassThrough(), SHORT_TAKEOVER_DEADLINE_MS)
+
+    // Assert - the second host got the lock, so the first released it
+    await assert.rejects(second, {
+      message: new RegExp(`did not let go within ${SHORT_TAKEOVER_DEADLINE_MS} ms$`, 'u'),
+    })
+    assert.equal(holder.server.listening, true)
+    assert.equal((await lstat(socketPath)).isSocket(), true)
+  })
+
+  it('should close the connection to a holder of another revision that keeps it open, with no deadline set', async (context) => {
+    // Arrange
+    const socketPath = join(await tempDir(context), 'bridge', 'bridge.sock')
+    const holder = await startHolder(context, socketPath, { ...HOST_HELLO, protocolRevision: PROTOCOL_REVISION + 1 })
+
+    // Act
+    await assert.rejects(takeOverWith(socketPath, new PassThrough(), null), {
+      message: new RegExp(`^Could not take ${socketPath} over: The browser bridge between the native host`, 'u'),
+    })
+    const told = await holder.received.next()
+    await holder.ends.next()
+
+    // Assert
+    assert.ok(typeof told === 'object' && told !== null && 'reason' in told)
+    assert.equal(told.reason, 'revision-mismatch')
+    assert.equal(holder.server.listening, true)
+    assert.equal((await lstat(socketPath)).isSocket(), true)
+  })
+
+  it("should give up the takeover when the browser's pipe ends, with no deadline set, and release the bridge lock", async (context) => {
+    // Arrange
+    const socketPath = join(await tempDir(context), 'bridge', 'bridge.sock')
+    const holder = await startHolder(context, socketPath, null)
+    const input = new PassThrough()
+    const taking = takeOverWith(socketPath, input, null)
+    const rejected = assert.rejects(taking, {
+      message: `Could not take ${socketPath} over: the browser's native pipe ended`,
+    })
+
+    // Act
+    await holder.accepted.next()
+    input.end()
+    await rejected
+    await holder.ends.next()
+
+    // Assert - a later host gets the lock, so the one whose pipe ended released it
+    await assert.rejects(takeOverWith(socketPath, new PassThrough(), SHORT_TAKEOVER_DEADLINE_MS), {
+      message: new RegExp(`did not let go within ${SHORT_TAKEOVER_DEADLINE_MS} ms$`, 'u'),
+    })
+    assert.equal(holder.server.listening, true)
+  })
 })

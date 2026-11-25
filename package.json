@@ -21,6 +21,10 @@
       "types": "./dist/client/index.d.ts",
       "default": "./dist/client/index.js"
     },
+    "./native-host": {
+      "types": "./dist/host/launcher.d.ts",
+      "default": "./dist/host/launcher.js"
+    },
     "./modules": {
       "types": "./dist/modules.d.ts",
       "default": "./dist/modules.js"

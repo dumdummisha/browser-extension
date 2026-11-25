@@ -37,7 +37,7 @@
     "build": "tsc && node scripts/build-extension.js",
     "install-host": "node dist/host/install.js",
     "disclosures": "tsc && node dist/disclosures/generate.js",
-    "render-icons": "node scripts/render-icons.js",
+    "render-icons": "tsc && node scripts/render-icons.js",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint",
     "format": "oxfmt",

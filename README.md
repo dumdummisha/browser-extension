@@ -130,7 +130,7 @@ pnpm install
 pnpm run typecheck && pnpm run lint && pnpm run format:check && pnpm test
 ```
 
-The extension's icons in `src/extension/icons/` are rendered from `misha.svg` beside them, at the sizes Chrome's manifest takes for `icons`, with macOS's `sips`. The script keeps only the PNG chunks that describe pixels, so the EXIF block `sips` writes stays out of the repository:
+The extension's icons in `src/extension/icons/` are rendered from `misha.svg` beside them, at the sizes Chrome's manifest takes for `icons`, with macOS's `sips`; the 128-pixel icon draws the artwork within a centred 96-pixel square with 16 transparent pixels on each side, as the Chrome Web Store asks. The script keeps only the PNG chunks that describe pixels, so the EXIF block `sips` writes stays out of the repository:
 
 ```sh
 pnpm run render-icons

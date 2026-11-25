@@ -1,11 +1,23 @@
 import { execFileSync } from 'node:child_process'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { crc32 } from 'node:zlib'
+import { opaqueBounds } from '../dist/store/png-pixels.js'
 
 const ICON_DIR = 'src/extension/icons'
 const SOURCE = `${ICON_DIR}/misha.svg`
 // The sizes Chrome's manifest documentation names for icons.
 const SIZES = [16, 32, 48, 128]
+// Chrome Web Store's image guidance for the 128-pixel icon, which the store lists and Chrome shows on install: the
+// artwork fits a centred 96-pixel square with 16 transparent pixels on each side. The smaller toolbar sizes take the
+// artwork on the whole canvas.
+const PADDED_SIZE = 128
+const PADDED_ARTWORK = 96
+// The source's root element, its viewBox and its declared width, in which the artwork is measured.
+const SVG_ROOT = /^<svg\b[^>]*>/u
+const SVG_VIEW_BOX = /\bviewBox="(?<x>[\d.]+) (?<y>[\d.]+) (?<width>[\d.]+) (?<height>[\d.]+)"/u
+const SVG_WIDTH = /\bwidth="(?<width>\d+)"/u
 const PNG_SIGNATURE = Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)
 // The chunks that hold only pixels and how to render them. sips also writes an eXIf chunk (the colour space and the
 // image size) and has no option to leave it out; a public repository ships no metadata it does not need, so every chunk
@@ -138,14 +150,80 @@ const keepRenderChunks = (png, path) => {
   return result
 }
 
-for (const size of SIZES) {
-  const target = `${ICON_DIR}/misha-${size}.png`
-  execFileSync('/usr/bin/sips', ['-s', 'format', 'png', '-z', `${size}`, `${size}`, SOURCE, '--out', target], {
+/**
+ * Renders an SVG file to a square PNG with sips.
+ *
+ * @param {string} source
+ * @param {number} size
+ * @param {string} target
+ */
+const renderPng = (source, size, target) => {
+  execFileSync('/usr/bin/sips', ['-s', 'format', 'png', '-z', `${size}`, `${size}`, source, '--out', target], {
     stdio: ['ignore', 'ignore', 'inherit'],
   })
+}
+
+/**
+ * The source's artwork as an SVG of PADDED_SIZE pixels whose artwork fills the centred PADDED_ARTWORK square: the
+ * artwork's bounds are measured on a render at the source's declared width, and the source's content is drawn into
+ * that square through a viewBox around them, made square about their centre.
+ *
+ * @param {string} svg the source's text
+ * @param {string} workDir
+ * @returns {string}
+ */
+const paddedSvg = (svg, workDir) => {
+  const root = SVG_ROOT.exec(svg)?.[0]
+  const viewBox = root === undefined ? undefined : SVG_VIEW_BOX.exec(root)?.groups
+  const declaredWidth = root === undefined ? undefined : SVG_WIDTH.exec(root)?.groups?.width
+  if (root === undefined || viewBox === undefined || declaredWidth === undefined) {
+    throw new Error(`${SOURCE} must open with an <svg> that declares its viewBox and width`)
+  }
+
+  const measureSize = Number(declaredWidth)
+  /** @type {string} */
+  const measured = join(workDir, 'measured.png')
+  renderPng(SOURCE, measureSize, measured)
   /** @type {Uint8Array} */
-  const rendered = readFileSync(target)
-  writeFileSync(target, keepRenderChunks(rendered, target))
+  const measuredPng = readFileSync(measured)
+  const bounds = opaqueBounds(measuredPng)
+  const unit = Number(viewBox.width) / measureSize
+  const left = Number(viewBox.x) + bounds.left * unit
+  const top = Number(viewBox.y) + bounds.top * unit
+  const width = (bounds.right + 1 - bounds.left) * unit
+  const height = (bounds.bottom + 1 - bounds.top) * unit
+  const side = Math.max(width, height)
+  const square = [left + (width - side) / 2, top + (height - side) / 2, side, side].join(' ')
+  const padding = (PADDED_SIZE - PADDED_ARTWORK) / 2
+  const content = svg
+    .trim()
+    .slice(root.length)
+    .replace(/<\/svg>$/u, '')
+
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${PADDED_SIZE}" height="${PADDED_SIZE}" ` +
+    `viewBox="0 0 ${PADDED_SIZE} ${PADDED_SIZE}"><svg x="${padding}" y="${padding}" width="${PADDED_ARTWORK}" ` +
+    `height="${PADDED_ARTWORK}" viewBox="${square}">${content}</svg></svg>`
+  )
+}
+
+/** @type {string} */
+const workDir = mkdtempSync(join(tmpdir(), 'misha-icons-'))
+try {
+  /** @type {string} */
+  const padded = join(workDir, 'padded.svg')
+  /** @type {string} */
+  const source = readFileSync(SOURCE, 'utf8')
+  writeFileSync(padded, paddedSvg(source, workDir))
+  for (const size of SIZES) {
+    const target = `${ICON_DIR}/misha-${size}.png`
+    renderPng(size === PADDED_SIZE ? padded : SOURCE, size, target)
+    /** @type {Uint8Array} */
+    const rendered = readFileSync(target)
+    writeFileSync(target, keepRenderChunks(rendered, target))
+  }
+} finally {
+  rmSync(workDir, { recursive: true, force: true })
 }
 
 process.stdout.write(`Rendered ${SIZES.map((size) => `misha-${size}.png`).join(', ')} in ${ICON_DIR}/\n`)

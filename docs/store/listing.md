@@ -15,7 +15,7 @@ While it runs, the extension also records the fetch and XHR requests every tab s
 
 What the extension reads goes to the agent on your Mac that asked for it, and from there to whatever that agent sends it to, usually the model provider the agent uses. Treat what you let an agent read in your browser as you would anything else you give that agent.
 
-Setup: Misha Browser runs in Chrome or Brave on macOS. Install the native host with the Misha app (Set up page) or from the source repository, then open the browser with the extension enabled. Reload any Slack tab that was open before.
+Setup: Misha Browser runs in Chrome or Brave on macOS. Install the native host with the Misha app (Install the helper, on its Get started or Extensions page) or from the source repository, then open the browser with the extension enabled. Reload any Slack tab that was open before.
 
 - Source code: https://github.com/dumdummisha/browser-extension
 - Getting started: https://docs.dumdummisha.ai/start/get-started

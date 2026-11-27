@@ -177,6 +177,8 @@ export class PendingQueueWriter {
       }
 
       try {
+        await this.recovered()
+
         // The held events are older than this one, so they go in first.
         return await this.commitChange((draft) => {
           this.admitHeld(draft)
@@ -212,6 +214,7 @@ export class PendingQueueWriter {
       }
 
       try {
+        await this.recovered()
         await this.commitChange((draft) => this.admitHeld(draft))
 
         return true
@@ -313,11 +316,10 @@ export class PendingQueueWriter {
     this.hooks.onRestored(restored)
   }
 
-  // A change after recovery, which it runs first when it has not committed yet. It first deletes every acknowledged
-  // event still stored, whose own deletion did not commit, so the room they free counts for it. Then work edits the
-  // draft, and the change counts every loss it made, the uncounted ones of a failure included.
+  // A change after recovery. It first deletes every acknowledged event still stored, whose own deletion did not commit,
+  // so the room they free counts for it. Then work edits the draft, and the change counts every loss it made, the
+  // uncounted ones of a failure included.
   private async commitChange<TResult>(work: (draft: IDraft) => TResult): Promise<TResult> {
-    await this.recovered()
     const database = await this.connect()
 
     const { result, pending, droppedEvents } = await commit(database, async (events, loss) => {

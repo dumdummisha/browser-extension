@@ -340,6 +340,20 @@ const hostHello = (protocolRevision: number): Readonly<Record<string, unknown>> 
 const READY_LEG = { type: 'extension-leg', state: 'ready' }
 const CLIENT_END = { role: 'client', protocolRevision: PROTOCOL_REVISION, componentVersion: COMPONENT_VERSION }
 
+const clientDiagnostic = (
+  reason: string,
+  leg: string,
+  peer: Readonly<Record<string, unknown>>,
+  recovery: string
+): Readonly<Record<string, unknown>> => ({
+  type: 'bridge-incompatible',
+  reason,
+  leg,
+  local: CLIENT_END,
+  peer,
+  recovery,
+})
+
 // The diagnostic a rejection carries, or a failure of the test when it carries none.
 const diagnosticOf = async (rejecting: Promise<unknown>): Promise<unknown> => {
   const error = await rejecting.then(
@@ -399,14 +413,12 @@ describe('[client] Bridge client - handshake', () => {
       const told = await relay.received.next()
 
       // Assert
-      const expected = {
-        type: 'bridge-incompatible',
-        reason: 'revision-mismatch',
-        leg: 'host-client',
-        local: CLIENT_END,
-        peer: { role: 'host', protocolRevision: revision, componentVersion: HOST_VERSION },
-        recovery: 'restart-browser-and-app',
-      }
+      const expected = clientDiagnostic(
+        'revision-mismatch',
+        'host-client',
+        { role: 'host', protocolRevision: revision, componentVersion: HOST_VERSION },
+        'restart-browser-and-app'
+      )
 
       assert.deepEqual([diagnostic, told], [expected, expected])
       assert.deepEqual(client.bridgeState(), { connection: 'incompatible', incompatibility: expected })
@@ -427,14 +439,7 @@ describe('[client] Bridge client - handshake', () => {
     const diagnostic = await diagnosticOf(client.tab('closeTab', { tabId: 4 }))
 
     // Assert
-    assert.deepEqual(diagnostic, {
-      type: 'bridge-incompatible',
-      reason: 'malformed-hello',
-      leg: 'host-client',
-      local: CLIENT_END,
-      peer: {},
-      recovery: 'versions-unchecked',
-    })
+    assert.deepEqual(diagnostic, clientDiagnostic('malformed-hello', 'host-client', {}, 'versions-unchecked'))
   })
 
   it('should fail with missing-hello once its deadline passes with the host silent, and close the connection', async (context) => {
@@ -453,14 +458,7 @@ describe('[client] Bridge client - handshake', () => {
     const [expired, closed] = [await states.next(), await states.next()]
 
     // Assert
-    assert.deepEqual(diagnostic, {
-      type: 'bridge-incompatible',
-      reason: 'missing-hello',
-      leg: 'host-client',
-      local: CLIENT_END,
-      peer: {},
-      recovery: 'versions-unchecked',
-    })
+    assert.deepEqual(diagnostic, clientDiagnostic('missing-hello', 'host-client', {}, 'versions-unchecked'))
 
     assert.ok(elapsedMs >= timeoutMs)
 
@@ -483,14 +481,7 @@ describe('[client] Bridge client - handshake', () => {
     const diagnostic = await diagnosticOf(client.tab('closeTab', { tabId: 4 }))
 
     // Assert
-    assert.deepEqual(diagnostic, {
-      type: 'bridge-incompatible',
-      reason: 'missing-hello',
-      leg: 'extension-host',
-      local: CLIENT_END,
-      peer: {},
-      recovery: 'versions-unchecked',
-    })
+    assert.deepEqual(diagnostic, clientDiagnostic('missing-hello', 'extension-host', {}, 'versions-unchecked'))
   })
 
   it("should take a reply before the host's hello for an unexpected frame", async (context) => {
@@ -507,14 +498,7 @@ describe('[client] Bridge client - handshake', () => {
     const diagnostic = await diagnosticOf(client.tab('closeTab', { tabId: 4 }))
 
     // Assert
-    assert.deepEqual(diagnostic, {
-      type: 'bridge-incompatible',
-      reason: 'unexpected-frame',
-      leg: 'host-client',
-      local: CLIENT_END,
-      peer: {},
-      recovery: 'versions-unchecked',
-    })
+    assert.deepEqual(diagnostic, clientDiagnostic('unexpected-frame', 'host-client', {}, 'versions-unchecked'))
   })
 
   it('should fail the calls in flight when the host says hello a second time, never renegotiating', async (context) => {
@@ -537,14 +521,15 @@ describe('[client] Bridge client - handshake', () => {
     const diagnostic = await diagnosticOf(answered)
 
     // Assert
-    assert.deepEqual(diagnostic, {
-      type: 'bridge-incompatible',
-      reason: 'unexpected-frame',
-      leg: 'host-client',
-      local: CLIENT_END,
-      peer: { role: 'host', protocolRevision: PROTOCOL_REVISION, componentVersion: HOST_VERSION },
-      recovery: 'versions-unchecked',
-    })
+    assert.deepEqual(
+      diagnostic,
+      clientDiagnostic(
+        'unexpected-frame',
+        'host-client',
+        { role: 'host', protocolRevision: PROTOCOL_REVISION, componentVersion: HOST_VERSION },
+        'versions-unchecked'
+      )
+    )
   })
 
   it("should get the host's diagnostic when it connects after the extension's mismatch, keep it through the disconnect, and clear it on a later complete handshake", async (context) => {

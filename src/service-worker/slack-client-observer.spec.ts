@@ -112,10 +112,11 @@ const mishaSent = (
   observer: SlackClientObserver,
   request: IStartedRequest,
   { key, isKeyUnique }: IMishaKey,
-  isAnswered = true
+  isAnswered = true,
+  headers = HEADERS
 ): void => {
   const release = observer.exclude({ tabId: request.tabId, documentId: request.documentId ?? '' }, key, isKeyUnique)
-  sent(observer, request)
+  sent(observer, request, headers)
   release(isAnswered)
 }
 
@@ -153,9 +154,7 @@ describe('[service-worker] Slack client observer - transport check', () => {
     sent(observer, clientPost('client-1'))
 
     // Act
-    const release = observer.exclude(PAGE, MISHA_ID, true)
-    sent(observer, mishaPost('misha-1'), mishaHeaders)
-    release(true)
+    mishaSent(observer, mishaPost('misha-1'), MISHA_CALL, true, mishaHeaders)
 
     // Assert
     const parity = observer.parity()
@@ -181,9 +180,7 @@ describe('[service-worker] Slack client observer - transport check', () => {
     })
 
     // Act
-    const release = observer.exclude(PAGE, MISHA_ID, true)
-    sent(observer, misha, mishaHeaders)
-    release(true)
+    mishaSent(observer, misha, MISHA_CALL, true, mishaHeaders)
 
     // Assert
     const parity = observer.parity()
@@ -496,15 +493,13 @@ describe('[service-worker] Slack client observer - bodies it cannot read', () =>
     sent(observer, clientPost('client-1', { requestBody: { raw: [] } }))
 
     // Act
-    const release = observer.exclude(PAGE, MISHA_ID, true)
-
-    sent(
+    mishaSent(
       observer,
       mishaPost('misha-1'),
+      MISHA_CALL,
+      true,
       HEADERS.filter(({ name }) => name !== 'Accept')
     )
-
-    release(true)
 
     // Assert
     assert.deepEqual(observer.parity(), [

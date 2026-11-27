@@ -8,6 +8,7 @@ import { formatAction } from './tab-format.js'
 import { clickTarget, describeTarget, MODIFIERS_ARG_DESCRIPTION, POINT_ARG_DESCRIPTION } from './target-args.js'
 
 const coordinate = z.number().nonnegative().optional()
+const pause = z.number().int().min(0).max(DRAG_PAUSE_MAX_MS).optional()
 
 const input = z.object({
   fromRef: z.number().int().optional().describe('Ref of the element to drag, from tab_read.'),
@@ -19,26 +20,14 @@ const input = z.object({
   tabId: z.number().int().optional().describe(TAB_ID_ARG_DESCRIPTION),
   button: z.enum(['left', 'right', 'middle']).optional().describe('Mouse button. Defaults to left.'),
   modifiers: z.array(z.string()).optional().describe(MODIFIERS_ARG_DESCRIPTION),
-  holdMs: z
-    .number()
-    .int()
-    .min(0)
-    .max(DRAG_PAUSE_MAX_MS)
-    .optional()
-    .describe(
-      `Milliseconds the button stays down before the pointer moves. Defaults to ${DRAG_HOLD_DEFAULT_MS}; give 300 ` +
-        'to 600 for a list that starts a drag only after a long press.'
-    ),
-  dwellMs: z
-    .number()
-    .int()
-    .min(0)
-    .max(DRAG_PAUSE_MAX_MS)
-    .optional()
-    .describe(
-      `Milliseconds the pointer rests on the target before the release. Defaults to ${DRAG_DWELL_DEFAULT_MS}; give ` +
-        '300 or more for a target that reacts to hovering (a sortable list making room).'
-    ),
+  holdMs: pause.describe(
+    `Milliseconds the button stays down before the pointer moves. Defaults to ${DRAG_HOLD_DEFAULT_MS}; give 300 ` +
+      'to 600 for a list that starts a drag only after a long press.'
+  ),
+  dwellMs: pause.describe(
+    `Milliseconds the pointer rests on the target before the release. Defaults to ${DRAG_DWELL_DEFAULT_MS}; give ` +
+      '300 or more for a target that reacts to hovering (a sortable list making room).'
+  ),
 })
 
 export const createDragTool = (browser: BrowserControlService): IToolDefinition<typeof input> => ({

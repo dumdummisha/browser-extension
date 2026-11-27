@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { after, before, describe, it, type Mock, type TestContext } from 'node:test'
-import { PROTOCOL_REVISION } from '../protocol/messages.js'
 import type { SlackPageCommand } from './slack-page.js'
+import { chromeEvent, emit, fakeWebRequest, HOST_HELLO, type IChromeEvent, settled, tick } from './testing.js'
 
 // The service worker's Slack dispatch (extension/background.ts), driven through its native port as the relay drives
 // it: the build's bundle of background.ts runs in a fake Chrome, whose Slack tabs run each command handed to them
@@ -10,14 +10,6 @@ import type { SlackPageCommand } from './slack-page.js'
 // startup attachment of its own tabs. The fake Chrome binds an injection with documentIds and a message with documentId
 // to that document, as Chrome does. The spec lives here, beside the modules the tests load, since the build replaces
 // the compiled extension folder with its bundles.
-
-type Listener = (...args: unknown[]) => unknown
-
-// A Chrome event: the listeners the service worker added, which the fake Chrome calls as Chrome would.
-interface IChromeEvent {
-  readonly listeners: Listener[]
-  readonly addListener: (listener: Listener) => void
-}
 
 // What the service worker hands chrome.scripting.executeScript: a Slack page command (MAIN), the relay probe
 // (ISOLATED) or the relay's bundle (files).
@@ -98,23 +90,6 @@ const NO_RECEIVER = 'Could not establish connection. Receiving end does not exis
 const GAVE_UP = 'The caller gave up on the request before it was sent, so it was not sent'
 const VERSION_A = '1794800000'
 const VERSION_B = '1794800001'
-
-const chromeEvent = (): IChromeEvent => {
-  const listeners: Listener[] = []
-
-  return {
-    listeners,
-    addListener: (listener) => {
-      listeners.push(listener)
-    },
-  }
-}
-
-const emit = (event: IChromeEvent, ...args: unknown[]): void => {
-  for (const listener of event.listeners) {
-    listener(...args)
-  }
-}
 
 const runAtOnce: IFakeBrowser['runInPage'] = (_tab, _command, run) => run()
 
@@ -235,13 +210,7 @@ const fakeChrome = (): object => {
       onUpdated: chromeEvent(),
     },
     scripting: { executeScript },
-    webRequest: {
-      onBeforeRequest: chromeEvent(),
-      onBeforeSendHeaders: chromeEvent(),
-      onSendHeaders: chromeEvent(),
-      onCompleted: chromeEvent(),
-      onErrorOccurred: chromeEvent(),
-    },
+    webRequest: fakeWebRequest(),
     alarms: { create: () => Promise.resolve(), onAlarm: chromeEvent() },
   }
 }
@@ -265,20 +234,12 @@ const handedOver = (kind: SlackPageCommand['kind']): IHandOver[] =>
 const deadlineOf = (handOver: IHandOver | undefined): number | null =>
   handOver === undefined || handOver.command.kind === 'identity' ? null : handOver.command.deadline
 
-// Lets the promises that can move on do so; setImmediate is not one of the mocked timers.
-const settled = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
-
 const until = async (condition: () => boolean): Promise<void> => {
   for (let step = 0; step < 50 && !condition(); step += 1) {
     await settled()
   }
 
   assert.ok(condition(), 'The service worker never got there')
-}
-
-const tick = async (context: TestContext, ms: number): Promise<void> => {
-  context.mock.timers.tick(ms)
-  await settled()
 }
 
 // The client query a tab's observer keeps for the workspace API, with the page's version as its marker.
@@ -324,13 +285,7 @@ const startWorker = async (context: TestContext, tabs: IFakeTab[]): Promise<void
   workers += 1
   await import(`../extension/background.js?worker=${workers}`)
 
-  emit(workerPort.portMessages, {
-    type: 'hello',
-    role: 'host',
-    protocolRevision: PROTOCOL_REVISION,
-    componentVersion: '9.8.7',
-    browserApp: null,
-  })
+  emit(workerPort.portMessages, HOST_HELLO)
 }
 
 // A worker's startup on one open Slack tab whose relay of this load runs, as after Chrome stopped an idle worker.

@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it, type TestContext } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
+import { temporaryDirectory } from '../module/testing.js'
 import {
   builtManifest,
   chromeVersionProblem,
@@ -26,8 +25,7 @@ const SOURCE_MANIFEST = readJson(fileURLToPath(new URL('src/extension/manifest.j
 
 // The store archive of the build `pnpm test` made, in a folder of the test's own.
 const packedArchive = async (context: TestContext): Promise<string> => {
-  const dir = await mkdtemp(join(tmpdir(), 'misha-store-archive-'))
-  context.after(() => rm(dir, { recursive: true, force: true }))
+  const dir = await temporaryDirectory(context, 'misha-store-archive-')
   const archive = join(dir, 'misha-browser.zip')
 
   packStoreArchive(EXTENSION_DIR, archive)

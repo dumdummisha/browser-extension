@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
-import type { z } from 'zod'
 import { COMPONENT_VERSION } from '../host/component-version.js'
 import type { ConnectionState } from '../protocol/handshake.js'
 import type { BridgeIncompatible, RelayMessage } from '../protocol/messages.js'
@@ -63,8 +62,6 @@ export interface IBridgeClientOptions {
 }
 
 type BridgeMethod = SlackBridgeMethod | TabBridgeMethod
-
-const parseWith = <TSchema extends z.ZodType>(schema: TSchema, value: unknown): z.output<TSchema> => schema.parse(value)
 
 export class BridgeClient {
   private connection: RelayConnection | null = null
@@ -186,7 +183,7 @@ export class BridgeClient {
   ): Promise<TabBridgeResult<TMethod>> {
     const { params: paramsSchema, result } = TAB_BRIDGE_METHODS[method]
 
-    return parseWith(result, await this.request(method, parseWith(paramsSchema, params)))
+    return result.parse(await this.request(method, paramsSchema.parse(params)))
   }
 
   // The app a client brings to the front to raise the browser; null when the native host could not tell. It waits for

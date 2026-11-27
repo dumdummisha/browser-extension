@@ -1,15 +1,21 @@
 import assert from 'node:assert/strict'
-import { once } from 'node:events'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { createServer, type Server, type Socket } from 'node:net'
-import { tmpdir } from 'node:os'
+import type { Socket } from 'node:net'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { describe, it, type TestContext } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { COMPONENT_VERSION } from '../host/component-version.js'
-import { startNativeHostRelay } from '../host/relay.js'
-import { createFrameReader, createLineReader, encodeFrame, encodeLine } from '../protocol/framing.js'
+import {
+  createQueue,
+  drained,
+  EXTENSION_HELLO,
+  HOST_VERSION,
+  type IQueue,
+  listenOn,
+  startTestRelay,
+} from '../host/testing.js'
+import { temporaryDirectory } from '../module/testing.js'
+import { createLineReader, encodeFrame, encodeLine } from '../protocol/framing.js'
 import { PROTOCOL_REVISION } from '../protocol/messages.js'
 import { type SlackEvent, slackEventKey, type SlackStatus } from '../protocol/slack.js'
 import { BridgeClient, BridgeIncompatibleError, type IBridgeState } from './bridge-client.js'
@@ -17,18 +23,6 @@ import { BridgeClient, BridgeIncompatibleError, type IBridgeState } from './brid
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 // The request timeout of a client in these tests, well inside the test runner's timeout.
 const REQUEST_TIMEOUT_MS = 5000
-// The takeover deadline of a relay in these tests, well inside the test runner's timeout: no relay here takes a socket
-// over from another.
-const TAKEOVER_DEADLINE_MS = 5000
-// The host's and the extension's package versions, unlike the client's: equal revisions talk whatever versions say.
-const HOST_VERSION = '9.8.7'
-
-const EXTENSION_HELLO = {
-  type: 'hello',
-  role: 'extension',
-  protocolRevision: PROTOCOL_REVISION,
-  componentVersion: '1.2.3',
-}
 
 const STATUS: SlackStatus = {
   type: 'status',
@@ -41,13 +35,6 @@ const STATUS: SlackStatus = {
 interface IRejectedEvent {
   readonly event: SlackEvent
   readonly error: unknown
-}
-
-interface IQueue<TItem> {
-  readonly put: (item: TItem) => void
-  readonly next: () => Promise<TItem>
-  // How many items came that nobody took yet.
-  readonly size: () => number
 }
 
 // The relay with the extension's end of its pipe in the test's hands: frames written to input reach the relay, and
@@ -63,29 +50,6 @@ const eventAt = (ts: string): SlackEvent => {
   return { type: 'event', id: slackEventKey(ACCOUNT, frame), account: ACCOUNT, frame }
 }
 
-// Items in the order they came, taken one at a time. Each waits in a box, since an item may itself be undefined.
-const createQueue = <TItem>(): IQueue<TItem> => {
-  const boxes: { readonly item: TItem }[] = []
-  const waiters: ((item: TItem) => void)[] = []
-
-  return {
-    put: (item) => {
-      const waiter = waiters.shift()
-      if (waiter === undefined) {
-        boxes.push({ item })
-      } else {
-        waiter(item)
-      }
-    },
-    next: () => {
-      const box = boxes.shift()
-
-      return box === undefined ? new Promise((resolve) => waiters.push(resolve)) : Promise.resolve(box.item)
-    },
-    size: () => boxes.length,
-  }
-}
-
 const fromExtension = ({ input }: IExtensionEnd, frame: unknown): void => {
   input.write(encodeFrame(frame))
 }
@@ -96,40 +60,15 @@ const openRelay = async (
   socketPath: string,
   browserApp: string | null
 ): Promise<IExtensionEnd> => {
-  const input = new PassThrough()
-  const output = new PassThrough()
-  const frames = createQueue<unknown>()
-  output.on('data', createFrameReader(frames.put))
-
-  const server: Server = await startNativeHostRelay({
-    input,
-    output,
-    socketPath,
-    browserApp,
-    componentVersion: HOST_VERSION,
-    takeoverDeadlineMs: TAKEOVER_DEADLINE_MS,
-  })
-
-  context.after(async () => {
-    if (server.listening) {
-      const closed = once(server, 'close')
-      input.end()
-      await closed
-    }
-  })
-
+  const { input, frames } = await startTestRelay(context, socketPath, browserApp)
   const hello = await frames.next()
   assert.ok(typeof hello === 'object' && hello !== null && 'type' in hello && hello.type === 'hello')
 
   return { input, next: frames.next }
 }
 
-const tempSocketPath = async (context: TestContext): Promise<string> => {
-  const dir = await mkdtemp(join(tmpdir(), 'misha-client-'))
-  context.after(() => rm(dir, { recursive: true, force: true }))
-
-  return join(dir, 'bridge.sock')
-}
+const tempSocketPath = async (context: TestContext): Promise<string> =>
+  join(await temporaryDirectory(context, 'misha-client-'), 'bridge.sock')
 
 const createClient = (
   context: TestContext,
@@ -366,28 +305,13 @@ const startFakeRelay = async (
 ): Promise<{ received: IQueue<unknown>; connections: IQueue<Socket> }> => {
   const received = createQueue<unknown>()
   const connections = createQueue<Socket>()
-  const open = new Set<Socket>()
 
-  const server = createServer((socket) => {
-    open.add(socket)
+  await listenOn(context, socketPath, {}, (socket) => {
     socket.setEncoding('utf8')
     socket.on('data', createLineReader(received.put))
     socket.on('error', () => undefined)
-    socket.on('close', () => open.delete(socket))
     connections.put(socket)
     greet(socket)
-  })
-
-  await new Promise<void>((resolve) => server.listen(socketPath, resolve))
-
-  context.after(async () => {
-    const closed = new Promise((resolve) => server.close(resolve))
-
-    for (const socket of open) {
-      socket.destroy()
-    }
-
-    await closed
   })
 
   return { received, connections }
@@ -403,6 +327,20 @@ const hostHello = (protocolRevision: number): Readonly<Record<string, unknown>> 
 
 const READY_LEG = { type: 'extension-leg', state: 'ready' }
 const CLIENT_END = { role: 'client', protocolRevision: PROTOCOL_REVISION, componentVersion: COMPONENT_VERSION }
+
+const clientDiagnostic = (
+  reason: string,
+  leg: string,
+  peer: Readonly<Record<string, unknown>>,
+  recovery: string
+): Readonly<Record<string, unknown>> => ({
+  type: 'bridge-incompatible',
+  reason,
+  leg,
+  local: CLIENT_END,
+  peer,
+  recovery,
+})
 
 // The diagnostic a rejection carries, or a failure of the test when it carries none.
 const diagnosticOf = async (rejecting: Promise<unknown>): Promise<unknown> => {
@@ -463,14 +401,12 @@ describe('[client] Bridge client - handshake', () => {
       const told = await relay.received.next()
 
       // Assert
-      const expected = {
-        type: 'bridge-incompatible',
-        reason: 'revision-mismatch',
-        leg: 'host-client',
-        local: CLIENT_END,
-        peer: { role: 'host', protocolRevision: revision, componentVersion: HOST_VERSION },
-        recovery: 'restart-browser-and-app',
-      }
+      const expected = clientDiagnostic(
+        'revision-mismatch',
+        'host-client',
+        { role: 'host', protocolRevision: revision, componentVersion: HOST_VERSION },
+        'restart-browser-and-app'
+      )
 
       assert.deepEqual([diagnostic, told], [expected, expected])
       assert.deepEqual(client.bridgeState(), { connection: 'incompatible', incompatibility: expected })
@@ -491,14 +427,7 @@ describe('[client] Bridge client - handshake', () => {
     const diagnostic = await diagnosticOf(client.tab('closeTab', { tabId: 4 }))
 
     // Assert
-    assert.deepEqual(diagnostic, {
-      type: 'bridge-incompatible',
-      reason: 'malformed-hello',
-      leg: 'host-client',
-      local: CLIENT_END,
-      peer: {},
-      recovery: 'versions-unchecked',
-    })
+    assert.deepEqual(diagnostic, clientDiagnostic('malformed-hello', 'host-client', {}, 'versions-unchecked'))
   })
 
   it('should fail with missing-hello once its deadline passes with the host silent, and close the connection', async (context) => {
@@ -517,14 +446,7 @@ describe('[client] Bridge client - handshake', () => {
     const [expired, closed] = [await states.next(), await states.next()]
 
     // Assert
-    assert.deepEqual(diagnostic, {
-      type: 'bridge-incompatible',
-      reason: 'missing-hello',
-      leg: 'host-client',
-      local: CLIENT_END,
-      peer: {},
-      recovery: 'versions-unchecked',
-    })
+    assert.deepEqual(diagnostic, clientDiagnostic('missing-hello', 'host-client', {}, 'versions-unchecked'))
 
     assert.ok(elapsedMs >= timeoutMs)
 
@@ -547,14 +469,7 @@ describe('[client] Bridge client - handshake', () => {
     const diagnostic = await diagnosticOf(client.tab('closeTab', { tabId: 4 }))
 
     // Assert
-    assert.deepEqual(diagnostic, {
-      type: 'bridge-incompatible',
-      reason: 'missing-hello',
-      leg: 'extension-host',
-      local: CLIENT_END,
-      peer: {},
-      recovery: 'versions-unchecked',
-    })
+    assert.deepEqual(diagnostic, clientDiagnostic('missing-hello', 'extension-host', {}, 'versions-unchecked'))
   })
 
   it("should take a reply before the host's hello for an unexpected frame", async (context) => {
@@ -571,14 +486,7 @@ describe('[client] Bridge client - handshake', () => {
     const diagnostic = await diagnosticOf(client.tab('closeTab', { tabId: 4 }))
 
     // Assert
-    assert.deepEqual(diagnostic, {
-      type: 'bridge-incompatible',
-      reason: 'unexpected-frame',
-      leg: 'host-client',
-      local: CLIENT_END,
-      peer: {},
-      recovery: 'versions-unchecked',
-    })
+    assert.deepEqual(diagnostic, clientDiagnostic('unexpected-frame', 'host-client', {}, 'versions-unchecked'))
   })
 
   it('should fail the calls in flight when the host says hello a second time, never renegotiating', async (context) => {
@@ -601,14 +509,15 @@ describe('[client] Bridge client - handshake', () => {
     const diagnostic = await diagnosticOf(answered)
 
     // Assert
-    assert.deepEqual(diagnostic, {
-      type: 'bridge-incompatible',
-      reason: 'unexpected-frame',
-      leg: 'host-client',
-      local: CLIENT_END,
-      peer: { role: 'host', protocolRevision: PROTOCOL_REVISION, componentVersion: HOST_VERSION },
-      recovery: 'versions-unchecked',
-    })
+    assert.deepEqual(
+      diagnostic,
+      clientDiagnostic(
+        'unexpected-frame',
+        'host-client',
+        { role: 'host', protocolRevision: PROTOCOL_REVISION, componentVersion: HOST_VERSION },
+        'versions-unchecked'
+      )
+    )
   })
 
   it("should get the host's diagnostic when it connects after the extension's mismatch, keep it through the disconnect, and clear it on a later complete handshake", async (context) => {
@@ -723,9 +632,6 @@ describe('[client] Bridge client - handshake', () => {
     assert.deepEqual(told, { type: 'listener' })
   })
 })
-
-// Lets the lines a client already wrote reach the relay, so a queue that stays empty means nothing more went out.
-const drained = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
 
 describe('[client] Bridge client - send boundary', () => {
   it('should send nothing of a call whose signal aborts right after it was made on a ready connection', async (context) => {

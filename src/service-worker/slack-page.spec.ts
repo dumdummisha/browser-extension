@@ -8,12 +8,10 @@ import {
   type SlackPageResult,
   SlackPageResultSchema,
 } from './slack-page.js'
+import { EARLIER, LATER } from './testing.js'
 
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 const TOKEN = 'xoxc-0000-example'
-// A caller's deadline that has not passed (2100-01-01) and one that has (2000-01-01).
-const LATER = 4_102_444_800_000
-const EARLIER = 946_684_800_000
 
 // The query the service worker sends for the workspace's API, as the page's observer kept it (borrowed-query.ts
 // borrowedQueryString).
@@ -26,6 +24,23 @@ const CALL: Extract<SlackPageCommand, { kind: 'call' }> = {
   method: 'auth.test',
   params: {},
   queries: { 'https://example.slack.com': CLIENT_QUERY },
+  deadline: LATER,
+}
+
+// A file's download and a one-chunk upload, which Slack's client sends without _x_csid.
+const DOWNLOAD: Extract<SlackPageCommand, { kind: 'download' }> = {
+  kind: 'download',
+  account: ACCOUNT,
+  url: 'https://files.slack.com/files-pri/T0EXAMPLE1-F0EXAMPLE1/a.txt',
+  deadline: LATER,
+}
+
+const SMALL_UPLOAD: Extract<SlackPageCommand, { kind: 'upload' }> = {
+  kind: 'upload',
+  account: ACCOUNT,
+  uploadUrl: 'https://files.slack.com/upload/v1/example-grant',
+  filename: 'a.txt',
+  chunks: [Buffer.from('made-up').toString('base64')],
   deadline: LATER,
 }
 
@@ -638,21 +653,8 @@ describe('[service-worker] Slack page - activity session', () => {
     context.mock.method(globalThis, 'fetch', () => Promise.resolve(new Response('OK')))
 
     // Act
-    await runSlackPageCommand({
-      kind: 'download',
-      account: ACCOUNT,
-      url: 'https://files.slack.com/files-pri/T0EXAMPLE1-F0EXAMPLE1/a.txt',
-      deadline: LATER,
-    })
-
-    await runSlackPageCommand({
-      kind: 'upload',
-      account: ACCOUNT,
-      uploadUrl: 'https://files.slack.com/upload/v1/example-grant',
-      filename: 'a.txt',
-      chunks: [Buffer.from('made-up').toString('base64')],
-      deadline: LATER,
-    })
+    await runSlackPageCommand(DOWNLOAD)
+    await runSlackPageCommand(SMALL_UPLOAD)
 
     // Assert
     assert.deepEqual([...stored.keys()], [])
@@ -727,20 +729,8 @@ describe('[service-worker] Slack page - deadlines', () => {
 
     const commands: SlackPageCommand[] = [
       { ...CALL, deadline: EARLIER },
-      {
-        kind: 'download',
-        account: ACCOUNT,
-        url: 'https://files.slack.com/files-pri/T0EXAMPLE1-F0EXAMPLE1/a.txt',
-        deadline: EARLIER,
-      },
-      {
-        kind: 'upload',
-        account: ACCOUNT,
-        uploadUrl: 'https://files.slack.com/upload/v1/example-grant',
-        filename: 'a.txt',
-        chunks: [Buffer.from('made-up').toString('base64')],
-        deadline: EARLIER,
-      },
+      { ...DOWNLOAD, deadline: EARLIER },
+      { ...SMALL_UPLOAD, deadline: EARLIER },
     ]
 
     // Act

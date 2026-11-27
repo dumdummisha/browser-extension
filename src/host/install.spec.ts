@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, it, type TestContext } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { temporaryDirectory } from '../module/testing.js'
 import { NATIVE_HOST_NAME } from '../protocol/messages.js'
 import { extensionIdFromKey } from './extension-id.js'
 import { nativeHostManifest } from './launcher.js'
@@ -25,8 +25,7 @@ interface IScratch {
 }
 
 const scratch = async (context: TestContext): Promise<IScratch> => {
-  const root = await realpath(await mkdtemp(join(tmpdir(), 'misha-install-')))
-  context.after(() => rm(root, { recursive: true, force: true }))
+  const root = await realpath(await temporaryDirectory(context, 'misha-install-'))
   const home = join(root, 'home')
   await mkdir(join(home, 'Library', 'Application Support', 'Google', 'Chrome'), { recursive: true })
 

@@ -10,6 +10,7 @@ import {
   type ServerRequest,
   type TextContent,
 } from '@modelcontextprotocol/sdk/types.js'
+import { logWarning } from '../module/support.js'
 import {
   errorMessage,
   type IModule,
@@ -28,10 +29,6 @@ export interface ICreatedModule {
 }
 
 const BASE64_DATA_URL = /^data:[^;,]+;base64,/u
-
-const reportWarning = (message: string): void => {
-  process.stderr.write(`WARN  [mcp] ${message}\n`)
-}
 
 // An attachment as MCP content: an image as an image block, anything else as a line naming it. A URL that is not a
 // base64 data: URL breaks the tool contract and is an error, never a guess at its content.
@@ -71,7 +68,7 @@ const toContext = (
       progress += 1
 
       sendNotification({ method: 'notifications/progress', params: { progressToken, progress, message } }).catch(
-        (error: unknown) => reportWarning(`A progress notification failed: ${errorMessage(error)}`)
+        (error: unknown) => logWarning('mcp', `A progress notification failed: ${errorMessage(error)}`)
       )
     },
   }

@@ -1,19 +1,12 @@
 import assert from 'node:assert/strict'
 import { before, beforeEach, describe, it } from 'node:test'
-import { PROTOCOL_REVISION } from '../protocol/messages.js'
 import type { FieldState, PageCommand, PageFind, PageOutcome, PointerState } from '../protocol/tab.js'
+import { chromeEvent, emit, fakeWebRequest, HOST_HELLO } from './testing.js'
 
 // The service worker's tab commands (extension/tab-commands.ts), driven through its native port as the relay drives
 // them: the build's bundle of background.ts runs in a fake Chrome whose one tab answers each page command from a
 // scripted page, so a test sees exactly what leaves the service worker for the raw page it read. The spec lives here,
 // beside the modules the tests load, since the build replaces the compiled extension folder with its bundles.
-
-type Listener = (...args: unknown[]) => unknown
-
-interface IChromeEvent {
-  readonly listeners: Listener[]
-  readonly addListener: (listener: Listener) => void
-}
 
 // What the service worker hands chrome.scripting.executeScript: a page command, or the wait for a quiet page.
 interface IInjection {
@@ -46,23 +39,6 @@ const ROTATED_KEY_LINES = ['MIIEpAIBAAKCAQEAwExampleRotated', 'c2Vjb25kLWV4YW1wb
 const BEGIN_KEY = ['-----BEGIN', 'RSA', 'PRIVATE', 'KEY-----'].join(' ')
 const END_KEY = ['-----END', 'RSA', 'PRIVATE', 'KEY-----'].join(' ')
 const SECRET_FRAGMENTS = [FIRST_TOKEN, SECOND_TOKEN, ...KEY_LINES, ...ROTATED_KEY_LINES, 'BEGIN', 'END']
-
-const chromeEvent = (): IChromeEvent => {
-  const listeners: Listener[] = []
-
-  return {
-    listeners,
-    addListener: (listener) => {
-      listeners.push(listener)
-    },
-  }
-}
-
-const emit = (event: IChromeEvent, ...args: unknown[]): void => {
-  for (const listener of event.listeners) {
-    listener(...args)
-  }
-}
 
 const page: IFakePage = {
   documentId: 'DOC-1',
@@ -169,13 +145,7 @@ const fakeChrome = {
       ])
     },
   },
-  webRequest: {
-    onBeforeRequest: chromeEvent(),
-    onBeforeSendHeaders: chromeEvent(),
-    onSendHeaders: chromeEvent(),
-    onCompleted: chromeEvent(),
-    onErrorOccurred: chromeEvent(),
-  },
+  webRequest: fakeWebRequest(),
   alarms: { create: () => Promise.resolve(), onAlarm: chromeEvent() },
 }
 
@@ -214,13 +184,7 @@ before(async () => {
   Object.defineProperty(globalThis, 'chrome', { value: fakeChrome, configurable: true })
   await import('../extension/background.js')
 
-  emit(portMessages, {
-    type: 'hello',
-    role: 'host',
-    protocolRevision: PROTOCOL_REVISION,
-    componentVersion: '9.8.7',
-    browserApp: null,
-  })
+  emit(portMessages, HOST_HELLO)
 })
 
 beforeEach(() => {

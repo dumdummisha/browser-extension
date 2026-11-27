@@ -65,8 +65,6 @@ const decoder = new TextDecoder()
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
-const parseWith = <TSchema extends z.ZodType>(schema: TSchema, value: unknown): z.output<TSchema> => schema.parse(value)
-
 // A form body arrives parsed, any other body as raw byte chunks; a file part has no bytes and is left out.
 const requestBodyText = (requestBody: RequestBody): string | null => {
   if (requestBody?.formData !== undefined) {
@@ -226,7 +224,7 @@ const runInPage = async <TMethod extends PageMethod>(
     throw new Error(outcome.error)
   }
 
-  return { tab, result: parseWith(PAGE_METHODS[method].result, outcome.value) }
+  return { tab, result: PAGE_METHODS[method].result.parse(outcome.value) }
 }
 
 const actionStart = (tabId: number): number => {
@@ -285,7 +283,7 @@ const actionDownloads = async (since: number): Promise<Download[]> =>
 const tabParams = <TMethod extends TabBridgeMethod>(
   method: TMethod,
   raw: unknown
-): z.output<(typeof TAB_BRIDGE_METHODS)[TMethod]['params']> => parseWith(TAB_BRIDGE_METHODS[method].params, raw)
+): z.output<(typeof TAB_BRIDGE_METHODS)[TMethod]['params']> => TAB_BRIDGE_METHODS[method].params.parse(raw)
 
 const RAW_TAB_HANDLERS: RawTabHandlers = {
   listTabs: async () => {

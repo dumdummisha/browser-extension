@@ -16,6 +16,8 @@ const TAB: TabInfo = {
 }
 
 const FIELD_REF = 4
+// Typing into the field that neither clears it first nor submits it after.
+const PLAIN_TYPING = { tabId: TAB.tabId, ref: FIELD_REF, isClearing: false, isSubmitting: false }
 const REDACTED_TOKEN: FieldContent = { isMasked: false, value: '[redacted]', revision: 0 }
 
 const focusedField = (content: FieldContent): FieldState => ({
@@ -98,13 +100,7 @@ describe('[tools] Browser control - typing settles by revision', () => {
     const browser = typingBrowser(reads, answered)
 
     // Act
-    const result = await browser.typeInto({
-      tabId: TAB.tabId,
-      ref: FIELD_REF,
-      text: 'a made-up key',
-      isClearing: false,
-      isSubmitting: false,
-    })
+    const result = await browser.typeInto({ ...PLAIN_TYPING, text: 'a made-up key' })
 
     // Assert
     assert.deepEqual(result, { field: focusedField({ ...REDACTED_TOKEN, revision: 3 }), action: null })
@@ -132,13 +128,7 @@ describe('[tools] Browser control - typing settles by revision', () => {
     const browser = typingBrowser(reads, answered)
 
     // Act
-    const result = await browser.typeInto({
-      tabId: TAB.tabId,
-      ref: FIELD_REF,
-      text: 'a made-up key',
-      isClearing: false,
-      isSubmitting: false,
-    })
+    const result = await browser.typeInto({ ...PLAIN_TYPING, text: 'a made-up key' })
 
     // Assert
     assert.deepEqual(result, { field: focusedField({ ...REDACTED_TOKEN, revision: 2 }), action: null })
@@ -158,13 +148,7 @@ describe('[tools] Browser control - typing settles by revision', () => {
     const browser = typingBrowser(reads, answered)
 
     // Act
-    const result = await browser.typeInto({
-      tabId: TAB.tabId,
-      ref: FIELD_REF,
-      text: 'a made-up password',
-      isClearing: false,
-      isSubmitting: false,
-    })
+    const result = await browser.typeInto({ ...PLAIN_TYPING, text: 'a made-up password' })
 
     // Assert
     assert.deepEqual(result, { field: masked(13, 2), action: null })

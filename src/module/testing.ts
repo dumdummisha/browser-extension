@@ -1,7 +1,11 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import type { TestContext } from 'node:test'
 import type { z } from 'zod'
 import type { IToolContext, IToolDefinition } from './tool.js'
 
-// Spec helpers: a tool called as a host calls it, and a platform a spec pretends to run on.
+// Spec helpers: a tool called as a host calls it, a platform a spec pretends to run on, and a folder of the test's own.
 
 const createTestToolContext = (): IToolContext => ({
   directory: process.cwd(),
@@ -29,4 +33,12 @@ export const pretendPlatform = (platform: NodeJS.Platform): (() => void) => {
       Object.defineProperty(process, 'platform', real)
     }
   }
+}
+
+// A folder of the test's own in the system's temporary folder, removed with what it holds once the test ends.
+export const temporaryDirectory = async (context: TestContext, prefix: string): Promise<string> => {
+  const dir = await mkdtemp(join(tmpdir(), prefix))
+  context.after(() => rm(dir, { recursive: true, force: true }))
+
+  return dir
 }

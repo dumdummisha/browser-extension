@@ -2,16 +2,9 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { PROTOCOL_REVISION } from '../protocol/messages.js'
 import { HostHandshake } from './host-handshake.js'
+import { HOST_END, HOST_HELLO } from './testing.js'
 
 const EXTENSION_VERSION = '1.2.3'
-
-const HOST_HELLO = {
-  type: 'hello',
-  role: 'host',
-  protocolRevision: PROTOCOL_REVISION,
-  componentVersion: '9.8.7',
-  browserApp: null,
-}
 
 const EXTENSION_END = { role: 'extension', protocolRevision: PROTOCOL_REVISION, componentVersion: EXTENSION_VERSION }
 const ACK = { type: 'ack', id: 'T0EXAMPLE1:U0EXAMPLE1:D0EXAMPLE1:1700000000.000100' }
@@ -92,11 +85,7 @@ describe('[service-worker] Host handshake', () => {
       const ack = handshake.receive(ACK)
 
       // Assert
-      const expected = ownDiagnostic(
-        'revision-mismatch',
-        { role: 'host', protocolRevision: revision, componentVersion: '9.8.7' },
-        recovery
-      )
+      const expected = ownDiagnostic('revision-mismatch', { ...HOST_END, protocolRevision: revision }, recovery)
 
       assert.deepEqual([sent, incompatibilities, ack, handshake.state], [[expected], [expected], null, 'incompatible'])
     })
@@ -137,17 +126,7 @@ describe('[service-worker] Host handshake', () => {
     // Assert
     assert.deepEqual(
       [repeated, ack, sent],
-      [
-        null,
-        null,
-        [
-          ownDiagnostic(
-            'unexpected-frame',
-            { role: 'host', protocolRevision: PROTOCOL_REVISION, componentVersion: '9.8.7' },
-            'versions-unchecked'
-          ),
-        ],
-      ]
+      [null, null, [ownDiagnostic('unexpected-frame', HOST_END, 'versions-unchecked')]]
     )
   })
 
@@ -159,7 +138,7 @@ describe('[service-worker] Host handshake', () => {
       type: 'bridge-incompatible',
       reason: 'malformed-hello',
       leg: 'extension-host',
-      local: { role: 'host', protocolRevision: PROTOCOL_REVISION, componentVersion: '9.8.7' },
+      local: HOST_END,
       peer: { role: 'extension' },
       recovery: 'versions-unchecked',
     }

@@ -4,16 +4,10 @@ import { IDBFactory } from 'fake-indexeddb'
 import { PROTOCOL_REVISION } from '../protocol/messages.js'
 import { type SlackEvent, slackEventKey } from '../protocol/slack.js'
 import { openPendingQueue, PendingQueueWriter } from './pending-queue-writer.js'
+import { chromeEvent, emit, fakeWebRequest, HOST_HELLO, type IChromeEvent, settled } from './testing.js'
 
 // The service worker's native link under the races of its asynchronous status work: the status snapshot a listener
 // waits for is held by the test, and the link turns incompatible or is replaced while it waits.
-
-type Listener = (...args: unknown[]) => unknown
-
-interface IChromeEvent {
-  readonly listeners: Listener[]
-  readonly addListener: (listener: Listener) => void
-}
 
 // One native port the worker opened: what the host sends it, and every frame the worker posted on it.
 interface IFakePort {
@@ -35,14 +29,6 @@ const FRAME = { type: 'message', channel: 'D0EXAMPLE1', ts: '1700000001.000100',
 const EVENT: SlackEvent = { type: 'event', id: slackEventKey(ACCOUNT, FRAME), account: ACCOUNT, frame: FRAME }
 const EXTENSION_VERSION = '1.2.3'
 
-const HOST_HELLO = {
-  type: 'hello',
-  role: 'host',
-  protocolRevision: PROTOCOL_REVISION,
-  componentVersion: '9.8.7',
-  browserApp: null,
-}
-
 const EXTENSION_HELLO = {
   type: 'hello',
   role: 'extension',
@@ -51,26 +37,6 @@ const EXTENSION_HELLO = {
 }
 
 let workers = 0
-
-const chromeEvent = (): IChromeEvent => {
-  const listeners: Listener[] = []
-
-  return {
-    listeners,
-    addListener: (listener) => {
-      listeners.push(listener)
-    },
-  }
-}
-
-const emit = (event: IChromeEvent, ...args: unknown[]): void => {
-  for (const listener of event.listeners) {
-    listener(...args)
-  }
-}
-
-// Lets the promises that can move on do so.
-const settled = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
 
 // Waits for the port to have posted at least count frames, and fails with what it posted when it never does.
 const untilPosted = async (port: IFakePort, count: number): Promise<void> => {
@@ -117,13 +83,7 @@ const fakeChrome = (state: IFakeChrome): object => ({
     onUpdated: chromeEvent(),
   },
   scripting: { executeScript: () => Promise.reject(new Error('No tab in this test runs a script')) },
-  webRequest: {
-    onBeforeRequest: chromeEvent(),
-    onBeforeSendHeaders: chromeEvent(),
-    onSendHeaders: chromeEvent(),
-    onCompleted: chromeEvent(),
-    onErrorOccurred: chromeEvent(),
-  },
+  webRequest: fakeWebRequest(),
   alarms: { create: () => Promise.resolve(), onAlarm: state.onAlarm },
 })
 

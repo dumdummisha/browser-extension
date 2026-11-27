@@ -41,25 +41,16 @@ describe('[service-worker] Borrowed query - from a client call', () => {
     const borrowed = urls.map((url) => borrowedQueryOf(url))
 
     // Assert
+    const routed = [
+      ['_x_id', null],
+      ['slack_route', 'T0EXAMPLE1'],
+    ]
+
     assert.deepEqual(borrowed, [
-      [
-        ['_x_id', null],
-        ['slack_route', 'T0EXAMPLE1'],
-        ['_x_foreground', 'true'],
-      ],
-      [
-        ['_x_id', null],
-        ['slack_route', 'T0EXAMPLE1'],
-        ['_x_background', 'true'],
-      ],
-      [
-        ['_x_id', null],
-        ['slack_route', 'T0EXAMPLE1'],
-      ],
-      [
-        ['_x_id', null],
-        ['slack_route', 'T0EXAMPLE1'],
-      ],
+      [...routed, ['_x_foreground', 'true']],
+      [...routed, ['_x_background', 'true']],
+      routed,
+      routed,
     ])
   })
 

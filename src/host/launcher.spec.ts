@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { chmod, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { describe, it, type TestContext } from 'node:test'
 import { fileURLToPath } from 'node:url'
+import { temporaryDirectory } from '../module/testing.js'
 import { NATIVE_HOST_NAME } from '../protocol/messages.js'
 import { extensionId, HOST_SCRIPT, launcherText, nativeHostManifest, runtimeOf } from './launcher.js'
 
@@ -16,8 +16,7 @@ const BUILT_EXTENSION_DIR = fileURLToPath(new URL('../extension', import.meta.ur
 // A folder whose name needs quoting in a shell, with a stand-in runtime in it that prints the ELECTRON_RUN_AS_NODE it
 // was given and the script it was asked to run.
 const standInRuntime = async (context: TestContext): Promise<{ dir: string; executable: string }> => {
-  const dir = await mkdtemp(join(tmpdir(), "misha-launcher-it's here "))
-  context.after(() => rm(dir, { recursive: true, force: true }))
+  const dir = await temporaryDirectory(context, "misha-launcher-it's here ")
   const executable = join(dir, 'runtime')
   await writeFile(executable, '#!/bin/sh\nprintf \'%s|%s\\n\' "$ELECTRON_RUN_AS_NODE" "$1"\n')
   await chmod(executable, 0o755)
@@ -96,8 +95,7 @@ describe('[host] Launcher - identity', () => {
 
   it('should refuse an extension whose manifest has no public key', async (context) => {
     // Arrange - a manifest like the store archive's, which leaves the key out
-    const dir = await mkdtemp(join(tmpdir(), 'misha-extension-'))
-    context.after(() => rm(dir, { recursive: true, force: true }))
+    const dir = await temporaryDirectory(context, 'misha-extension-')
     await writeFile(join(dir, 'manifest.json'), JSON.stringify({ manifest_version: 3, name: 'Example' }))
 
     // Act + Assert

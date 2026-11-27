@@ -1,3 +1,4 @@
+export * from './event-id.js'
 export * from './handshake.js'
 export * from './messages.js'
 export * from './pending-queue.js'

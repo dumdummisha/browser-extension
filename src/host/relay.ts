@@ -388,7 +388,7 @@ export const startNativeHostRelay = async ({
         return
       case 'ack':
         // Only the listener was sent the event, so only its ack can mean the app committed it. An event's id is bounded
-        // (slack.ts), so an ack too large to pass on names no event.
+        // (event-id.ts), so an ack too large to pass on names no event.
         if (client === listener && !toExtension(message)) {
           throw new Error(`An ack is larger than the ${HOST_MESSAGE_MAX_BYTES} bytes the extension takes from its host`)
         }

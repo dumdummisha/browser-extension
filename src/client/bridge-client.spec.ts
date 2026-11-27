@@ -1,13 +1,21 @@
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
-import { createServer, type Socket } from 'node:net'
+import type { Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { describe, it, type TestContext } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { COMPONENT_VERSION } from '../host/component-version.js'
-import { createQueue, drained, EXTENSION_HELLO, HOST_VERSION, type IQueue, startTestRelay } from '../host/testing.js'
+import {
+  createQueue,
+  drained,
+  EXTENSION_HELLO,
+  HOST_VERSION,
+  type IQueue,
+  listenOn,
+  startTestRelay,
+} from '../host/testing.js'
 import { createLineReader, encodeFrame, encodeLine } from '../protocol/framing.js'
 import { PROTOCOL_REVISION } from '../protocol/messages.js'
 import { type SlackEvent, slackEventKey, type SlackStatus } from '../protocol/slack.js'
@@ -302,28 +310,13 @@ const startFakeRelay = async (
 ): Promise<{ received: IQueue<unknown>; connections: IQueue<Socket> }> => {
   const received = createQueue<unknown>()
   const connections = createQueue<Socket>()
-  const open = new Set<Socket>()
 
-  const server = createServer((socket) => {
-    open.add(socket)
+  await listenOn(context, socketPath, {}, (socket) => {
     socket.setEncoding('utf8')
     socket.on('data', createLineReader(received.put))
     socket.on('error', () => undefined)
-    socket.on('close', () => open.delete(socket))
     connections.put(socket)
     greet(socket)
-  })
-
-  await new Promise<void>((resolve) => server.listen(socketPath, resolve))
-
-  context.after(async () => {
-    const closed = new Promise((resolve) => server.close(resolve))
-
-    for (const socket of open) {
-      socket.destroy()
-    }
-
-    await closed
   })
 
   return { received, connections }

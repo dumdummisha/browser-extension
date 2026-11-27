@@ -1,13 +1,13 @@
 import { once } from 'node:events'
-import type { Server } from 'node:net'
+import { createServer, type Server, type ServerOpts, type Socket } from 'node:net'
 import { PassThrough } from 'node:stream'
 import type { TestContext } from 'node:test'
 import { createFrameReader } from '../protocol/framing.js'
 import { PROTOCOL_REVISION } from '../protocol/messages.js'
 import { startNativeHostRelay } from './relay.js'
 
-// Spec helpers: a native host relay whose browser pipe the test holds, the queue what it sends arrives in, and the
-// extension's hello.
+// Spec helpers: a native host relay whose browser pipe the test holds, the queue what it sends arrives in, a server
+// of the test's own on a socket path, and the extension's hello.
 
 // The host's package version in these tests, unlike the clients' and the extension's: equal revisions talk whatever
 // versions say.
@@ -91,6 +91,37 @@ export const startTestRelay = async (
   })
 
   return { server, input, frames }
+}
+
+// Listens on socketPath and hands each connection to onConnection. When the test ends, the server closes and every
+// connection still open is destroyed.
+export const listenOn = async (
+  context: TestContext,
+  socketPath: string,
+  options: ServerOpts,
+  onConnection: (socket: Socket) => void
+): Promise<Server> => {
+  const open = new Set<Socket>()
+
+  const server = createServer(options, (socket) => {
+    open.add(socket)
+    socket.on('close', () => open.delete(socket))
+    onConnection(socket)
+  })
+
+  await new Promise<void>((resolve) => server.listen(socketPath, resolve))
+
+  context.after(async () => {
+    const closed = new Promise((resolve) => server.close(resolve))
+
+    for (const socket of open) {
+      socket.destroy()
+    }
+
+    await closed
+  })
+
+  return server
 }
 
 // Lets what one end already wrote reach the other, so a queue that stays empty means nothing more went out.

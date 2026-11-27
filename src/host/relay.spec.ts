@@ -19,6 +19,7 @@ import {
   EXTENSION_HELLO,
   HOST_VERSION,
   type IQueue,
+  listenOn,
   startTestRelay,
   TAKEOVER_DEADLINE_MS,
 } from './testing.js'
@@ -892,32 +893,17 @@ const startHolder = async (
   const accepted = createQueue<unknown>()
   const received = createQueue<unknown>()
   const ends = createQueue<unknown>()
-  const connected = new Set<Socket>()
 
-  const server = createServer({ allowHalfOpen: true }, (socket) => {
-    connected.add(socket)
+  const server = await listenOn(context, socketPath, { allowHalfOpen: true }, (socket) => {
     accepted.put('accepted')
     socket.setEncoding('utf8')
     socket.on('data', createLineReader(received.put))
     socket.on('error', () => undefined)
     socket.on('end', () => ends.put('ended'))
-    socket.on('close', () => connected.delete(socket))
 
     if (greeting !== null) {
       socket.write(encodeLine(greeting))
     }
-  })
-
-  await new Promise<void>((resolve) => server.listen(socketPath, resolve))
-
-  context.after(async () => {
-    const closed = new Promise((resolve) => server.close(resolve))
-
-    for (const socket of connected) {
-      socket.destroy()
-    }
-
-    await closed
   })
 
   return { server, accepted, received, ends }
@@ -1053,24 +1039,10 @@ describe('[host] Relay - takeover acquisition', () => {
     const socketPath = join(await tempDir(context), 'bridge', 'bridge.sock')
     await mkdir(dirname(socketPath), { mode: 0o700 })
     const input = new PassThrough()
-    const accepted: Socket[] = []
 
-    const holder = createServer({ allowHalfOpen: true }, (socket) => {
-      accepted.push(socket)
+    const holder = await listenOn(context, socketPath, { allowHalfOpen: true }, (socket) => {
       socket.on('error', () => undefined)
       input.end()
-    })
-
-    await new Promise<void>((resolve) => holder.listen(socketPath, resolve))
-
-    context.after(async () => {
-      const closed = new Promise((resolve) => holder.close(resolve))
-
-      for (const socket of accepted) {
-        socket.destroy()
-      }
-
-      await closed
     })
 
     // Act

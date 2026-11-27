@@ -9,9 +9,10 @@ import { PassThrough } from 'node:stream'
 import { describe, it, type TestContext } from 'node:test'
 import { isDeepStrictEqual } from 'node:util'
 import { temporaryDirectory } from '../module/testing.js'
+import type { BridgeEvent } from '../protocol/events.js'
 import { createLineReader, encodeFrame, encodeLine, HOST_MESSAGE_MAX_BYTES } from '../protocol/framing.js'
 import { PROTOCOL_REVISION } from '../protocol/messages.js'
-import { type SlackEvent, slackEventKey } from '../protocol/slack.js'
+import { slackEventKey } from '../protocol/slack.js'
 import { startNativeHostRelay } from './relay.js'
 import {
   createQueue,
@@ -61,7 +62,7 @@ interface IClient {
   readonly inbox: IQueue<unknown>
 }
 
-const eventAt = (ts: string): SlackEvent => {
+const eventAt = (ts: string): BridgeEvent => {
   const frame = { type: 'message', channel: 'C0EXAMPLE1', ts, text: 'hello' } as const
 
   return { type: 'event', id: slackEventKey(ACCOUNT, frame), account: ACCOUNT, frame }

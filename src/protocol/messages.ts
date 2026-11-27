@@ -1,5 +1,6 @@
 import { z } from 'zod'
-import { SlackEventSchema, SlackStatusSchema } from './slack.js'
+import { BridgeEventSchema } from './events.js'
+import { SlackStatusSchema } from './slack.js'
 
 // The wire between the extension, the native host's relay and the relay's socket clients (the app, and any process
 // that drives the browser). Every connection opens with a hello from each end (handshake.ts): no other traffic flows
@@ -134,11 +135,11 @@ export const ClientMessageSchema = z.union([RequestSchema, CancelSchema, ListenS
 // The relay to a client, one per line, at any time after its hello: the state of its extension leg, or its diagnostic.
 export const RelayControlSchema = z.union([ExtensionLegSchema, BridgeIncompatibleSchema])
 // The relay to a ready client, one per line: replies to its requests and, to the listener, events and status snapshots.
-export const RelayMessageSchema = z.union([ReplyResultSchema, ReplyErrorSchema, SlackEventSchema, SlackStatusSchema])
+export const RelayMessageSchema = z.union([ReplyResultSchema, ReplyErrorSchema, BridgeEventSchema, SlackStatusSchema])
 // The relay to the extension, one per native messaging frame, once both hellos agreed.
 export const HostFrameSchema = z.union([RequestSchema, CancelSchema, AckSchema, ListenerSchema])
 // The extension to the relay, one per native messaging frame, once both hellos agreed.
-export const ExtensionFrameSchema = z.union([ReplyResultSchema, ReplyErrorSchema, SlackEventSchema, SlackStatusSchema])
+export const ExtensionFrameSchema = z.union([ReplyResultSchema, ReplyErrorSchema, BridgeEventSchema, SlackStatusSchema])
 
 export type HostHello = z.infer<typeof HostHelloSchema>
 export type ExtensionHello = z.infer<typeof ExtensionHelloSchema>

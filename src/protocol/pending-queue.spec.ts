@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
+import type { BridgeEvent } from './events.js'
 import {
   countedLoss,
   DROPPED_EVENTS_ID,
@@ -19,7 +20,7 @@ const eventAt = (channel: string, ts: string): SlackEvent => {
   return { type: 'event', id: slackEventKey(ACCOUNT, frame), account: ACCOUNT, frame } as const
 }
 
-const recordOf = (event: SlackEvent): { key: string; value: SlackEvent } => ({ key: event.id, value: event })
+const recordOf = (event: BridgeEvent): { key: string; value: BridgeEvent } => ({ key: event.id, value: event })
 
 describe('[protocol] Pending queue - restoring', () => {
   it('should restore stored events oldest message first, with the loss count', () => {

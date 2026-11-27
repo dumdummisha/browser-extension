@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { type SlackEvent, SlackEventSchema } from './slack.js'
+import { type BridgeEvent, BridgeEventSchema, eventTimeMicros } from './events.js'
 
 // The extension's pending queue: every event it captured that the app has not acknowledged yet, and the count of the
 // events it lost (the status's droppedEvents). Service workers stop and restart and the browser quits, so both live in
@@ -10,8 +10,8 @@ import { type SlackEvent, SlackEventSchema } from './slack.js'
 //
 // The database is PENDING_QUEUE_DATABASE at PENDING_QUEUE_DATABASE_VERSION, created with two stores, each with keyPath
 // STORE_KEY_PATH:
-// - PENDING_EVENTS_STORE: one record per pending event, the event exactly as it goes on the wire (SlackEventSchema), so
-//   a record's key is its event's id
+// - PENDING_EVENTS_STORE: one record per pending event, the event exactly as it goes on the wire (events.ts
+//   BridgeEventSchema), so a record's key is its event's id
 // - LOSS_STORE: at most one record, DroppedEventsRecordSchema under DROPPED_EVENTS_ID, absent until the first loss
 // Chrome may evict an extension's IndexedDB under storage pressure, which would take the queue and its count with it,
 // unless the extension holds the unlimitedStorage permission, so the manifest asks for it.
@@ -112,7 +112,7 @@ export interface IStoredPendingEvent {
 
 export interface IRestoredQueue {
   // Oldest message first (by its ts, then its id), the order they are forwarded in.
-  readonly events: SlackEvent[]
+  readonly events: BridgeEvent[]
   readonly droppedEvents: number
   // The records that hold no readable event. They can never be delivered: recovery deletes them and adds their number
   // to the count, in its one transaction.
@@ -147,12 +147,12 @@ export const countedLoss = (lossRecord: unknown, lost: number): DroppedEventsRec
   return { id: DROPPED_EVENTS_ID, droppedEvents: droppedEventsOf(lossRecord) + lost }
 }
 
-// By the message's ts, as a whole number of microseconds so ten-digit and nine-digit seconds compare right, then by id.
-const compareMessages = (left: SlackEvent, right: SlackEvent): number => {
-  const leftTs = BigInt(left.frame.ts.replace('.', ''))
-  const rightTs = BigInt(right.frame.ts.replace('.', ''))
-  if (leftTs !== rightTs) {
-    return Number(leftTs > rightTs) - Number(leftTs < rightTs)
+// By the message's send time (events.ts eventTimeMicros), then by id.
+const compareMessages = (left: BridgeEvent, right: BridgeEvent): number => {
+  const leftTime = eventTimeMicros(left)
+  const rightTime = eventTimeMicros(right)
+  if (leftTime !== rightTime) {
+    return Number(leftTime > rightTime) - Number(leftTime < rightTime)
   }
 
   return Number(left.id > right.id) - Number(left.id < right.id)
@@ -163,11 +163,11 @@ const compareMessages = (left: SlackEvent, right: SlackEvent): number => {
 // event.
 export const restoredQueue = (records: readonly IStoredPendingEvent[], lossRecord: unknown): IRestoredQueue => {
   const droppedEvents = droppedEventsOf(lossRecord)
-  const events: SlackEvent[] = []
+  const events: BridgeEvent[] = []
   const unreadableKeys: IDBValidKey[] = []
 
   for (const { key, value } of records) {
-    const event = SlackEventSchema.safeParse(value)
+    const event = BridgeEventSchema.safeParse(value)
     if (event.success) {
       events.push(event.data)
     } else {

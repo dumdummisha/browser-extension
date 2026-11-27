@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { COMPONENT_VERSION } from '../host/component-version.js'
+import type { BridgeEvent } from '../protocol/events.js'
 import type { ConnectionState } from '../protocol/handshake.js'
 import type { BridgeIncompatible, RelayMessage } from '../protocol/messages.js'
 import {
@@ -12,7 +13,6 @@ import {
   type SlackAnswer,
   type SlackBridgeMethod,
   type SlackBridgeParams,
-  type SlackEvent,
   type SlackMethod,
   type SlackStatus,
 } from '../protocol/slack.js'
@@ -38,7 +38,7 @@ export const RECONNECT_DELAY_MS = 2_000
 
 // Takes one event. The client acknowledges it only once the promise resolves, which the app makes happen only after it
 // committed the event; a rejection leaves it unacknowledged, and the extension forwards it again.
-export type EventHandler = (event: SlackEvent) => Promise<void>
+export type EventHandler = (event: BridgeEvent) => Promise<void>
 // Every status snapshot the extension pushes, and undefined each time a ready connection to the relay stops being
 // ready (it dropped, or turned out incompatible).
 export type StatusListener = (status: SlackStatus | undefined) => void
@@ -58,7 +58,7 @@ export interface IBridgeClientOptions {
   readonly requestTimeoutMs: number
   readonly reconnectDelayMs: number
   // Where an event the handler rejected is reported; it stays unacknowledged.
-  readonly onHandlerError: (event: SlackEvent, error: unknown) => void
+  readonly onHandlerError: (event: BridgeEvent, error: unknown) => void
 }
 
 type BridgeMethod = SlackBridgeMethod | TabBridgeMethod
@@ -372,7 +372,7 @@ export class BridgeClient {
   // Events are handled one at a time, in the order they came. The ack goes back on the connection that brought the
   // event while it is still ready; if it closed or turned out incompatible meanwhile, the extension forwards the event
   // again to a compatible listener, and the app's commit takes the repeat.
-  private async deliver(connection: RelayConnection, event: SlackEvent): Promise<void> {
+  private async deliver(connection: RelayConnection, event: BridgeEvent): Promise<void> {
     const { handler } = this
     if (handler === null) {
       return

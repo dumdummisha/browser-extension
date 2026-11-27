@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { describe, it, type TestContext } from 'node:test'
 import { IDBFactory } from 'fake-indexeddb'
+import type { BridgeEvent } from '../protocol/events.js'
 import { PROTOCOL_REVISION } from '../protocol/messages.js'
-import { type SlackEvent, slackEventKey } from '../protocol/slack.js'
+import { slackEventKey } from '../protocol/slack.js'
 import { openPendingQueue, PendingQueueWriter } from './pending-queue-writer.js'
 import { chromeEvent, emit, fakeWebRequest, HOST_HELLO, type IChromeEvent, settled } from './testing.js'
 
@@ -26,7 +27,7 @@ interface IFakeChrome {
 
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 const FRAME = { type: 'message', channel: 'D0EXAMPLE1', ts: '1700000001.000100', text: 'hello' } as const
-const EVENT: SlackEvent = { type: 'event', id: slackEventKey(ACCOUNT, FRAME), account: ACCOUNT, frame: FRAME }
+const EVENT: BridgeEvent = { type: 'event', id: slackEventKey(ACCOUNT, FRAME), account: ACCOUNT, frame: FRAME }
 const EXTENSION_VERSION = '1.2.3'
 
 const EXTENSION_HELLO = {

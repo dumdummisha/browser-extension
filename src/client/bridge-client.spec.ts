@@ -15,9 +15,10 @@ import {
   startTestRelay,
 } from '../host/testing.js'
 import { temporaryDirectory } from '../module/testing.js'
+import type { BridgeEvent } from '../protocol/events.js'
 import { createLineReader, encodeFrame, encodeLine } from '../protocol/framing.js'
 import { PROTOCOL_REVISION } from '../protocol/messages.js'
-import { type SlackEvent, slackEventKey, type SlackStatus } from '../protocol/slack.js'
+import { slackEventKey, type SlackStatus } from '../protocol/slack.js'
 import { BridgeClient, BridgeIncompatibleError, type IBridgeState } from './bridge-client.js'
 
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
@@ -33,7 +34,7 @@ const STATUS: SlackStatus = {
 }
 
 interface IRejectedEvent {
-  readonly event: SlackEvent
+  readonly event: BridgeEvent
   readonly error: unknown
 }
 
@@ -44,7 +45,7 @@ interface IExtensionEnd {
   readonly next: () => Promise<unknown>
 }
 
-const eventAt = (ts: string): SlackEvent => {
+const eventAt = (ts: string): BridgeEvent => {
   const frame = { type: 'message', channel: 'D0EXAMPLE1', ts, text: 'hello' } as const
 
   return { type: 'event', id: slackEventKey(ACCOUNT, frame), account: ACCOUNT, frame }
@@ -106,7 +107,7 @@ describe('[client] Bridge client - events', () => {
     // Arrange
     const { client, extension } = await startClient(context)
     const event = eventAt('1700000001.000100')
-    const received = Promise.withResolvers<SlackEvent>()
+    const received = Promise.withResolvers<BridgeEvent>()
     const committed = Promise.withResolvers<undefined>()
 
     client.listen((taken) => {

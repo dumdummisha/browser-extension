@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { IDBFactory } from 'fake-indexeddb'
+import type { BridgeEvent } from '../protocol/events.js'
 import { DROPPED_EVENTS_ID, EVENT_QUEUE_MAX, LOSS_STORE, PENDING_EVENTS_STORE } from '../protocol/pending-queue.js'
-import { type QueueHealth, type SlackEvent, slackEventKey } from '../protocol/slack.js'
+import { type QueueHealth, slackEventKey } from '../protocol/slack.js'
 import { openPendingQueue, PendingQueueWriter } from './pending-queue-writer.js'
 
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
@@ -24,13 +25,13 @@ interface IStoredQueue {
   readonly lossRecord: unknown
 }
 
-const eventAt = (ts: string): SlackEvent => {
+const eventAt = (ts: string): BridgeEvent => {
   const frame = { type: 'message', channel: 'C0EXAMPLE1', ts, text: 'hello' } as const
 
   return { type: 'event', id: slackEventKey(ACCOUNT, frame), account: ACCOUNT, frame }
 }
 
-const fullQueue = (): SlackEvent[] =>
+const fullQueue = (): BridgeEvent[] =>
   Array.from({ length: EVENT_QUEUE_MAX }, (_, index) => eventAt(`1700000000.${String(index + 1).padStart(6, '0')}`))
 
 const finished = (transaction: IDBTransaction): Promise<void> =>
@@ -105,14 +106,14 @@ const interceptPuts = (database: IDBDatabase, control: IQueueControl): void => {
 
 const createWriter = (
   factory: IDBFactory
-): { writer: PendingQueueWriter; control: IQueueControl; restored: SlackEvent[][]; healths: QueueHealth[] } => {
+): { writer: PendingQueueWriter; control: IQueueControl; restored: BridgeEvent[][]; healths: QueueHealth[] } => {
   const control: IQueueControl = {
     isOpeningRefused: false,
     isLossWriteRefused: false,
     onEventPut: () => undefined,
     connection: null,
   }
-  const restored: SlackEvent[][] = []
+  const restored: BridgeEvent[][] = []
   const healths: QueueHealth[] = []
 
   const writer = new PendingQueueWriter(

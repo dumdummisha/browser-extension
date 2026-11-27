@@ -9,24 +9,22 @@ import { dirname, join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { describe, it, type TestContext } from 'node:test'
 import { isDeepStrictEqual } from 'node:util'
-import {
-  createFrameReader,
-  createLineReader,
-  encodeFrame,
-  encodeLine,
-  HOST_MESSAGE_MAX_BYTES,
-} from '../protocol/framing.js'
+import { createLineReader, encodeFrame, encodeLine, HOST_MESSAGE_MAX_BYTES } from '../protocol/framing.js'
 import { PROTOCOL_REVISION } from '../protocol/messages.js'
 import { type SlackEvent, slackEventKey } from '../protocol/slack.js'
 import { startNativeHostRelay } from './relay.js'
+import {
+  createQueue,
+  drained,
+  EXTENSION_HELLO,
+  HOST_VERSION,
+  type IQueue,
+  startTestRelay,
+  TAKEOVER_DEADLINE_MS,
+} from './testing.js'
 
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 const BROWSER_APP = 'Example Browser.app'
-// The takeover deadline of a relay in these tests, well inside the test runner's timeout: a takeover between two
-// relays here settles within milliseconds.
-const TAKEOVER_DEADLINE_MS = 5000
-// The host's package version, unlike the clients' and the extension's: equal revisions talk whatever versions say.
-const HOST_VERSION = '9.8.7'
 
 const HOST_HELLO = {
   type: 'hello',
@@ -34,13 +32,6 @@ const HOST_HELLO = {
   protocolRevision: PROTOCOL_REVISION,
   componentVersion: HOST_VERSION,
   browserApp: BROWSER_APP,
-}
-
-const EXTENSION_HELLO = {
-  type: 'hello',
-  role: 'extension',
-  protocolRevision: PROTOCOL_REVISION,
-  componentVersion: '1.2.3',
 }
 
 const CLIENT_HELLO = { type: 'hello', role: 'client', protocolRevision: PROTOCOL_REVISION, componentVersion: '1.2.4' }
@@ -55,51 +46,24 @@ const STATUS = {
   parity: [],
 }
 
-interface IInbox {
-  readonly put: (message: unknown) => void
-  readonly next: () => Promise<unknown>
-  // How many messages arrived that nobody took yet.
-  readonly size: () => number
-}
-
 interface IRelay {
   readonly server: Server
   readonly socketPath: string
   // The extension's end of the native messaging pipe: frames written here reach the relay, and what the relay sends
   // the extension arrives in the inbox.
   readonly input: PassThrough
-  readonly extension: IInbox
+  readonly extension: IQueue<unknown>
 }
 
 interface IClient {
   readonly socket: Socket
-  readonly inbox: IInbox
+  readonly inbox: IQueue<unknown>
 }
 
 const eventAt = (ts: string): SlackEvent => {
   const frame = { type: 'message', channel: 'C0EXAMPLE1', ts, text: 'hello' } as const
 
   return { type: 'event', id: slackEventKey(ACCOUNT, frame), account: ACCOUNT, frame }
-}
-
-// Messages in the order they arrived, taken one at a time.
-const createInbox = (): IInbox => {
-  const messages: unknown[] = []
-  const waiters: ((message: unknown) => void)[] = []
-
-  return {
-    put: (message) => {
-      const waiter = waiters.shift()
-      if (waiter === undefined) {
-        messages.push(message)
-      } else {
-        waiter(message)
-      }
-    },
-    next: () =>
-      messages.length > 0 ? Promise.resolve(messages.shift()) : new Promise((resolve) => waiters.push(resolve)),
-    size: () => messages.length,
-  }
 }
 
 const tempDir = async (context: TestContext): Promise<string> => {
@@ -117,30 +81,9 @@ const fromExtension = ({ input }: IRelay, frame: unknown): void => {
   input.write(encodeFrame(frame))
 }
 
-// A relay whose extension has not said hello yet, with the host's hello it sent the extension taken. A relay still
-// listening when the test ends sees its browser's pipe end, and closes.
+// A relay whose extension has not said hello yet, with the host's hello it sent the extension taken.
 const openRelayAt = async (context: TestContext, socketPath: string): Promise<IRelay> => {
-  const input = new PassThrough()
-  const output = new PassThrough()
-  const extension = createInbox()
-  output.on('data', createFrameReader(extension.put))
-
-  const server = await startNativeHostRelay({
-    input,
-    output,
-    socketPath,
-    browserApp: BROWSER_APP,
-    componentVersion: HOST_VERSION,
-    takeoverDeadlineMs: TAKEOVER_DEADLINE_MS,
-  })
-
-  context.after(async () => {
-    if (server.listening) {
-      input.end()
-      await once(server, 'close')
-    }
-  })
-
+  const { server, input, frames: extension } = await startTestRelay(context, socketPath, BROWSER_APP)
   assert.deepEqual(await extension.next(), HOST_HELLO)
 
   return { server, socketPath, input, extension }
@@ -160,20 +103,23 @@ const startRelayAt = async (context: TestContext, socketPath: string): Promise<I
 const startRelay = async (context: TestContext): Promise<IRelay> =>
   startRelayAt(context, join(await tempDir(context), 'bridge', 'bridge.sock'))
 
-const startRelayIn = (socketPath: string): Promise<Server> =>
+const takeOverWith = (socketPath: string, input: PassThrough, takeoverDeadlineMs: number | null): Promise<Server> =>
   startNativeHostRelay({
-    input: new PassThrough(),
+    input,
     output: new PassThrough(),
     socketPath,
     browserApp: BROWSER_APP,
     componentVersion: HOST_VERSION,
-    takeoverDeadlineMs: TAKEOVER_DEADLINE_MS,
+    takeoverDeadlineMs,
   })
+
+const startRelayIn = (socketPath: string): Promise<Server> =>
+  takeOverWith(socketPath, new PassThrough(), TAKEOVER_DEADLINE_MS)
 
 // A connection that has not said hello, with the relay's hello taken.
 const openClient = async ({ socketPath }: IRelay): Promise<IClient> => {
   const socket = createConnection(socketPath)
-  const inbox = createInbox()
+  const inbox = createQueue<unknown>()
   socket.setEncoding('utf8')
   socket.on('data', createLineReader(inbox.put))
   assert.deepEqual(await inbox.next(), HOST_HELLO)
@@ -611,9 +557,6 @@ const hostDiagnostic = (
   recovery,
 })
 
-// Lets the output the relay already wrote reach the inbox, so an inbox that stays empty means nothing went out.
-const drained = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
-
 describe('[host] Relay - client handshake', () => {
   it("should greet a client at once with its hello and the extension leg's state, before the extension said hello", async (context) => {
     // Arrange
@@ -905,7 +848,7 @@ describe('[host] Relay - takeover handshake', () => {
       // Arrange - a holder that greets each connection and keeps what it is sent
       const socketPath = join(await tempDir(context), 'bridge', 'bridge.sock')
       await mkdir(dirname(socketPath), { mode: 0o700 })
-      const received = createInbox()
+      const received = createQueue<unknown>()
 
       const holder = createServer((socket) => {
         socket.setEncoding('utf8')
@@ -941,14 +884,14 @@ const startHolder = async (
   greeting: unknown
 ): Promise<{
   readonly server: Server
-  readonly accepted: IInbox
-  readonly received: IInbox
-  readonly ends: IInbox
+  readonly accepted: IQueue<unknown>
+  readonly received: IQueue<unknown>
+  readonly ends: IQueue<unknown>
 }> => {
   await mkdir(dirname(socketPath), { recursive: true, mode: 0o700 })
-  const accepted = createInbox()
-  const received = createInbox()
-  const ends = createInbox()
+  const accepted = createQueue<unknown>()
+  const received = createQueue<unknown>()
+  const ends = createQueue<unknown>()
   const connected = new Set<Socket>()
 
   const server = createServer({ allowHalfOpen: true }, (socket) => {
@@ -979,16 +922,6 @@ const startHolder = async (
 
   return { server, accepted, received, ends }
 }
-
-const takeOverWith = (socketPath: string, input: PassThrough, takeoverDeadlineMs: number | null): Promise<Server> =>
-  startNativeHostRelay({
-    input,
-    output: new PassThrough(),
-    socketPath,
-    browserApp: BROWSER_APP,
-    componentVersion: HOST_VERSION,
-    takeoverDeadlineMs,
-  })
 
 // A deadline far shorter than the tests' own, for the takeovers that are meant to run into it.
 const SHORT_TAKEOVER_DEADLINE_MS = 100

@@ -1,15 +1,14 @@
 import assert from 'node:assert/strict'
-import { once } from 'node:events'
 import { mkdtemp, rm } from 'node:fs/promises'
-import { createServer, type Server, type Socket } from 'node:net'
+import { createServer, type Socket } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { describe, it, type TestContext } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { COMPONENT_VERSION } from '../host/component-version.js'
-import { startNativeHostRelay } from '../host/relay.js'
-import { createFrameReader, createLineReader, encodeFrame, encodeLine } from '../protocol/framing.js'
+import { createQueue, drained, EXTENSION_HELLO, HOST_VERSION, type IQueue, startTestRelay } from '../host/testing.js'
+import { createLineReader, encodeFrame, encodeLine } from '../protocol/framing.js'
 import { PROTOCOL_REVISION } from '../protocol/messages.js'
 import { type SlackEvent, slackEventKey, type SlackStatus } from '../protocol/slack.js'
 import { BridgeClient, BridgeIncompatibleError, type IBridgeState } from './bridge-client.js'
@@ -17,18 +16,6 @@ import { BridgeClient, BridgeIncompatibleError, type IBridgeState } from './brid
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 // The request timeout of a client in these tests, well inside the test runner's timeout.
 const REQUEST_TIMEOUT_MS = 5000
-// The takeover deadline of a relay in these tests, well inside the test runner's timeout: no relay here takes a socket
-// over from another.
-const TAKEOVER_DEADLINE_MS = 5000
-// The host's and the extension's package versions, unlike the client's: equal revisions talk whatever versions say.
-const HOST_VERSION = '9.8.7'
-
-const EXTENSION_HELLO = {
-  type: 'hello',
-  role: 'extension',
-  protocolRevision: PROTOCOL_REVISION,
-  componentVersion: '1.2.3',
-}
 
 const STATUS: SlackStatus = {
   type: 'status',
@@ -41,13 +28,6 @@ const STATUS: SlackStatus = {
 interface IRejectedEvent {
   readonly event: SlackEvent
   readonly error: unknown
-}
-
-interface IQueue<TItem> {
-  readonly put: (item: TItem) => void
-  readonly next: () => Promise<TItem>
-  // How many items came that nobody took yet.
-  readonly size: () => number
 }
 
 // The relay with the extension's end of its pipe in the test's hands: frames written to input reach the relay, and
@@ -63,29 +43,6 @@ const eventAt = (ts: string): SlackEvent => {
   return { type: 'event', id: slackEventKey(ACCOUNT, frame), account: ACCOUNT, frame }
 }
 
-// Items in the order they came, taken one at a time. Each waits in a box, since an item may itself be undefined.
-const createQueue = <TItem>(): IQueue<TItem> => {
-  const boxes: { readonly item: TItem }[] = []
-  const waiters: ((item: TItem) => void)[] = []
-
-  return {
-    put: (item) => {
-      const waiter = waiters.shift()
-      if (waiter === undefined) {
-        boxes.push({ item })
-      } else {
-        waiter(item)
-      }
-    },
-    next: () => {
-      const box = boxes.shift()
-
-      return box === undefined ? new Promise((resolve) => waiters.push(resolve)) : Promise.resolve(box.item)
-    },
-    size: () => boxes.length,
-  }
-}
-
 const fromExtension = ({ input }: IExtensionEnd, frame: unknown): void => {
   input.write(encodeFrame(frame))
 }
@@ -96,28 +53,7 @@ const openRelay = async (
   socketPath: string,
   browserApp: string | null
 ): Promise<IExtensionEnd> => {
-  const input = new PassThrough()
-  const output = new PassThrough()
-  const frames = createQueue<unknown>()
-  output.on('data', createFrameReader(frames.put))
-
-  const server: Server = await startNativeHostRelay({
-    input,
-    output,
-    socketPath,
-    browserApp,
-    componentVersion: HOST_VERSION,
-    takeoverDeadlineMs: TAKEOVER_DEADLINE_MS,
-  })
-
-  context.after(async () => {
-    if (server.listening) {
-      const closed = once(server, 'close')
-      input.end()
-      await closed
-    }
-  })
-
+  const { input, frames } = await startTestRelay(context, socketPath, browserApp)
   const hello = await frames.next()
   assert.ok(typeof hello === 'object' && hello !== null && 'type' in hello && hello.type === 'hello')
 
@@ -723,9 +659,6 @@ describe('[client] Bridge client - handshake', () => {
     assert.deepEqual(told, { type: 'listener' })
   })
 })
-
-// Lets the lines a client already wrote reach the relay, so a queue that stays empty means nothing more went out.
-const drained = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
 
 describe('[client] Bridge client - send boundary', () => {
   it('should send nothing of a call whose signal aborts right after it was made on a ready connection', async (context) => {

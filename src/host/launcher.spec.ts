@@ -4,11 +4,14 @@ import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, it, type TestContext } from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { NATIVE_HOST_NAME } from '../protocol/messages.js'
 import { extensionId, HOST_SCRIPT, launcherText, nativeHostManifest, runtimeOf } from './launcher.js'
 
 // The id Chrome derives from the public key in the extension's manifest, as the README states it.
 const CURRENT_EXTENSION_ID = 'lkibgdfhoikfdbkhdlnoiajfelcmohjj'
+// This package's built extension, beside the compiled spec.
+const BUILT_EXTENSION_DIR = fileURLToPath(new URL('../extension', import.meta.url))
 
 // A folder whose name needs quoting in a shell, with a stand-in runtime in it that prints the ELECTRON_RUN_AS_NODE it
 // was given and the script it was asked to run.
@@ -85,15 +88,27 @@ describe('[host] Launcher - runtime', () => {
 describe('[host] Launcher - identity', () => {
   it("should derive the current extension's id from the built manifest's key", () => {
     // Act
-    const id = extensionId()
+    const id = extensionId(BUILT_EXTENSION_DIR)
 
     // Assert
     assert.equal(id, CURRENT_EXTENSION_ID)
   })
 
-  it('should register the launcher for exactly the current extension', () => {
+  it('should refuse an extension whose manifest has no public key', async (context) => {
+    // Arrange - a manifest like the store archive's, which leaves the key out
+    const dir = await mkdtemp(join(tmpdir(), 'misha-extension-'))
+    context.after(() => rm(dir, { recursive: true, force: true }))
+    await writeFile(join(dir, 'manifest.json'), JSON.stringify({ manifest_version: 3, name: 'Example' }))
+
+    // Act + Assert
+    assert.throws(() => extensionId(dir), {
+      message: `${join(dir, 'manifest.json')} has no public key, so the extension's id would depend on where it is loaded from`,
+    })
+  })
+
+  it('should register the launcher for exactly the extension with the given id', () => {
     // Act
-    const manifest = nativeHostManifest('/tmp/example-home/.misha/browser-bridge/native-host')
+    const manifest = nativeHostManifest('/tmp/example-home/.misha/browser-bridge/native-host', CURRENT_EXTENSION_ID)
 
     // Assert
     assert.deepEqual(manifest, {

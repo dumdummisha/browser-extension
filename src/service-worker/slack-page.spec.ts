@@ -27,6 +27,23 @@ const CALL: Extract<SlackPageCommand, { kind: 'call' }> = {
   deadline: LATER,
 }
 
+// A file's download and a one-chunk upload, which Slack's client sends without _x_csid.
+const DOWNLOAD: Extract<SlackPageCommand, { kind: 'download' }> = {
+  kind: 'download',
+  account: ACCOUNT,
+  url: 'https://files.slack.com/files-pri/T0EXAMPLE1-F0EXAMPLE1/a.txt',
+  deadline: LATER,
+}
+
+const SMALL_UPLOAD: Extract<SlackPageCommand, { kind: 'upload' }> = {
+  kind: 'upload',
+  account: ACCOUNT,
+  uploadUrl: 'https://files.slack.com/upload/v1/example-grant',
+  filename: 'a.txt',
+  chunks: [Buffer.from('made-up').toString('base64')],
+  deadline: LATER,
+}
+
 // The id of a session the command starts while Math.random answers 0 (Slack's makeSessionId).
 const NEW_SESSION_ID = 'AAAAAAAAAAA'
 
@@ -632,21 +649,8 @@ describe('[service-worker] Slack page - activity session', () => {
     context.mock.method(globalThis, 'fetch', () => Promise.resolve(new Response('OK')))
 
     // Act
-    await runSlackPageCommand({
-      kind: 'download',
-      account: ACCOUNT,
-      url: 'https://files.slack.com/files-pri/T0EXAMPLE1-F0EXAMPLE1/a.txt',
-      deadline: LATER,
-    })
-
-    await runSlackPageCommand({
-      kind: 'upload',
-      account: ACCOUNT,
-      uploadUrl: 'https://files.slack.com/upload/v1/example-grant',
-      filename: 'a.txt',
-      chunks: [Buffer.from('made-up').toString('base64')],
-      deadline: LATER,
-    })
+    await runSlackPageCommand(DOWNLOAD)
+    await runSlackPageCommand(SMALL_UPLOAD)
 
     // Assert
     assert.deepEqual([...stored.keys()], [])
@@ -721,20 +725,8 @@ describe('[service-worker] Slack page - deadlines', () => {
 
     const commands: SlackPageCommand[] = [
       { ...CALL, deadline: EARLIER },
-      {
-        kind: 'download',
-        account: ACCOUNT,
-        url: 'https://files.slack.com/files-pri/T0EXAMPLE1-F0EXAMPLE1/a.txt',
-        deadline: EARLIER,
-      },
-      {
-        kind: 'upload',
-        account: ACCOUNT,
-        uploadUrl: 'https://files.slack.com/upload/v1/example-grant',
-        filename: 'a.txt',
-        chunks: [Buffer.from('made-up').toString('base64')],
-        deadline: EARLIER,
-      },
+      { ...DOWNLOAD, deadline: EARLIER },
+      { ...SMALL_UPLOAD, deadline: EARLIER },
     ]
 
     // Act

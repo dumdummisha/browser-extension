@@ -2,7 +2,7 @@
 
 What the Chrome Web Store listing of Misha Browser needs, prepared in this repository. Nothing here has been uploaded: no store item exists yet, and creating one, uploading the archive, submitting it for review and publishing it each wait for the owner's approval.
 
-The extension keeps its current identity until then: the public key in `src/extension/manifest.json` and the id `lkibgdfhoikfdbkhdlnoiajfelcmohjj` derived from it, which the native host's `allowed_origins` names. The store assigns an item its own id. Adopting it (the item's public key in the manifest, the host's one allowed origin, the Misha app's expectations) is a separate change made once the item exists.
+The extension keeps its current identity until then: the public key in `src/extension/manifest.json` and the id `lkibgdfhoikfdbkhdlnoiajfelcmohjj` derived from it. The native host installer reads the id from the key in the extension folder it is given and names only that id in the host's `allowed_origins`; the Misha app gives it the build it ships. The store assigns an item its own id. Adopting it (the item's public key in the manifest, and a Misha app that ships that build) is a separate change made once the item exists.
 
 ## The archive
 

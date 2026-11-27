@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it, type TestContext } from 'node:test'
 import { OBSERVER_PORT_EVENT, RELAY_READY_EVENT } from './capture-handshake.js'
-import { replaceGlobal } from './testing.js'
 
 // A Slack page's observer and relay together (extension/observer.ts, relay.ts): the build's bundles of both run against
 // a fake page, whose document, ports and resource timing the test drives, and a fake chrome.runtime for the relay. Each
@@ -120,6 +119,20 @@ const recordPort = (port: MessagePort): IPortRecord => {
 }
 
 const xhr = (name: string, startTime: number): IReportedEntry => ({ name, initiatorType: 'xmlhttprequest', startTime })
+
+// Sets globalThis[name] to value, and adds to restores what puts the global back.
+const replaceGlobal = (restores: (() => void)[], name: string, value: unknown): void => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, name)
+  Object.defineProperty(globalThis, name, { value, configurable: true, writable: true })
+
+  restores.push(() => {
+    if (descriptor === undefined) {
+      Reflect.deleteProperty(globalThis, name)
+    } else {
+      Object.defineProperty(globalThis, name, descriptor)
+    }
+  })
+}
 
 // A Slack page with no observer yet: its document, window, address and storage, ports the test closes after it, and a
 // resource timing whose observers get each entry the test reports, read through prototype getters as the browser's.

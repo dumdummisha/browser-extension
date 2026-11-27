@@ -77,7 +77,7 @@ const NOTES = 'made-up notes'
 const NOW = 1_794_900_000_000
 const DEADLINE = NOW + 60_000
 
-// The gap the pace draws lies in this range (slack-pace.ts).
+// The gap the pace draws lies in this range (request-pace.ts).
 const GAP_MIN_MS = 500
 const GAP_MAX_MS = 2_000
 

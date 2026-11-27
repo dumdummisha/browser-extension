@@ -1,7 +1,7 @@
 import { type IAbandonment, throwIfAbandoned } from './bridge-requests.js'
 import { serially } from './serially.js'
 
-// The gap a person leaves between two requests to Slack: drawn from a normal distribution around 1,000 ms with a
+// The gap a person leaves between two requests to a site: drawn from a normal distribution around 1,000 ms with a
 // standard deviation of 250 ms, and drawn again when it falls outside 500 to 2,000 ms.
 const GAP_MEAN_MS = 1_000
 const GAP_DEVIATION_MS = 250
@@ -20,9 +20,9 @@ export const paceGapMs = (random: () => number): number => {
   return gap
 }
 
-// Sends one request to Slack in a turn of the pace (SlackPace). request must hand its command to the page with nothing
-// asynchronous before the hand-off, from which the request counts as sent, and calls unsent only when the page's
-// result, read, shows that nothing went out to Slack.
+// Sends one request to the site a turn acts on, in a turn of the pace (RequestPace). request must hand its command to
+// the page with nothing asynchronous before the hand-off, from which the request counts as sent, and calls unsent only
+// when the page's result, read, shows that nothing went out to the site.
 export type PacedSend = <TResult>(request: (unsent: () => void) => Promise<TResult>) => Promise<TResult>
 
 // Waits ms, or less once signal aborts.
@@ -38,52 +38,52 @@ const pause = (ms: number, signal: AbortSignal): Promise<void> =>
     signal.addEventListener('abort', done, { once: true })
   })
 
-// A workspace's turns, which run one at a time, and when its previous request to Slack ended.
-interface IWorkspace {
+// A key's turns, which run one at a time, and when its previous request to the site ended.
+interface IPacedKey {
   readonly queue: ReturnType<typeof serially>
   lastEnd: number
 }
 
-// Slack's requests at a person's pace, one queue per workspace: a workspace's turns run one at a time in the order
-// they came, and each request a turn sends waits until a fresh gap (drawGapMs) has passed since the workspace's
-// previous request to Slack ended, or goes at once when it has passed already. A request handed to the page leaves a
-// gap behind unless its result shows that nothing went out (a page signed in as another account, a failure before the
-// fetch); one that failed or whose result did not read after the hand-off may have gone out, so it leaves one, and is
-// never sent again. Whether the caller still waits is checked before the turn, at the end of the gap and so right
+// Requests to the site a turn acts on at a person's pace, one queue per key (Slack passes a workspace's team id): a
+// key's turns run one at a time in the order they came, and each request a turn sends waits until a fresh gap
+// (drawGapMs) has passed since the key's previous request to the site ended, or goes at once when it has passed
+// already. A request handed to the page leaves a gap behind unless its result shows that nothing went out (a page
+// signed in as another account, a failure before the fetch); one that failed or whose result did not read after the
+// hand-off may have gone out, so it leaves one, and is never sent again. Whether the caller still waits is checked before the turn, at the end of the gap and so right
 // before the request hands its command to the page, which is the send boundary, after every asynchronous step of the
 // turn (finding the page, an upload's ticket). A request whose caller gave up by then is dropped; one whose deadline
 // would pass before its gap ends is dropped at once. A cancel after the hand-off is too late; the page checks only the
 // deadline once more, right before its fetch.
-export class SlackPace {
-  private readonly workspaces = new Map<string, IWorkspace>()
+export class RequestPace {
+  private readonly keys = new Map<string, IPacedKey>()
 
   constructor(private readonly drawGapMs: () => number) {}
 
-  // Runs task in the workspace's queue; every request it sends to Slack goes through send.
+  // Runs task in the key's queue; every request it sends to the site goes through send.
   public turn<TResult>(
-    teamId: string,
+    key: string,
     abandonment: IAbandonment,
     task: (send: PacedSend) => Promise<TResult>
   ): Promise<TResult> {
-    const workspace = this.workspaces.get(teamId) ?? { queue: serially(), lastEnd: Number.NEGATIVE_INFINITY }
-    this.workspaces.set(teamId, workspace)
+    const paced = this.keys.get(key) ?? { queue: serially(), lastEnd: Number.NEGATIVE_INFINITY }
+    this.keys.set(key, paced)
 
-    return workspace.queue(() => {
+    return paced.queue(() => {
       throwIfAbandoned(abandonment)
 
-      return task((request) => this.send(workspace, abandonment, request))
+      return task((request) => this.send(paced, abandonment, request))
     })
   }
 
   private async send<TResult>(
-    workspace: IWorkspace,
+    paced: IPacedKey,
     abandonment: IAbandonment,
     request: (unsent: () => void) => Promise<TResult>
   ): Promise<TResult> {
     throwIfAbandoned(abandonment)
 
     const now = Date.now()
-    const sendAt = Math.max(now, workspace.lastEnd + this.drawGapMs())
+    const sendAt = Math.max(now, paced.lastEnd + this.drawGapMs())
     throwIfAbandoned(abandonment, sendAt)
 
     if (sendAt > now) {
@@ -99,7 +99,7 @@ export class SlackPace {
       })
     } finally {
       if (attempt.isSent) {
-        workspace.lastEnd = Date.now()
+        paced.lastEnd = Date.now()
       }
     }
   }

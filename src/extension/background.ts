@@ -33,10 +33,10 @@ import {
 } from '../service-worker/observed-message.js'
 import { openPendingQueue, PendingQueueWriter } from '../service-worker/pending-queue-writer.js'
 import { attachRelay, type IRelayScripting, probeRelay, RelayProbeSchema } from '../service-worker/relay-attachment.js'
+import { type PacedSend, paceGapMs, RequestPace } from '../service-worker/request-pace.js'
 import { serially } from '../service-worker/serially.js'
 import { type ISlackPage, SlackClientObserver } from '../service-worker/slack-client-observer.js'
 import { slackEventOf } from '../service-worker/slack-frame.js'
-import { type PacedSend, paceGapMs, SlackPace } from '../service-worker/slack-pace.js'
 import {
   isAnsweredBySlack,
   isNothingSent,
@@ -60,7 +60,7 @@ import {
 import { startTabTracking, TAB_HANDLERS } from './tab-commands.js'
 
 // The service worker: the native port to the host, the pending queue and its forwarding, the status, the Slack bridge
-// methods, each run in a Slack tab signed in as the account it names and at a person's pace (slack-pace.ts), and the
+// methods, each run in a Slack tab signed in as the account it names and at a person's pace (request-pace.ts), and the
 // tab commands of the browser tools (tab-commands.ts). What the page reports is data: it becomes events and status,
 // never a native command, and the client query its relay holds only shapes the envelope of a Web API call the Misha
 // app asked for (callSlack).
@@ -105,7 +105,7 @@ const downloads = new Map<string, Uint8Array>()
 const uploads = new Map<string, Map<number, string>>()
 
 // Every request the transport sends Slack, at a person's pace.
-const pace = new SlackPace(() => paceGapMs(Math.random))
+const pace = new RequestPace(() => paceGapMs(Math.random))
 
 // What Slack's client sends from its own pages, beside the requests the transport sends there.
 const clientObserver = new SlackClientObserver(SLACK_ORIGIN, () => {
@@ -301,7 +301,7 @@ interface IPageRequest {
 // injection. While it runs, the observer takes the request it sends as Misha's, never as one of the client's, and checks
 // it once the command settled.
 // The command is handed to the page with nothing asynchronous before it, so the pace's check that its caller still
-// waits comes right before the hand-off, from which the pace counts the request as sent (slack-pace.ts). unsent: tells
+// waits comes right before the hand-off, from which the pace counts the request as sent (request-pace.ts). unsent: tells
 // the pace that the page's result, read, shows nothing went out to Slack. A page that held no client query for the
 // workspace answers its no-client-query failure as the result, as one signed in as another account answers
 // other-account, so inSlackTab can try the next page; every other failure is thrown.

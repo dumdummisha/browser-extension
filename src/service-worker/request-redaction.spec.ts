@@ -6,6 +6,9 @@ const OPAQUE_SECRET = ['opaque', 'value', '0123456789'].join('-')
 const SESSION_COOKIE = ['session', 'c2Vzc2lvbi1leGFtcGxl'].join('=')
 const MULTIPART_BOUNDARY = '----FormBoundaryExample123'
 
+const pemLine = (edge: 'BEGIN' | 'END', label: string): string =>
+  [`-----${edge}`, ...(label === '' ? [] : [label]), 'PRIVATE', 'KEY-----'].join(' ')
+
 // Token-shaped samples are assembled at run time, so the repository holds nothing a secret scanner would flag.
 const SLACK_SESSION_TOKEN = ['xoxc', '2048', '4096', 'aBcDeFgHiJkLmNoP'].join('-')
 
@@ -16,11 +19,7 @@ const SHAPED_SAMPLES = {
   'AWS access key id': ['AKIA', 'Z7Q2M4N6P8R0T2V4'].join(''),
   'JSON Web Token': ['eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiJleGFtcGxlIn0', 'c2lnbmF0dXJlLXZhbHVl'].join('.'),
   'Bearer value': ['Bearer', OPAQUE_SECRET].join(' '),
-  'private key': [
-    ['-----BEGIN', 'RSA', 'PRIVATE', 'KEY-----'].join(' '),
-    'MIIEowIBAAKCAQEA',
-    ['-----END', 'RSA', 'PRIVATE', 'KEY-----'].join(' '),
-  ].join('\n'),
+  'private key': [pemLine('BEGIN', 'RSA'), 'MIIEowIBAAKCAQEA', pemLine('END', 'RSA')].join('\n'),
 }
 
 const SLACK_BOT_TOKEN = ['xoxb', '1024', '2048', 'zYxWvUtSrQpOnMlK'].join('-')
@@ -28,9 +27,6 @@ const ANTHROPIC_KEY = ['sk', 'ant', 'api03', 'aBcDeFgHiJkLmNoPqRsTuV'].join('-')
 const OPENAI_KEY = ['sk', 'proj', 'aBcDeFgHiJkLmNoPqRsTuVwX'].join('-')
 const KEY_LINES = ['MIIEvQIBADANBgkqhkiG9w0BAQEFAASC', 'BKcwggSjAgEAAoIBAQC7exampleBody'] as const
 const KEY_BODY = [...KEY_LINES, 'c2FtcGxlLWtleS1ib2R5LWxpbmU=']
-
-const pemLine = (edge: 'BEGIN' | 'END', label: string): string =>
-  [`-----${edge}`, ...(label === '' ? [] : [label]), 'PRIVATE', 'KEY-----'].join(' ')
 
 const multipart = (parts: readonly (readonly [string, string])[]): string =>
   [

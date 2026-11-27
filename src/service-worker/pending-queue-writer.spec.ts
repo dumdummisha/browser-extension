@@ -3,7 +3,8 @@ import { describe, it } from 'node:test'
 import { IDBFactory } from 'fake-indexeddb'
 import type { BridgeEvent } from '../protocol/events.js'
 import { DROPPED_EVENTS_ID, EVENT_QUEUE_MAX, LOSS_STORE, PENDING_EVENTS_STORE } from '../protocol/pending-queue.js'
-import { type QueueHealth, slackEventKey } from '../protocol/slack.js'
+import { slackEventKey } from '../protocol/slack.js'
+import type { QueueHealth } from '../protocol/status.js'
 import { openPendingQueue, PendingQueueWriter } from './pending-queue-writer.js'
 
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }

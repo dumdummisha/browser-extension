@@ -18,9 +18,9 @@ import {
   SlackIdentitySchema,
   type SlackMessageFrame,
   type SlackMethod,
-  type SlackStatus,
   type SlackUploadMethod,
 } from '../protocol/slack.js'
+import type { BridgeStatus } from '../protocol/status.js'
 import { borrowedQueryString, freshRequestId } from '../service-worker/borrowed-query.js'
 import { answerRequest, type IAbandonment } from '../service-worker/bridge-requests.js'
 import { Forwarder } from '../service-worker/forwarder.js'
@@ -662,7 +662,7 @@ const forwarder = new Forwarder(
 const statusQueue = serially()
 const intake = serially()
 
-const statusSnapshot = async (): Promise<SlackStatus> => {
+const statusSnapshot = async (): Promise<BridgeStatus> => {
   await writer.settled()
   const tabs = await slackTabs()
 

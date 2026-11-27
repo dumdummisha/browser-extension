@@ -13,7 +13,7 @@ import {
   restoredQueue,
   STORE_KEY_PATH,
 } from '../protocol/pending-queue.js'
-import type { QueueHealth } from '../protocol/slack.js'
+import type { QueueHealth } from '../protocol/status.js'
 
 // The pending queue's one writer (protocol pending-queue.ts holds the rules it follows). Every change waits for the one
 // before it, recovery first, and runs as one readwrite transaction over both stores. A change that does not commit

@@ -14,8 +14,8 @@ import {
   type SlackBridgeMethod,
   type SlackBridgeParams,
   type SlackMethod,
-  type SlackStatus,
 } from '../protocol/slack.js'
+import type { BridgeStatus } from '../protocol/status.js'
 import {
   TAB_BRIDGE_METHODS,
   type TabBridgeMethod,
@@ -41,7 +41,7 @@ export const RECONNECT_DELAY_MS = 2_000
 export type EventHandler = (event: BridgeEvent) => Promise<void>
 // Every status snapshot the extension pushes, and undefined each time a ready connection to the relay stops being
 // ready (it dropped, or turned out incompatible).
-export type StatusListener = (status: SlackStatus | undefined) => void
+export type StatusListener = (status: BridgeStatus | undefined) => void
 
 // The bridge's own state, apart from Slack's: the state of the client's current connection (closed when it has none),
 // and the latest incompatibility it learned, kept through disconnects until a later handshake completes.
@@ -66,7 +66,7 @@ type BridgeMethod = SlackBridgeMethod | TabBridgeMethod
 export class BridgeClient {
   private connection: RelayConnection | null = null
   private handler: EventHandler | null = null
-  private latestStatus: SlackStatus | undefined
+  private latestStatus: BridgeStatus | undefined
   private incompatibility: BridgeIncompatible | null = null
   private readonly statusListeners = new Set<StatusListener>()
   private readonly bridgeStateListeners = new Set<BridgeStateListener>()
@@ -92,7 +92,7 @@ export class BridgeClient {
   }
 
   // The latest status snapshot; undefined while the client is not connected or has had none since it connected.
-  public status(): SlackStatus | undefined {
+  public status(): BridgeStatus | undefined {
     return this.latestStatus
   }
 
@@ -412,7 +412,7 @@ export class BridgeClient {
     }
   }
 
-  private publishStatus(status: SlackStatus | undefined): void {
+  private publishStatus(status: BridgeStatus | undefined): void {
     this.latestStatus = status
 
     for (const listener of this.statusListeners) {

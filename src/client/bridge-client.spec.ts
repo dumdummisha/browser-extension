@@ -18,14 +18,15 @@ import { temporaryDirectory } from '../module/testing.js'
 import type { BridgeEvent } from '../protocol/events.js'
 import { createLineReader, encodeFrame, encodeLine } from '../protocol/framing.js'
 import { PROTOCOL_REVISION } from '../protocol/messages.js'
-import { slackEventKey, type SlackStatus } from '../protocol/slack.js'
+import { slackEventKey } from '../protocol/slack.js'
+import type { BridgeStatus } from '../protocol/status.js'
 import { BridgeClient, BridgeIncompatibleError, type IBridgeState } from './bridge-client.js'
 
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 // The request timeout of a client in these tests, well inside the test runner's timeout.
 const REQUEST_TIMEOUT_MS = 5000
 
-const STATUS: SlackStatus = {
+const STATUS: BridgeStatus = {
   type: 'status',
   identities: [{ tabId: 7, teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1', teamName: 'Example Workspace' }],
   captures: [{ tabId: 7, state: 'attached', isSocketOpen: true }],
@@ -166,7 +167,7 @@ describe('[client] Bridge client - status', () => {
   it('should publish each status snapshot, and undefined once the relay went away', async (context) => {
     // Arrange
     const { client, extension } = await startClient(context)
-    const published = createQueue<SlackStatus | undefined>()
+    const published = createQueue<BridgeStatus | undefined>()
     client.onStatus(published.put)
     client.listen(() => Promise.resolve())
     await extension.next()

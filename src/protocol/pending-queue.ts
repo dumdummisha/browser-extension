@@ -34,7 +34,7 @@ import { type BridgeEvent, BridgeEventSchema, eventTimeMicros } from './events.j
 //    not commit leaves the event pending and forwarded again: every change deletes the acknowledged events still stored
 //    before anything else, so the first change that commits frees their room.
 // A change whose transaction does not commit (it aborts or fails, on the quota or anything else) is a queue failure,
-// which the status reports as failing (slack.ts QueueHealthSchema) until a change commits. A recovery that failed runs
+// which the status reports as failing (status.ts QueueHealthSchema) until a change commits. A recovery that failed runs
 // again before the next change, so while it keeps failing every admission fails too. An event whose admission did not
 // commit is unstored: the writer holds it in memory, at most EVENT_QUEUE_MAX of them, and forwards it to the listener
 // directly, now when one is attached and to each listener that attaches later, with the same redelivery waits as a
@@ -123,7 +123,7 @@ export interface IRestoredQueue {
 // record (undefined). Anything else, null included, has to be a DroppedEventsRecord, or it is an error: guessing a
 // count would hide how many events were lost. Only a get that succeeded is read here: a get or a transaction that
 // failed is a queue failure, never the absent record, and until a read succeeds the status reports the count as
-// unavailable (slack.ts FailingLossSchema).
+// unavailable (status.ts FailingLossSchema).
 export const droppedEventsOf = (lossRecord: unknown): number => {
   if (lossRecord === undefined) {
     return 0

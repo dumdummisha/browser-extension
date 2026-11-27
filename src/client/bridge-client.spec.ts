@@ -161,6 +161,50 @@ describe('[client] Bridge client - events', () => {
     assert.deepEqual(ack, { type: 'ack', id: committed.id })
     assert.deepEqual(rejected, [{ event: failed, error: commitError }])
   })
+
+  it("should hand one platform's events to the handler one at a time, in the order they came", async (context) => {
+    // Arrange
+    const { client, extension } = await startClient(context)
+    const [first, second] = [eventAt('1700000001.000100'), eventAt('1700000002.000100')]
+    const [firstCommit, secondCommit] = [Promise.withResolvers<undefined>(), Promise.withResolvers<undefined>()]
+    const firstStarted = Promise.withResolvers<undefined>()
+    const started: BridgeEvent[] = []
+
+    client.listen((event) => {
+      started.push(event)
+      firstStarted.resolve(undefined)
+
+      return (event.id === first.id ? firstCommit : secondCommit).promise
+    })
+
+    await extension.next()
+
+    // Act - the reply comes after both events on the one connection, so both reached the client before it
+    fromExtension(extension, first)
+    fromExtension(extension, second)
+    await firstStarted.promise
+    const answered = client.call(ACCOUNT, 'auth.test', {})
+    await extension.next()
+    fromExtension(extension, { type: 'reply', id: 1, result: { ok: true } })
+    await answered
+    const startedBeforeCommit = [...started]
+    firstCommit.resolve(undefined)
+    const firstAck = await extension.next()
+    secondCommit.resolve(undefined)
+    const secondAck = await extension.next()
+
+    // Assert
+    assert.deepEqual(startedBeforeCommit, [first])
+    assert.deepEqual(started, [first, second])
+
+    assert.deepEqual(
+      [firstAck, secondAck],
+      [
+        { type: 'ack', id: first.id },
+        { type: 'ack', id: second.id },
+      ]
+    )
+  })
 })
 
 describe('[client] Bridge client - status', () => {

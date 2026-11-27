@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { COMPONENT_VERSION } from '../host/component-version.js'
-import type { BridgeEvent } from '../protocol/events.js'
+import { type BridgeEvent, type BridgePlatform, platformOf } from '../protocol/events.js'
 import type { ConnectionState } from '../protocol/handshake.js'
 import type { BridgeIncompatible, RelayMessage } from '../protocol/messages.js'
 import {
@@ -70,7 +70,9 @@ export class BridgeClient {
   private incompatibility: BridgeIncompatible | null = null
   private readonly statusListeners = new Set<StatusListener>()
   private readonly bridgeStateListeners = new Set<BridgeStateListener>()
-  private events: Promise<void> = Promise.resolve()
+  // Each platform's events, one at a time in the order they came: an event waits only for its own platform's previous
+  // one, so a handler that has not settled holds back its platform's events and no other's.
+  private readonly eventChains = new Map<BridgePlatform, Promise<void>>()
   private reconnectTimer: NodeJS.Timeout | undefined
   private nextId = 1
   private isClosed = false
@@ -359,8 +361,12 @@ export class BridgeClient {
         return
       }
       case 'event': {
-        const next = this.events.then(() => this.deliver(connection, message))
-        this.events = next.catch(() => undefined)
+        const platform = platformOf(message)
+        const next = (this.eventChains.get(platform) ?? Promise.resolve()).then(() => this.deliver(connection, message))
+        this.eventChains.set(
+          platform,
+          next.catch(() => undefined)
+        )
         void next
         return
       }
@@ -369,9 +375,9 @@ export class BridgeClient {
     }
   }
 
-  // Events are handled one at a time, in the order they came. The ack goes back on the connection that brought the
-  // event while it is still ready; if it closed or turned out incompatible meanwhile, the extension forwards the event
-  // again to a compatible listener, and the app's commit takes the repeat.
+  // Each platform's events are handled one at a time, in the order they came. The ack goes back on the connection that
+  // brought the event while it is still ready; if it closed or turned out incompatible meanwhile, the extension
+  // forwards the event again to a compatible listener, and the app's commit takes the repeat.
   private async deliver(connection: RelayConnection, event: BridgeEvent): Promise<void> {
     const { handler } = this
     if (handler === null) {

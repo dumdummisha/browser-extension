@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { before, beforeEach, describe, it } from 'node:test'
 import type { FieldState, PageCommand, PageFind, PageOutcome, PointerState } from '../protocol/tab.js'
-import { chromeEvent, emit, fakeWebRequest, HOST_HELLO, type IChromeEvent } from './testing.js'
+import { chromeEvent, emit, fakeWebRequest, HOST_HELLO } from './testing.js'
 
 // The service worker's tab commands (extension/tab-commands.ts), driven through its native port as the relay drives
 // them: the build's bundle of background.ts runs in a fake Chrome whose one tab answers each page command from a

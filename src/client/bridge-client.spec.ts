@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
 import type { Socket } from 'node:net'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { describe, it, type TestContext } from 'node:test'
@@ -16,6 +14,7 @@ import {
   listenOn,
   startTestRelay,
 } from '../host/testing.js'
+import { temporaryDirectory } from '../module/testing.js'
 import { createLineReader, encodeFrame, encodeLine } from '../protocol/framing.js'
 import { PROTOCOL_REVISION } from '../protocol/messages.js'
 import { type SlackEvent, slackEventKey, type SlackStatus } from '../protocol/slack.js'
@@ -68,12 +67,8 @@ const openRelay = async (
   return { input, next: frames.next }
 }
 
-const tempSocketPath = async (context: TestContext): Promise<string> => {
-  const dir = await mkdtemp(join(tmpdir(), 'misha-client-'))
-  context.after(() => rm(dir, { recursive: true, force: true }))
-
-  return join(dir, 'bridge.sock')
-}
+const tempSocketPath = async (context: TestContext): Promise<string> =>
+  join(await temporaryDirectory(context, 'misha-client-'), 'bridge.sock')
 
 const createClient = (
   context: TestContext,

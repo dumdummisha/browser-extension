@@ -2,13 +2,13 @@ import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import { constants } from 'node:fs'
-import { chmod, lstat, mkdir, mkdtemp, open, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { chmod, lstat, mkdir, open, stat, symlink, writeFile } from 'node:fs/promises'
 import { createConnection, createServer, type Server, type Socket } from 'node:net'
-import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { describe, it, type TestContext } from 'node:test'
 import { isDeepStrictEqual } from 'node:util'
+import { temporaryDirectory } from '../module/testing.js'
 import { createLineReader, encodeFrame, encodeLine, HOST_MESSAGE_MAX_BYTES } from '../protocol/framing.js'
 import { PROTOCOL_REVISION } from '../protocol/messages.js'
 import { type SlackEvent, slackEventKey } from '../protocol/slack.js'
@@ -67,12 +67,7 @@ const eventAt = (ts: string): SlackEvent => {
   return { type: 'event', id: slackEventKey(ACCOUNT, frame), account: ACCOUNT, frame }
 }
 
-const tempDir = async (context: TestContext): Promise<string> => {
-  const dir = await mkdtemp(join(tmpdir(), 'misha-relay-'))
-  context.after(() => rm(dir, { recursive: true, force: true }))
-
-  return dir
-}
+const tempDir = (context: TestContext): Promise<string> => temporaryDirectory(context, 'misha-relay-')
 
 // Leaves a socket at socketPath that nothing listens on: the process that listened there was killed.
 const leaveStaleSocket = async (socketPath: string): Promise<void> => {

@@ -6,7 +6,7 @@
 // itself an authorization. Page text a tab command answers has no names to go by: only the spans shaped like a known
 // token or key are redacted, and the text around them stays. Pure, so the service worker and its specs share it.
 
-export const REDACTED_VALUE = '[redacted]'
+const REDACTED_VALUE = '[redacted]'
 
 // The value of a body field, query parameter or header whose name, lower-cased and stripped of everything but letters
 // and digits, contains one of these is redacted, so access_token, refreshToken, client_secret, X-Api-Key and

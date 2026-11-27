@@ -26,12 +26,12 @@ export interface IResourceEntry {
 }
 
 // A kept query whose values changed, which the observer posts to its relays.
-export interface IClientQueryChange {
+interface IClientQueryChange {
   readonly origin: string
   readonly query: BorrowedQuery
 }
 
-export interface IClientQueryKeeper {
+interface IClientQueryKeeper {
   // Reads an entry, and answers the change it made to the query kept for its API, or null when it changed no value.
   readonly take: (entry: IResourceEntry) => IClientQueryChange | null
   // Every kept query, by the API's origin.

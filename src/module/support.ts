@@ -40,7 +40,7 @@ export const removeTempFile = (path: string): void => {
   }
 }
 
-export interface ILoadOnce<TValue> {
+interface ILoadOnce<TValue> {
   // Starts the load on the first call; later calls, concurrent ones included, share it.
   readonly load: () => Promise<TValue>
 }

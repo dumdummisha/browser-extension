@@ -10,12 +10,12 @@ import { SLACK_READ_METHODS, SLACK_UPLOAD_METHODS, SLACK_WRITE_METHODS } from '.
 // source, and a disclosure that names something the manifest lacks, or misses something it has, fails here.
 
 const REPOSITORY_ROOT = new URL('../../', import.meta.url)
-export const DISCLOSURES_PATH = fileURLToPath(new URL('docs/store-disclosures.json', REPOSITORY_ROOT))
+const DISCLOSURES_PATH = fileURLToPath(new URL('docs/store-disclosures.json', REPOSITORY_ROOT))
 export const MANIFEST_PATH = fileURLToPath(new URL('src/extension/manifest.json', REPOSITORY_ROOT))
 export const STORE_PERMISSIONS_PATH = fileURLToPath(new URL('docs/store-permissions.md', REPOSITORY_ROOT))
 
 // The data types the store's privacy practices form asks about, each declared once.
-export const STORE_DATA_CATEGORIES = [
+const STORE_DATA_CATEGORIES = [
   'Personally identifiable information',
   'Health information',
   'Financial and payment information',
@@ -53,7 +53,7 @@ const DataCategorySchema = z.strictObject({
   detail: TextSchema,
 })
 
-export const StoreDisclosuresSchema = z.strictObject({
+const StoreDisclosuresSchema = z.strictObject({
   privacyPolicyUrl: z.url({ protocol: /^https$/u }),
   permissionsPageUrl: z.url({ protocol: /^https$/u }),
   introduction: z.array(TextSchema).min(1),
@@ -85,7 +85,7 @@ export const StoreDisclosuresSchema = z.strictObject({
   }),
 })
 
-export type StoreDisclosures = z.infer<typeof StoreDisclosuresSchema>
+type StoreDisclosures = z.infer<typeof StoreDisclosuresSchema>
 type Disclosure = z.infer<typeof DisclosureSchema>
 
 // The manifest's declarations the disclosures account for. A declaration form the disclosures have no text for (optional
@@ -110,7 +110,7 @@ export const ExtensionManifestSchema = z.object({
   content_scripts: z.array(ContentScriptSchema),
 })
 
-export type ExtensionManifest = z.infer<typeof ExtensionManifestSchema>
+type ExtensionManifest = z.infer<typeof ExtensionManifestSchema>
 type ContentScript = z.infer<typeof ContentScriptSchema>
 
 export interface IDisclosureInputs {
@@ -123,7 +123,7 @@ const WORLD_TEXT: Readonly<Record<ContentScript['world'], string>> = {
   MAIN: "the page's own world",
 }
 
-export const contentScriptKey = ({ js }: Pick<ContentScript, 'js'>): string => js.join(' + ')
+const contentScriptKey = ({ js }: Pick<ContentScript, 'js'>): string => js.join(' + ')
 
 const parseJsonFile = <TSchema extends z.ZodType>(schema: TSchema, path: string): z.output<TSchema> => {
   const parsed = schema.safeParse(JSON.parse(readFileSync(path, 'utf8')))

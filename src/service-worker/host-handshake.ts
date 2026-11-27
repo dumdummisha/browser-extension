@@ -9,7 +9,7 @@ import {
   PROTOCOL_REVISION,
 } from '../protocol/messages.js'
 
-export interface IHostHandshakeEvents {
+interface IHostHandshakeEvents {
   // Posts a frame on the native port.
   readonly send: (frame: ExtensionHello | BridgeIncompatible) => void
   readonly onReady: () => void

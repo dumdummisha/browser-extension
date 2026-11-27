@@ -37,7 +37,7 @@ import {
 } from '../protocol/messages.js'
 import { ensurePrivateDir } from './paths.js'
 
-export interface IRelayOptions {
+interface IRelayOptions {
   // The browser's end of the native messaging pipe: frames from the extension arrive on input, go out on output.
   readonly input: Readable
   readonly output: Writable

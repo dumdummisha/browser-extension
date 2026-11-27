@@ -65,7 +65,7 @@ type MouseButton = Parameters<InputControlService['click']>[0]
 // a map) and so has no element to name.
 export type ClickTarget = { ref: number } | { point: ClientPoint }
 
-export interface IClickRequest {
+interface IClickRequest {
   tabId?: number
   target: ClickTarget
   button: MouseButton
@@ -76,7 +76,7 @@ export interface IClickRequest {
 
 // holdMs is how long the button stays down before the pointer moves, dwellMs how long it rests on the target before
 // the release; omitted, they take the desktop drag's defaults.
-export interface IDragRequest {
+interface IDragRequest {
   tabId?: number
   from: ClickTarget
   to: ClickTarget
@@ -87,7 +87,7 @@ export interface IDragRequest {
 }
 
 // Waits until the text shows anywhere on the page, or with isGone until it no longer does.
-export interface IWaitRequest {
+interface IWaitRequest {
   text: string
   isGone: boolean
   timeoutMs: number
@@ -117,19 +117,19 @@ export interface ITypeResult {
 }
 
 // Exactly one of text and option is set.
-export interface IFillField {
+interface IFillField {
   ref: number
   text?: string
   option?: string
 }
 
 // value is what the field holds as the result shows it: quoted text, or a masked field's length.
-export interface IFilledField {
+interface IFilledField {
   ref: number
   value: string
 }
 
-export interface IScrollRequest {
+interface IScrollRequest {
   tabId?: number
   ref?: number
   direction: 'up' | 'down'

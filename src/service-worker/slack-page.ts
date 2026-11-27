@@ -44,7 +44,7 @@ export type SlackPageCommand =
 //   bytes did not arrive
 // - upload-unreachable: the upload URL got no response, or answered a redirect, which is refused
 // - uncaught: any other error
-export const SLACK_PAGE_FAILURES = [
+const SLACK_PAGE_FAILURES = [
   'client-state-unreadable',
   'no-api-session',
   'no-api-address',

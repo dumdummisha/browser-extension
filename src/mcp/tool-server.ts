@@ -20,7 +20,7 @@ import {
   type ToolOutput,
 } from '../module/tool.js'
 
-export const SERVER_NAME = 'misha-browser'
+const SERVER_NAME = 'misha-browser'
 
 export interface ICreatedModule {
   readonly definition: IModuleDefinition

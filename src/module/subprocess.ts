@@ -1,7 +1,7 @@
 import { execFile, type ExecFileException } from 'node:child_process'
 import { isErrnoCode, PluginError } from './tool.js'
 
-export interface IRunSubprocessOptions {
+interface IRunSubprocessOptions {
   readonly command: string
   readonly args: readonly string[]
   readonly timeoutMs: number
@@ -10,7 +10,7 @@ export interface IRunSubprocessOptions {
   readonly notFoundHint?: string
 }
 
-export interface ISubprocessResult {
+interface ISubprocessResult {
   readonly stdout: string
   readonly stderr: string
   readonly exitCode: number

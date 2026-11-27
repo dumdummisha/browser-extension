@@ -13,7 +13,7 @@ import { z } from 'zod'
 // What the probe answers from a tab's top document.
 export const RelayProbeSchema = z.strictObject({ origin: z.string(), hasRelay: z.boolean() })
 
-export type RelayProbe = z.infer<typeof RelayProbeSchema>
+type RelayProbe = z.infer<typeof RelayProbeSchema>
 
 // chrome.scripting serializes this function into the page's isolated world, so it uses nothing from the module's
 // scope; runningKey is the mark a relay leaves there.

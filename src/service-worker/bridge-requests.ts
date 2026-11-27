@@ -1,7 +1,7 @@
 import type { ExtensionFrame, HostFrame } from '../protocol/messages.js'
 
 export type BridgeRequest = Extract<HostFrame, { type: 'request' }>
-export type BridgeReply = Extract<ExtensionFrame, { type: 'reply' }>
+type BridgeReply = Extract<ExtensionFrame, { type: 'reply' }>
 
 // How a handler learns its caller has given up: the caller's deadline, in milliseconds since the epoch, and a signal
 // that aborts when the caller cancelled the request or can no longer take its reply.

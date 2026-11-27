@@ -14,7 +14,7 @@ export interface IStartedRequest {
   readonly body: string | null
 }
 
-export type RequestOutcome = { readonly statusCode: number } | { readonly error: string }
+type RequestOutcome = { readonly statusCode: number } | { readonly error: string }
 
 // The fetch and XHR requests each tab sent, by request id in the order they started, for tab_network. Every request is
 // redacted as it is recorded, so the log never holds a credential and nothing it answers carries one. A body is cut to

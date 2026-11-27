@@ -64,7 +64,7 @@ const BODY_VALUE_FORMS: Readonly<Record<string, RegExp>> = {
 
 const METHOD_DIFFERENCE: ParityDifference = { part: 'request', name: 'method', kind: 'value' }
 
-export const UNREADABLE_BODY = 'unreadable'
+const UNREADABLE_BODY = 'unreadable'
 
 // A part of a request as the check keeps it: each field by name, with its value only when its rule keeps one.
 type Fields = ReadonlyMap<string, string | null>

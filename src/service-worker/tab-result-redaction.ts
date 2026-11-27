@@ -20,7 +20,7 @@ import { redactLines, redactText, redactUrl } from './request-redaction.js'
 
 // A change report before redaction: the outlines whose lines it reports, with the places of the lines that appeared
 // (in after) and went (in before); or, after a navigation, the new screen and the range of its lines that are new.
-export type RawChanges =
+type RawChanges =
   | {
       readonly isNavigated: false
       readonly before: readonly string[]

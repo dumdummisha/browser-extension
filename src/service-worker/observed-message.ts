@@ -53,7 +53,7 @@ export type ObservedMessage = z.infer<typeof ObservedMessageSchema>
 
 // What a relay answers the service worker's CAPTURE_QUERY: the observer's last socket state, null until it reported (so
 // null means no observer in the page), and what the observer sent that did not read, null while nothing did.
-export const RelayCaptureSchema = z.strictObject({
+const RelayCaptureSchema = z.strictObject({
   isSocketOpen: z.boolean().nullable(),
   error: z.string().min(1).nullable(),
 })

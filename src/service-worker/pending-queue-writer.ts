@@ -21,9 +21,9 @@ import type { QueueHealth, SlackEvent } from '../protocol/slack.js'
 
 // What admitting a captured event came to: put in the queue, held in memory because the queue fails, already pending
 // or acknowledged (nothing changes), or lost for want of room.
-export type Admission = 'stored' | 'held' | 'duplicate' | 'lost'
+type Admission = 'stored' | 'held' | 'duplicate' | 'lost'
 
-export interface IWriterHooks {
+interface IWriterHooks {
   // The stored events recovery found, once it committed, for the service worker to forward.
   readonly onRestored: (events: readonly SlackEvent[]) => void
   readonly onHealthChange: (health: QueueHealth) => void

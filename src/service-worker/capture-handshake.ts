@@ -27,7 +27,7 @@ export const OBSERVER_PORT_EVENT = 'misha-observer-port'
 
 // What a relay posts back on its channel once the service worker took a frame it passed on: { kind, seq }, with the
 // frame's sequence number.
-export const FRAME_TAKEN = 'taken'
+const FRAME_TAKEN = 'taken'
 
 // The frames the observer holds at most. A reload leaves a tab without a relay for a moment, in which a few messages
 // come at most; only an extension that stays away (turned off) leaves more untaken, and past this the oldest one held
@@ -110,7 +110,7 @@ export const holdFrames = (max: number): IFrameHold => {
 }
 
 // What the observer posts on: the state as it stands, and new messages, which must reach the service worker.
-export interface IRelayLinks {
+interface IRelayLinks {
   // To every relay answered so far. A relay that comes later learns the state from its greeting.
   readonly postState: (message: object) => void
   // Held as a frame until a relay reports it taken, and posted to every relay answered so far. A relay that comes later

@@ -71,7 +71,7 @@ export const builtManifest = (source: unknown, packageJson: unknown): Manifest &
 
 // The files of the store archive: the manifest and exactly the scripts and icons it names, so nothing else in the
 // build (the native host, the MCP server, source maps, specs) can reach it.
-export const storeArchiveFiles = (manifest: unknown): string[] => {
+const storeArchiveFiles = (manifest: unknown): string[] => {
   const { background, content_scripts: contentScripts, icons } = PackagedFilesSchema.parse(manifest)
 
   return [

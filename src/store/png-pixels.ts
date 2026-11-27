@@ -1,7 +1,7 @@
 import { inflateSync } from 'node:zlib'
 
 // The box of a PNG's pixels that are not fully transparent, in pixels from its top left corner, edges included.
-export interface IOpaqueBounds {
+interface IOpaqueBounds {
   readonly width: number
   readonly height: number
   readonly left: number

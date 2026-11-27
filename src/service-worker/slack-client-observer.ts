@@ -30,7 +30,7 @@ export interface IStartedRequest {
 }
 
 // A request as webRequest's onSendHeaders reports it.
-export interface ISentRequest {
+interface ISentRequest {
   readonly requestId: string
   readonly requestHeaders?: readonly IRequestHeader[]
 }

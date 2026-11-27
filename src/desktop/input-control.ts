@@ -14,11 +14,11 @@ interface ICaptureResult {
 
 const MOUSE_BUTTONS = { left: MouseButton.Left, right: MouseButton.Right, middle: MouseButton.Middle }
 
-export type MouseButtonName = keyof typeof MOUSE_BUTTONS
+type MouseButtonName = keyof typeof MOUSE_BUTTONS
 
 // path holds the points the pointer passes through, in order, on its way to the target; holdMs is how long the
 // button stays down before the pointer moves, dwellMs how long the pointer rests on the target before the release.
-export interface IDragGesture {
+interface IDragGesture {
   to: LogicalPoint
   button: MouseButtonName
   path: readonly LogicalPoint[]

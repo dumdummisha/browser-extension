@@ -10,7 +10,7 @@ import {
   OSASCRIPT_BIN,
 } from './config.js'
 
-export const RunningAppSchema = z.object({
+const RunningAppSchema = z.object({
   name: z.string(),
   bundleId: z.string(),
   pid: z.number(),
@@ -20,7 +20,7 @@ export const RunningAppSchema = z.object({
 
 export type RunningApp = z.infer<typeof RunningAppSchema>
 
-export interface IFocusResult {
+interface IFocusResult {
   readonly app: RunningApp
   readonly previous: RunningApp | undefined
 }

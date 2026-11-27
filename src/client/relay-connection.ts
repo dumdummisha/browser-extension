@@ -36,7 +36,7 @@ export class BridgeIncompatibleError extends BridgeError {
   }
 }
 
-export interface IPendingCall {
+interface IPendingCall {
   readonly method: string
   readonly resolve: (result: unknown) => void
   readonly reject: (error: Error) => void
@@ -45,7 +45,7 @@ export interface IPendingCall {
   readonly release: () => void
 }
 
-export interface IRelayConnectionEvents {
+interface IRelayConnectionEvents {
   // A reply, event or status, once the connection is ready.
   readonly onMessage: (connection: RelayConnection, message: RelayMessage) => void
   readonly onReady: (connection: RelayConnection) => void

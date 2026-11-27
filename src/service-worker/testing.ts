@@ -46,6 +46,20 @@ export const fakeWebRequest = (): object => ({
   onErrorOccurred: chromeEvent(),
 })
 
+// Sets globalThis[name] to value, and adds to restores what puts the global back.
+export const replaceGlobal = (restores: (() => void)[], name: string, value: unknown): void => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, name)
+  Object.defineProperty(globalThis, name, { value, configurable: true, writable: true })
+
+  restores.push(() => {
+    if (descriptor === undefined) {
+      Reflect.deleteProperty(globalThis, name)
+    } else {
+      Object.defineProperty(globalThis, name, descriptor)
+    }
+  })
+}
+
 // Lets the promises that can move on do so; setImmediate is not one of the mocked timers.
 export const settled = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
 

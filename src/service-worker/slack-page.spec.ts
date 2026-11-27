@@ -8,7 +8,7 @@ import {
   type SlackPageResult,
   SlackPageResultSchema,
 } from './slack-page.js'
-import { EARLIER, LATER } from './testing.js'
+import { EARLIER, LATER, replaceGlobal } from './testing.js'
 
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 const TOKEN = 'xoxc-0000-example'
@@ -52,19 +52,15 @@ const openSlackPage = (
     },
   }
 
-  const saved = Object.keys(page).map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const)
+  const restores: (() => void)[] = []
 
   for (const [name, value] of Object.entries(page)) {
-    Object.defineProperty(globalThis, name, { value, configurable: true })
+    replaceGlobal(restores, name, value)
   }
 
   context.after(() => {
-    for (const [name, descriptor] of saved) {
-      if (descriptor === undefined) {
-        Reflect.deleteProperty(globalThis, name)
-      } else {
-        Object.defineProperty(globalThis, name, descriptor)
-      }
+    for (const restore of restores) {
+      restore()
     }
   })
 

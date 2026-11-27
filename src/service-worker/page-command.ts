@@ -66,9 +66,11 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
       'treeitem',
     ].map((role) => `[role="${role}"]`),
   ].join(', ')
+
   // Pages also make whole regions focusable for keyboard scrolling, so tabindex alone marks a control only when the
   // element holds no real controls and is not a container by its tag or role (a tab panel, a scrollable code block).
   const FOCUSABLE_SELECTOR = '[tabindex]:not([tabindex="-1"])'
+
   const CONTAINER_SELECTOR = [
     'pre',
     'code',
@@ -86,12 +88,15 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
       (role) => `[role="${role}"]`
     ),
   ].join(', ')
+
   const REGION_SELECTOR =
     'section, article, form, main, nav, aside, dialog, [role="region"], [role="dialog"], [role="form"], [role="main"]'
+
   const DIALOG_SELECTOR = 'dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]'
   // Frames other extensions inject (a password manager's menu) are their UI, not the page's.
   const EXTENSION_FRAME_PREFIXES = ['chrome-extension:', 'moz-extension:']
   const SKIPPED_TAGS = new Set(['script', 'style', 'noscript', 'template', 'head', 'svg', 'canvas'])
+
   const INPUT_ROLES: Record<string, string> = {
     checkbox: 'checkbox',
     radio: 'radio',
@@ -104,7 +109,9 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
     image: 'button',
     file: 'file',
   }
+
   const VALUELESS_INPUT_TYPES = new Set(['checkbox', 'radio', 'button', 'submit', 'reset', 'image', 'file'])
+
   const TAG_ROLES = new Map([
     ['a', 'link'],
     ['button', 'button'],
@@ -112,7 +119,9 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
     ['textarea', 'textbox'],
     ['summary', 'button'],
   ])
+
   const ARIA_STATES = ['aria-checked', 'aria-selected', 'aria-pressed', 'aria-expanded']
+
   // Where a click may land inside an element, as fractions of its visible box, best first. Off-center points get
   // past what pages and extensions draw inside fields: a password manager's icon, a clear button, a search icon.
   const CLICK_POINT_FRACTIONS = [
@@ -123,6 +132,7 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
     { x: 0.5, y: 0.25 },
     { x: 0.5, y: 0.75 },
   ]
+
   const NAME_MAX_CHARS = 100
   const VALUE_MAX_CHARS = 80
   const HEADING_MAX_CHARS = 200
@@ -130,6 +140,7 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
   const LISTED_OPTIONS = 15
 
   const host = globalThis as typeof globalThis & { mishaTabState?: IPageState }
+
   host.mishaTabState ??= {
     documentId: crypto.randomUUID(),
     nextRef: 1,
@@ -141,6 +152,7 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
     nextRevision: 0,
     fieldReads: new WeakMap(),
   }
+
   const state = host.mishaTabState
 
   // Icon fonts draw their icons as Private Use Area characters, which carry no meaning as text.
@@ -207,6 +219,7 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
       if (current === ancestor) {
         return true
       }
+
       current = current instanceof ShadowRoot ? current.host : current.parentNode
     }
 
@@ -215,11 +228,13 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
 
   const elementAt = (clientX: number, clientY: number): Element | null => {
     let hit = document.elementFromPoint(clientX, clientY)
+
     while (hit?.shadowRoot) {
       const inner = hit.shadowRoot.elementFromPoint(clientX, clientY)
       if (inner === null || inner === hit) {
         break
       }
+
       hit = inner
     }
 
@@ -228,6 +243,7 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
 
   const activeElement = (): Element | null => {
     let active = document.activeElement
+
     while (active?.shadowRoot?.activeElement) {
       active = active.shadowRoot.activeElement
     }
@@ -261,6 +277,7 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
     const { control } = label
     const walker = document.createTreeWalker(label, NodeFilter.SHOW_TEXT)
     const parts: string[] = []
+
     for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
       if (control === null || !isWithin(node, control)) {
         parts.push(node.textContent ?? '')
@@ -286,10 +303,12 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
       .filter((label) => label !== null)
       .map(textOf)
       .join(' ')
+
     const isEntryField =
       element instanceof HTMLInputElement ||
       element instanceof HTMLTextAreaElement ||
       element instanceof HTMLSelectElement
+
     const candidates = [
       labelledBy,
       element.getAttribute('aria-label'),
@@ -302,6 +321,7 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
       element.querySelector('img[alt]')?.getAttribute('alt'),
       element.querySelector('svg title')?.textContent,
     ]
+
     const name = candidates.map((candidate) => collapse(candidate ?? '')).find((candidate) => candidate !== '')
 
     return clip(name ?? '', NAME_MAX_CHARS)
@@ -312,9 +332,11 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
     if (explicit !== undefined && explicit !== '') {
       return explicit
     }
+
     if (element instanceof HTMLInputElement) {
       return INPUT_ROLES[element.type] ?? 'textbox'
     }
+
     if (element instanceof HTMLElement && element.isContentEditable) {
       return 'textbox'
     }
@@ -333,6 +355,7 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
           ? !getComputedStyle(node).display.startsWith('inline')
           : node instanceof Text && node.data.trim() === ''
       )
+
     if (isBlockList) {
       return [...element.children]
         .filter((block) => block instanceof HTMLElement)
@@ -349,9 +372,11 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
         ? null
         : { value: element.value, isMasked: element.type === 'password' }
     }
+
     if (element instanceof HTMLTextAreaElement) {
       return { value: element.value, isMasked: false }
     }
+
     if (element instanceof HTMLElement && element.isContentEditable) {
       return { value: editableText(element), isMasked: false }
     }
@@ -397,6 +422,7 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
   const statesOf = (element: Element): string[] => {
     const field = valueOf(element)
     const isToggle = element instanceof HTMLInputElement && (element.type === 'checkbox' || element.type === 'radio')
+
     const states = [
       ...(field === null ? [] : [valueState(field)]),
       ...(isToggle ? [element.checked ? 'checked' : 'unchecked'] : []),
@@ -411,9 +437,11 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
     if (element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true') {
       states.push('disabled')
     }
+
     if (element.matches(':required')) {
       states.push('required')
     }
+
     if (element === activeElement()) {
       states.push('focused')
     }
@@ -441,14 +469,17 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
     if (element.matches(INTERACTIVE_SELECTOR)) {
       return true
     }
+
     if (element instanceof HTMLLabelElement) {
       return element.control !== null && (!isVisible(element.control) || isScreenReaderOnly(element.control))
     }
+
     if (isFocusableControl(element)) {
       return element.querySelector(INTERACTIVE_SELECTOR) === null
     }
 
     const { parentElement } = element
+
     const isOutermostPointer =
       getComputedStyle(element).cursor === 'pointer' &&
       (parentElement === null || getComputedStyle(parentElement).cursor !== 'pointer')
@@ -511,11 +542,13 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
 
     // Pages often wrap a heading alone in a container, so the section follows the outermost wrapper it ends.
     let anchor: Element = element
+
     while (anchor.nextElementSibling === null && anchor.parentElement !== null && anchor.parentElement !== section) {
       anchor = anchor.parentElement
     }
 
     const nodes: Node[] = [anchor]
+
     for (let next = anchor.nextSibling; next !== null && !holdsHeadingUpTo(next, level); next = next.nextSibling) {
       nodes.push(next)
     }
@@ -536,6 +569,7 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
       if (isTruncated) {
         return
       }
+
       if (length + line.length > maxChars) {
         isTruncated = true
         return
@@ -571,6 +605,7 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
         element instanceof HTMLSlotElement
           ? element.assignedNodes({ flatten: true })
           : [...(element.shadowRoot ?? element).childNodes]
+
       for (const child of children) {
         walk(child, isTextSuppressed)
       }
@@ -615,6 +650,7 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
       const { display } = getComputedStyle(element)
       const isBlock = !display.startsWith('inline') && display !== 'contents' && display !== 'table-cell'
       const isLabelOfControl = element instanceof HTMLLabelElement && element.control !== null
+
       if (isBlock) {
         flush()
       }
@@ -624,6 +660,7 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
       if (display === 'table-cell' && collapse(pending) !== '') {
         pending += ' | '
       }
+
       if (isBlock) {
         flush()
       }
@@ -637,11 +674,14 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
           flush()
           push(describe(element))
         }
+
         if (element.querySelector(INTERACTIVE_SELECTOR) !== null) {
           walkChildren(element, true)
         }
+
         return
       }
+
       if (element instanceof HTMLIFrameElement || element instanceof HTMLImageElement) {
         visitEmbedded(element, isTextSuppressed)
         return
@@ -667,12 +707,15 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
       if (isTruncated) {
         return
       }
+
       if (node instanceof Text) {
         if (!isTextSuppressed && node.data.trim() !== '' && isTextInScope(node)) {
           pending += node.data
         }
+
         return
       }
+
       if (node instanceof Element && isShown(node)) {
         visitElement(node, isTextSuppressed)
       }
@@ -683,6 +726,7 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
       walkChildren(dialog, false)
       flush()
     }
+
     if (dialogs.length > 0) {
       push('## Page behind the dialog')
     }
@@ -696,6 +740,7 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
         walk(node, false)
       }
     }
+
     flush()
 
     return {
@@ -723,23 +768,28 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
     // A match already shown in an earlier heading's section is not listed again.
     const shown = new Set<string>()
     const matches: PageFindMatch[] = []
+
     for (const [index, line] of lines.entries()) {
       if (!line.toLowerCase().includes(wanted) || shown.has(line)) {
         continue
       }
 
       matches.push({ kind: 'line', line: index })
+
       const headingRef = /^#+ \[(?<ref>\d+)\]/u.exec(line)?.groups?.ref
       if (headingRef !== undefined) {
         const section = snapshot('page', maxChars, Number(headingRef)).outline.split('\n')
         const listedEnd = Math.min(section.length, sectionLines + 1)
+
         for (const [offset, sectionLine] of section.slice(1, listedEnd).entries()) {
           shown.add(sectionLine)
           matches.push({ kind: 'sectionLine', section: sections.length, line: offset + 1 })
         }
+
         if (section.length > listedEnd) {
           matches.push({ kind: 'moreLines', count: section.length - listedEnd })
         }
+
         sections.push(section)
       }
     }
@@ -760,6 +810,7 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
       },
       { capture: true, passive: true }
     )
+
     state.isTrackingPointer = true
   }
 
@@ -783,14 +834,17 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
     const width = Math.min(box.right, innerWidth) - left
     const height = Math.min(box.bottom, innerHeight) - top
     const points = CLICK_POINT_FRACTIONS.map(({ x, y }) => ({ clientX: left + width * x, clientY: top + height * y }))
+
     const clear = points.find(({ clientX, clientY }) => {
       const hit = elementAt(clientX, clientY)
 
       return hit !== null && isHitOn(hit, element)
     })
+
     if (clear === undefined) {
       const [center] = points
       const cover = center === undefined ? null : elementAt(center.clientX, center.clientY)
+
       throw new Error(
         `Element ${ref} is covered${cover === null ? '' : ` by ${brief(cover)}`}. Close or dismiss that first.`
       )
@@ -802,6 +856,7 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
   // Without a ref, the target is the middle of the viewport.
   const locate = (ref: number | undefined): TargetPoint => {
     trackPointer()
+
     const point =
       ref === undefined
         ? { clientX: window.innerWidth / 2, clientY: window.innerHeight / 2, hasScrolled: false }
@@ -852,6 +907,7 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
       target.select()
       return { length: target.value.length }
     }
+
     if (target instanceof HTMLElement && target.isContentEditable) {
       const range = document.createRange()
       range.selectNodeContents(target)
@@ -871,9 +927,11 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
 
     const options = [...element.options]
     const wanted = collapse(option).toLowerCase()
+
     const match = options.find(
       (candidate) => candidate.value === option || collapse(candidate.label).toLowerCase() === wanted
     )
+
     if (match === undefined) {
       const labels = options.map((candidate) => collapse(candidate.label)).join(' | ')
       throw new Error(`Element ${ref} has no option "${option}". Its options: ${labels}`)
@@ -925,12 +983,14 @@ export const waitForQuietPage = (quietMs: number, timeoutMs: number): Promise<vo
       clearTimeout(timeoutTimer)
       resolve()
     }
+
     const isAnimating = (): boolean =>
       document
         .getAnimations()
         .some(
           (animation) => animation.playState === 'running' && animation.effect?.getComputedTiming().endTime !== Infinity
         )
+
     const onQuiet = (): void => {
       if (isAnimating()) {
         quietTimer = setTimeout(onQuiet, quietMs)
@@ -939,10 +999,12 @@ export const waitForQuietPage = (quietMs: number, timeoutMs: number): Promise<vo
 
       finish()
     }
+
     const observer = new MutationObserver(() => {
       clearTimeout(quietTimer)
       quietTimer = setTimeout(onQuiet, quietMs)
     })
+
     let quietTimer = setTimeout(onQuiet, quietMs)
     const timeoutTimer = setTimeout(finish, timeoutMs)
 

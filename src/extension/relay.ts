@@ -70,6 +70,7 @@ const settleQueryState = (isGreeting: boolean): void => {
   }
 
   queryState = isGreeting ? 'greeted' : 'no-client-queries'
+
   for (const answer of heldAnswers.splice(0)) {
     answer(clientQueryAnswer())
   }
@@ -90,10 +91,12 @@ const keep = (observed: ObserverMessage, port: MessagePort): void => {
     // the extension went away meanwhile, stays held by the observer for the relay that replaces this one.
     case 'frame': {
       const { seq, ...frame } = observed
+
       void chrome.runtime.sendMessage(frame satisfies ObservedMessage).then(
         () => reportTaken(port, seq),
         () => undefined
       )
+
       return
     }
     case 'greeting':
@@ -148,8 +151,10 @@ if (!Reflect.has(globalThis, RELAY_RUNNING_KEY)) {
     SLACK_ORIGIN,
     onObserverMessage
   )
+
   queryState = isOffered ? 'awaiting-greeting' : 'no-observer'
   Reflect.set(globalThis, RELAY_RUNNING_KEY, true)
+
   chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
     if (message === CAPTURE_QUERY) {
       sendResponse({ isSocketOpen: isObservedSocketOpen, error: captureError } satisfies RelayCapture)
@@ -166,6 +171,7 @@ if (!Reflect.has(globalThis, RELAY_RUNNING_KEY)) {
     }
 
     sendResponse(clientQueryAnswer())
+
     return false
   })
 }

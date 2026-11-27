@@ -53,6 +53,7 @@ export const hostAppBundleId = (): string | undefined => process.env[HOST_BUNDLE
 
 export const listRunningApps = async (signal?: AbortSignal): Promise<RunningApp[]> => {
   requireMacOs(APP_FOCUS_FEATURE)
+
   const { stdout, stderr, exitCode } = await runSubprocess({
     command: OSASCRIPT_BIN,
     args: ['-l', 'JavaScript', '-e', LIST_APPS_SCRIPT],
@@ -60,6 +61,7 @@ export const listRunningApps = async (signal?: AbortSignal): Promise<RunningApp[
     label: 'osascript',
     signal,
   })
+
   if (exitCode !== 0) {
     throw new PluginError(`Could not list the running apps: ${stderr.trim()}`, 'EXTERNAL_API_ERROR')
   }
@@ -99,11 +101,13 @@ export const focusApp = async (query: string, signal?: AbortSignal): Promise<IFo
     label: 'open',
     signal,
   })
+
   if (exitCode !== 0) {
     throw new PluginError(`Could not bring ${app.name} to the front: ${stderr.trim()}`, 'EXTERNAL_API_ERROR')
   }
 
   const deadline = Date.now() + APP_FOCUS_TIMEOUT_MS
+
   while ((await listRunningApps(signal)).find((running) => running.isFrontmost)?.pid !== app.pid) {
     if (Date.now() > deadline) {
       throw new PluginError(
@@ -111,6 +115,7 @@ export const focusApp = async (query: string, signal?: AbortSignal): Promise<IFo
         'TIMEOUT'
       )
     }
+
     await sleep(APP_FOCUS_POLL_INTERVAL_MS)
   }
 

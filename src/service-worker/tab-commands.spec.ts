@@ -204,6 +204,7 @@ const changes = (): Promise<unknown> =>
 
 const assertNoSecret = (answer: unknown): void => {
   const text = JSON.stringify(answer)
+
   for (const fragment of SECRET_FRAGMENTS) {
     assert.ok(!text.includes(fragment), `${fragment} left the service worker`)
   }
@@ -212,6 +213,7 @@ const assertNoSecret = (answer: unknown): void => {
 before(async () => {
   Object.defineProperty(globalThis, 'chrome', { value: fakeChrome, configurable: true })
   await import('../extension/background.js')
+
   emit(portMessages, {
     type: 'hello',
     role: 'host',
@@ -236,6 +238,7 @@ describe('[extension] Tab commands - reads', () => {
     // Arrange
     page.title = `Token ${FIRST_TOKEN} - Settings`
     page.url = `https://app.example.test/settings?token=${FIRST_TOKEN}&tab=keys`
+
     page.outline = [
       '## [1] Bot token',
       `[2] textbox "Bot token" value="${FIRST_TOKEN}" readonly`,
@@ -312,12 +315,14 @@ describe('[extension] Tab commands - reads', () => {
   it('should answer tabs, a field, the pointer and a picked option with their page text redacted', async () => {
     // Arrange
     page.title = `Token ${FIRST_TOKEN}`
+
     page.field = {
       isFocused: true,
       focusedElement: `<input#key> "${FIRST_TOKEN}"`,
       content: { isMasked: false, value: `key ${SECOND_TOKEN}`, revision: 4 },
       isMultiline: false,
     }
+
     page.pointer = {
       seq: 3,
       position: { clientX: 10, clientY: 20 },

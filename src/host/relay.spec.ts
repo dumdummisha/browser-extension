@@ -27,6 +27,7 @@ const BROWSER_APP = 'Example Browser.app'
 const TAKEOVER_DEADLINE_MS = 5000
 // The host's package version, unlike the clients' and the extension's: equal revisions talk whatever versions say.
 const HOST_VERSION = '9.8.7'
+
 const HOST_HELLO = {
   type: 'hello',
   role: 'host',
@@ -34,15 +35,18 @@ const HOST_HELLO = {
   componentVersion: HOST_VERSION,
   browserApp: BROWSER_APP,
 }
+
 const EXTENSION_HELLO = {
   type: 'hello',
   role: 'extension',
   protocolRevision: PROTOCOL_REVISION,
   componentVersion: '1.2.3',
 }
+
 const CLIENT_HELLO = { type: 'hello', role: 'client', protocolRevision: PROTOCOL_REVISION, componentVersion: '1.2.4' }
 // A caller's deadline that has not passed (2100-01-01).
 const DEADLINE = 4_102_444_800_000
+
 const STATUS = {
   type: 'status',
   identities: [],
@@ -120,6 +124,7 @@ const openRelayAt = async (context: TestContext, socketPath: string): Promise<IR
   const output = new PassThrough()
   const extension = createInbox()
   output.on('data', createFrameReader(extension.put))
+
   const server = await startNativeHostRelay({
     input,
     output,
@@ -128,12 +133,14 @@ const openRelayAt = async (context: TestContext, socketPath: string): Promise<IR
     componentVersion: HOST_VERSION,
     takeoverDeadlineMs: TAKEOVER_DEADLINE_MS,
   })
+
   context.after(async () => {
     if (server.listening) {
       input.end()
       await once(server, 'close')
     }
   })
+
   assert.deepEqual(await extension.next(), HOST_HELLO)
 
   return { server, socketPath, input, extension }
@@ -179,6 +186,7 @@ const openClient = async ({ socketPath }: IRelay): Promise<IClient> => {
 const connectClient = async (relay: IRelay): Promise<IClient> => {
   const client = await openClient(relay)
   send(client, CLIENT_HELLO)
+
   const leg = await client.inbox.next()
   if (isDeepStrictEqual(leg, { type: 'extension-leg', state: 'awaiting-hello' })) {
     assert.deepEqual(await client.inbox.next(), { type: 'extension-leg', state: 'ready' })
@@ -253,6 +261,7 @@ describe('[host] Relay - bridge folder', () => {
     await assert.rejects(startRelayIn(join(grantedParent, 'bridge', 'bridge.sock')), {
       message: `${grantedParent} has an ACL entry that allows access (ls -le lists it, and chmod -N removes it)`,
     })
+
     await assert.rejects(startRelayIn(join(grantedFolder, 'bridge', 'bridge.sock')), {
       message: `${join(grantedFolder, 'bridge')} has an ACL entry that allows access (ls -le lists it, and chmod -N removes it)`,
     })
@@ -294,11 +303,13 @@ describe('[host] Relay - socket takeover', () => {
     // Arrange
     const socketPath = join(await tempDir(context), 'bridge', 'bridge.sock')
     await mkdir(dirname(socketPath), { mode: 0o700 })
+
     spawnSync(process.execPath, [
       '-e',
       "require('node:net').createServer().listen(process.argv[1], () => process.kill(process.pid, 'SIGKILL'))",
       socketPath,
     ])
+
     const isStaleSocket = (await lstat(socketPath)).isSocket()
 
     // Act
@@ -313,6 +324,7 @@ describe('[host] Relay - socket takeover', () => {
     // Arrange
     const socketPath = join(await tempDir(context), 'bridge', 'bridge.sock')
     await mkdir(dirname(socketPath), { mode: 0o700 })
+
     spawnSync(process.execPath, [
       '-e',
       "require('node:net').createServer().listen(process.argv[1], () => process.kill(process.pid, 'SIGKILL'))",
@@ -322,6 +334,7 @@ describe('[host] Relay - socket takeover', () => {
     // Act
     const relays = await Promise.all([startRelayAt(context, socketPath), startRelayAt(context, socketPath)])
     const taken = relays.filter(({ server }) => !server.listening)
+
     for (const { input } of taken) {
       input.end()
       await once(input, 'end')
@@ -377,6 +390,7 @@ describe('[host] Relay - requests', () => {
         { type: 'request', id: 2, method: 'slackDownload', params: { order: 2 }, deadline: DEADLINE },
       ]
     )
+
     assert.deepEqual(await second.inbox.next(), { type: 'reply', id: 1, result: { ok: true } })
     assert.deepEqual(await first.inbox.next(), { type: 'reply', id: 1, error: 'Tab 12 closed' })
   })
@@ -399,6 +413,7 @@ describe('[host] Relay - message size', () => {
       id: 7,
       error: `The request is larger than the ${HOST_MESSAGE_MAX_BYTES} bytes the extension takes from its host`,
     })
+
     await roundTrip(relay, client)
   })
 
@@ -558,6 +573,7 @@ describe('[host] Relay - callers that gave up', () => {
       { type: 'cancel', id: 1 },
       { type: 'cancel', id: 3 },
     ])
+
     fromExtension(relay, { type: 'reply', id: 2, result: { ok: true } })
     assert.deepEqual(await staying.inbox.next(), { type: 'reply', id: 1, result: { ok: true } })
   })
@@ -618,6 +634,7 @@ describe('[host] Relay - client handshake', () => {
         { type: 'extension-leg', state: 'ready' },
       ]
     )
+
     await roundTrip(relay, client)
   })
 
@@ -644,6 +661,7 @@ describe('[host] Relay - client handshake', () => {
           'restart-browser-and-app'
         )
       )
+
       await roundTrip(relay, await connectClient(relay))
     })
   }
@@ -778,6 +796,7 @@ describe('[host] Relay - extension handshake', () => {
       { role: 'extension', protocolRevision: PROTOCOL_REVISION, componentVersion: '1.2.3' },
       'versions-unchecked'
     )
+
     assert.deepEqual([toExtension, toClient], [diagnostic, diagnostic])
   })
 
@@ -809,6 +828,7 @@ describe('[host] Relay - extension handshake', () => {
     await relay.extension.next()
     send(client, { type: 'request', id: 1, method: 'slackCall', params: {}, deadline: DEADLINE })
     await relay.extension.next()
+
     const fromTheExtension = {
       type: 'bridge-incompatible',
       reason: 'malformed-hello',
@@ -872,6 +892,7 @@ describe('[host] Relay - takeover handshake', () => {
         'restart-browser-and-app'
       )
     )
+
     assert.equal(relay.server.listening, true)
     await roundTrip(relay, await connectClient(relay))
   })
@@ -885,12 +906,14 @@ describe('[host] Relay - takeover handshake', () => {
       const socketPath = join(await tempDir(context), 'bridge', 'bridge.sock')
       await mkdir(dirname(socketPath), { mode: 0o700 })
       const received = createInbox()
+
       const holder = createServer((socket) => {
         socket.setEncoding('utf8')
         socket.on('data', createLineReader(received.put))
         socket.on('end', () => socket.end())
         socket.write(encodeLine(holderHello))
       })
+
       await new Promise<void>((resolve) => holder.listen(socketPath, resolve))
       context.after(() => new Promise((resolve) => holder.close(resolve)))
 
@@ -898,10 +921,12 @@ describe('[host] Relay - takeover handshake', () => {
       await assert.rejects(startRelayIn(socketPath), { message: new RegExp(`^Could not take ${socketPath} over`, 'u') })
       const told = await received.next()
       assert.ok(typeof told === 'object' && told !== null && 'reason' in told && 'local' in told)
+
       assert.deepEqual(
         [told.reason, told.local],
         [reason, { role: 'takeover', protocolRevision: PROTOCOL_REVISION, componentVersion: HOST_VERSION }]
       )
+
       assert.equal(holder.listening, true)
     })
   }
@@ -925,6 +950,7 @@ const startHolder = async (
   const received = createInbox()
   const ends = createInbox()
   const connected = new Set<Socket>()
+
   const server = createServer({ allowHalfOpen: true }, (socket) => {
     connected.add(socket)
     accepted.put('accepted')
@@ -933,13 +959,17 @@ const startHolder = async (
     socket.on('error', () => undefined)
     socket.on('end', () => ends.put('ended'))
     socket.on('close', () => connected.delete(socket))
+
     if (greeting !== null) {
       socket.write(encodeLine(greeting))
     }
   })
+
   await new Promise<void>((resolve) => server.listen(socketPath, resolve))
+
   context.after(async () => {
     const closed = new Promise((resolve) => server.close(resolve))
+
     for (const socket of connected) {
       socket.destroy()
     }
@@ -971,9 +1001,11 @@ describe('[host] Relay - takeover bounds', () => {
 
     // Act
     const first = takeOverWith(socketPath, new PassThrough(), SHORT_TAKEOVER_DEADLINE_MS)
+
     await assert.rejects(first, {
       message: `Could not take ${socketPath} over: the takeover did not finish within ${SHORT_TAKEOVER_DEADLINE_MS} ms`,
     })
+
     await holder.ends.next()
     const second = takeOverWith(socketPath, new PassThrough(), SHORT_TAKEOVER_DEADLINE_MS)
 
@@ -981,6 +1013,7 @@ describe('[host] Relay - takeover bounds', () => {
     await assert.rejects(second, {
       message: new RegExp(`the takeover did not finish within ${SHORT_TAKEOVER_DEADLINE_MS} ms$`, 'u'),
     })
+
     assert.equal(holder.server.listening, true)
     assert.equal((await lstat(socketPath)).isSocket(), true)
   })
@@ -994,6 +1027,7 @@ describe('[host] Relay - takeover bounds', () => {
     await assert.rejects(takeOverWith(socketPath, new PassThrough(), null), {
       message: new RegExp(`^Could not take ${socketPath} over: The browser bridge between the native host`, 'u'),
     })
+
     const told = await holder.received.next()
     await holder.ends.next()
 
@@ -1010,6 +1044,7 @@ describe('[host] Relay - takeover bounds', () => {
     const holder = await startHolder(context, socketPath, null)
     const input = new PassThrough()
     const taking = takeOverWith(socketPath, input, null)
+
     const rejected = assert.rejects(taking, {
       message: `Could not take ${socketPath} over: the browser's native pipe ended`,
     })
@@ -1024,6 +1059,7 @@ describe('[host] Relay - takeover bounds', () => {
     await assert.rejects(takeOverWith(socketPath, new PassThrough(), SHORT_TAKEOVER_DEADLINE_MS), {
       message: new RegExp(`the takeover did not finish within ${SHORT_TAKEOVER_DEADLINE_MS} ms$`, 'u'),
     })
+
     assert.equal(holder.server.listening, true)
   })
 })
@@ -1053,6 +1089,7 @@ describe('[host] Relay - takeover acquisition', () => {
     await assert.rejects(takeOverWith(socketPath, new PassThrough(), SHORT_TAKEOVER_DEADLINE_MS), {
       message: `Could not take ${socketPath} over: the takeover did not finish within ${SHORT_TAKEOVER_DEADLINE_MS} ms`,
     })
+
     await held.close()
     await lockTakenTwice(socketPath)
 
@@ -1084,14 +1121,18 @@ describe('[host] Relay - takeover acquisition', () => {
     await mkdir(dirname(socketPath), { mode: 0o700 })
     const input = new PassThrough()
     const accepted: Socket[] = []
+
     const holder = createServer({ allowHalfOpen: true }, (socket) => {
       accepted.push(socket)
       socket.on('error', () => undefined)
       input.end()
     })
+
     await new Promise<void>((resolve) => holder.listen(socketPath, resolve))
+
     context.after(async () => {
       const closed = new Promise((resolve) => holder.close(resolve))
+
       for (const socket of accepted) {
         socket.destroy()
       }
@@ -1103,6 +1144,7 @@ describe('[host] Relay - takeover acquisition', () => {
     await assert.rejects(takeOverWith(socketPath, input, null), {
       message: `Could not take ${socketPath} over: the browser's native pipe ended`,
     })
+
     await lockTakenTwice(socketPath)
 
     // Assert

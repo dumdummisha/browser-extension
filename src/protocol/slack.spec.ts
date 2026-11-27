@@ -83,6 +83,7 @@ describe('[protocol] Slack status', () => {
       queue: { state: 'failing', error: 'QuotaExceededError', unstoredEvents: 2, uncountedEvents: 1, loss },
       parity: [],
     })
+
     const losses = [
       { kind: 'last-known', droppedEvents: 7 },
       { kind: 'unavailable' },
@@ -107,6 +108,7 @@ describe('[protocol] Slack status', () => {
       queue: { state: 'committing', droppedEvents: 0 },
       parity,
     })
+
     const reports = [
       [
         { operation: 'chat.postMessage', state: 'matches' },
@@ -175,11 +177,13 @@ describe('[protocol] Slack bridge methods', () => {
     // Act
     const withComment = SLACK_BRIDGE_METHODS.slackUploadFinish.params.safeParse(finish)
     const without = SLACK_BRIDGE_METHODS.slackUploadFinish.params.safeParse({ ...finish, initialComment: null })
+
     const byUploadId = SLACK_BRIDGE_METHODS.slackUploadFinish.params.safeParse({
       ...finish,
       fileId: undefined,
       uploadId: '5b0d7e3a-9c41-4f2e-8a6b-1d2c3e4f5a6b',
     })
+
     const prepared = SLACK_BRIDGE_METHODS.slackUploadPrepare.result.safeParse({ ok: true, fileId: 'F0EXAMPLE1' })
 
     // Assert

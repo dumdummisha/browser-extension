@@ -223,6 +223,7 @@ const isReadBody = (body: IStartedShape['body']): body is Fields => body !== nul
 // that is.
 export const parityOf = (client: IRequestShape, misha: IRequestShape): OperationParity => {
   const { operation } = misha
+
   const differences = [
     ...(client.method === misha.method ? [] : [METHOD_DIFFERENCE]),
     ...fieldDifferences('header', client.headers, misha.headers),

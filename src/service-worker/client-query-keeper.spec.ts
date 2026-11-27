@@ -46,6 +46,7 @@ describe('[service-worker] Client query keeper - the latest call', () => {
       },
       { origin: API_ORIGIN, query: focusQuery('_x_background') },
     ])
+
     assert.deepEqual(
       { ...keeper.queries() },
       {
@@ -74,6 +75,7 @@ describe('[service-worker] Client query keeper - the latest call', () => {
       [endedLater, { ...startedEarlier.queries() }],
       [null, { [API_ORIGIN]: focusQuery('_x_background') }]
     )
+
     assert.deepEqual(deliveredLater, { origin: API_ORIGIN, query: focusQuery('_x_background') })
   })
 
@@ -96,6 +98,7 @@ describe('[service-worker] Client query keeper - what it reads and keeps', () =>
   it("should read the address of no entry but the client's XHR, so Misha's fetch is never kept", () => {
     // Arrange
     const keeper = keepClientQueries()
+
     const unread = (initiatorType: string): IResourceEntry => ({
       initiatorType,
       startTime: 10,
@@ -115,6 +118,7 @@ describe('[service-worker] Client query keeper - what it reads and keeps', () =>
   it('should keep nothing of a request that is no Web API call, or a call without a request id or a workspace route', () => {
     // Arrange
     const keeper = keepClientQueries()
+
     const urls = [
       'https://app.slack.com/client/T0EXAMPLE1?_x_id=0f1e2d3c-1.000&slack_route=T0EXAMPLE1',
       'https://files.slack.com/files-pri/T0EXAMPLE1-F0EXAMPLE1/notes.txt?_x_id=0f1e2d3c-1.000&slack_route=T0EXAMPLE1',
@@ -131,6 +135,7 @@ describe('[service-worker] Client query keeper - what it reads and keeps', () =>
       changes,
       urls.map(() => null)
     )
+
     assert.deepEqual({ ...keeper.queries() }, {})
   })
 
@@ -138,6 +143,7 @@ describe('[service-worker] Client query keeper - what it reads and keeps', () =>
     // Arrange
     const keeper = keepClientQueries()
     const secrets = ['xoxc-0000-made-up-token', 'AKIAABCDEFGHIJKLMNOP', 'a made-up search']
+
     const url = callTo(
       API_ORIGIN,
       `slack_route=T0EXAMPLE1&_x_csid=${secrets[1]}_suffix&fp=xoxc-0000&token=${secrets[0]}&query=${encodeURIComponent(secrets[2] ?? '')}&_x_version_ts=not-a-time`
@@ -154,6 +160,7 @@ describe('[service-worker] Client query keeper - what it reads and keeps', () =>
         ['slack_route', 'T0EXAMPLE1'],
       ],
     })
+
     const kept = JSON.stringify(keeper.queries())
     assert.ok(secrets.every((secret) => !kept.includes(secret)))
   })

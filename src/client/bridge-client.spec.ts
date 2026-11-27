@@ -22,12 +22,14 @@ const REQUEST_TIMEOUT_MS = 5000
 const TAKEOVER_DEADLINE_MS = 5000
 // The host's and the extension's package versions, unlike the client's: equal revisions talk whatever versions say.
 const HOST_VERSION = '9.8.7'
+
 const EXTENSION_HELLO = {
   type: 'hello',
   role: 'extension',
   protocolRevision: PROTOCOL_REVISION,
   componentVersion: '1.2.3',
 }
+
 const STATUS: SlackStatus = {
   type: 'status',
   identities: [{ tabId: 7, teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1', teamName: 'Example Workspace' }],
@@ -98,6 +100,7 @@ const openRelay = async (
   const output = new PassThrough()
   const frames = createQueue<unknown>()
   output.on('data', createFrameReader(frames.put))
+
   const server: Server = await startNativeHostRelay({
     input,
     output,
@@ -106,6 +109,7 @@ const openRelay = async (
     componentVersion: HOST_VERSION,
     takeoverDeadlineMs: TAKEOVER_DEADLINE_MS,
   })
+
   context.after(async () => {
     if (server.listening) {
       const closed = once(server, 'close')
@@ -113,6 +117,7 @@ const openRelay = async (
       await closed
     }
   })
+
   const hello = await frames.next()
   assert.ok(typeof hello === 'object' && hello !== null && 'type' in hello && hello.type === 'hello')
 
@@ -132,12 +137,14 @@ const createClient = (
   requestTimeoutMs: number
 ): { client: BridgeClient; rejected: IRejectedEvent[] } => {
   const rejected: IRejectedEvent[] = []
+
   const client = new BridgeClient({
     socketPath,
     requestTimeoutMs,
     reconnectDelayMs: 50,
     onHandlerError: (event, error) => rejected.push({ event, error }),
   })
+
   context.after(() => client.close())
 
   return { client, rejected }
@@ -162,11 +169,13 @@ describe('[client] Bridge client - events', () => {
     const event = eventAt('1700000001.000100')
     const received = Promise.withResolvers<SlackEvent>()
     const committed = Promise.withResolvers<undefined>()
+
     client.listen((taken) => {
       received.resolve(taken)
 
       return committed.promise
     })
+
     assert.deepEqual(await extension.next(), { type: 'listener' })
 
     // Act
@@ -183,12 +192,14 @@ describe('[client] Bridge client - events', () => {
     assert.deepEqual(taken, event)
     assert.ok(typeof beforeCommit === 'object' && beforeCommit !== null && 'deadline' in beforeCommit)
     const { deadline: _deadline, ...request } = beforeCommit
+
     assert.deepEqual(request, {
       type: 'request',
       id: 1,
       method: 'slackCall',
       params: { account: ACCOUNT, method: 'auth.test', params: {} },
     })
+
     assert.deepEqual(afterCommit, { type: 'ack', id: event.id })
   })
 
@@ -248,11 +259,13 @@ describe('[client] Bridge client - tab commands', () => {
     assert.ok(typeof request === 'object' && request !== null && 'deadline' in request)
     const { deadline, ...sent } = request
     assert.deepEqual(sent, { type: 'request', id: 1, method: 'closeTab', params: { tabId: 4 } })
+
     assert.ok(
       typeof deadline === 'number' &&
         deadline >= startedAt + REQUEST_TIMEOUT_MS &&
         deadline <= Date.now() + REQUEST_TIMEOUT_MS
     )
+
     assert.deepEqual(await answered, { tabId: 4 })
   })
 
@@ -328,10 +341,12 @@ describe('[client] Bridge client - abandoned calls', () => {
 
     // Act
     const abandoned = client.call(ACCOUNT, 'auth.test', {}, controller.signal)
+
     await assert.rejects(abandoned, {
       name: 'BridgeError',
       message: 'The caller abandoned slackCall before it was sent',
     })
+
     const next = client.tab('closeTab', { tabId: 4 })
     const request = await extension.next()
     fromExtension(extension, { type: 'reply', id: 1, result: { tabId: 4 } })
@@ -352,6 +367,7 @@ const startFakeRelay = async (
   const received = createQueue<unknown>()
   const connections = createQueue<Socket>()
   const open = new Set<Socket>()
+
   const server = createServer((socket) => {
     open.add(socket)
     socket.setEncoding('utf8')
@@ -361,9 +377,12 @@ const startFakeRelay = async (
     connections.put(socket)
     greet(socket)
   })
+
   await new Promise<void>((resolve) => server.listen(socketPath, resolve))
+
   context.after(async () => {
     const closed = new Promise((resolve) => server.close(resolve))
+
     for (const socket of open) {
       socket.destroy()
     }
@@ -391,6 +410,7 @@ const diagnosticOf = async (rejecting: Promise<unknown>): Promise<unknown> => {
     () => assert.fail('The call resolved'),
     (failure: unknown) => failure
   )
+
   assert.ok(error instanceof BridgeIncompatibleError)
 
   return error.diagnostic
@@ -429,10 +449,12 @@ describe('[client] Bridge client - handshake', () => {
     it(`should fail with the diagnostic against a host of revision ${revision}, and tell the host`, async (context) => {
       // Arrange
       const socketPath = await tempSocketPath(context)
+
       const relay = await startFakeRelay(context, socketPath, (socket) => {
         socket.write(encodeLine(hostHello(revision)))
         socket.write(encodeLine(READY_LEG))
       })
+
       const { client } = createClient(context, socketPath, REQUEST_TIMEOUT_MS)
 
       // Act
@@ -449,6 +471,7 @@ describe('[client] Bridge client - handshake', () => {
         peer: { role: 'host', protocolRevision: revision, componentVersion: HOST_VERSION },
         recovery: 'restart-browser-and-app',
       }
+
       assert.deepEqual([diagnostic, told], [expected, expected])
       assert.deepEqual(client.bridgeState(), { connection: 'incompatible', incompatibility: expected })
     })
@@ -457,9 +480,11 @@ describe('[client] Bridge client - handshake', () => {
   it('should take the hello of a host from before versioned hellos for malformed, not for revision 1', async (context) => {
     // Arrange
     const socketPath = await tempSocketPath(context)
+
     await startFakeRelay(context, socketPath, (socket) => {
       socket.write(encodeLine({ type: 'hello', browserApp: null }))
     })
+
     const { client } = createClient(context, socketPath, REQUEST_TIMEOUT_MS)
 
     // Act
@@ -500,7 +525,9 @@ describe('[client] Bridge client - handshake', () => {
       peer: {},
       recovery: 'versions-unchecked',
     })
+
     assert.ok(elapsedMs >= timeoutMs)
+
     assert.deepEqual(
       [expired, closed],
       [
@@ -533,9 +560,11 @@ describe('[client] Bridge client - handshake', () => {
   it("should take a reply before the host's hello for an unexpected frame", async (context) => {
     // Arrange
     const socketPath = await tempSocketPath(context)
+
     await startFakeRelay(context, socketPath, (socket) => {
       socket.write(encodeLine({ type: 'reply', id: 1, result: { tabId: 4 } }))
     })
+
     const { client } = createClient(context, socketPath, REQUEST_TIMEOUT_MS)
 
     // Act
@@ -555,10 +584,12 @@ describe('[client] Bridge client - handshake', () => {
   it('should fail the calls in flight when the host says hello a second time, never renegotiating', async (context) => {
     // Arrange
     const socketPath = await tempSocketPath(context)
+
     const relay = await startFakeRelay(context, socketPath, (socket) => {
       socket.write(encodeLine(hostHello(PROTOCOL_REVISION)))
       socket.write(encodeLine(READY_LEG))
     })
+
     const { client } = createClient(context, socketPath, REQUEST_TIMEOUT_MS)
     const answered = client.tab('closeTab', { tabId: 4 })
     await relay.received.next()
@@ -612,6 +643,7 @@ describe('[client] Bridge client - handshake', () => {
       peer: { role: 'extension', protocolRevision: PROTOCOL_REVISION - 1, componentVersion: '1.2.3' },
       recovery: 'update-extension',
     }
+
     assert.deepEqual([first, again], [expected, expected])
     assert.deepEqual(afterClose, { connection: 'closed', incompatibility: expected })
     assert.deepEqual(client.bridgeState(), { connection: 'ready', incompatibility: null })
@@ -635,11 +667,13 @@ describe('[client] Bridge client - handshake', () => {
     // Assert
     assert.ok(typeof request === 'object' && request !== null && 'deadline' in request)
     const { deadline } = request
+
     assert.ok(
       typeof deadline === 'number' &&
         deadline >= startedAt + REQUEST_TIMEOUT_MS &&
         deadline < greetedAt + REQUEST_TIMEOUT_MS
     )
+
     assert.deepEqual(await answered, { tabId: 4 })
   })
 
@@ -654,10 +688,12 @@ describe('[client] Bridge client - handshake', () => {
 
     // Act
     controller.abort()
+
     await assert.rejects(abandoned, {
       name: 'BridgeError',
       message: 'The caller abandoned slackCall before it was sent',
     })
+
     fromExtension(extension, EXTENSION_HELLO)
     const request = await extension.next()
     fromExtension(extension, { type: 'reply', id: 1, result: { tabId: 4 } })
@@ -704,10 +740,12 @@ describe('[client] Bridge client - send boundary', () => {
     // Act
     const abandoned = client.call(ACCOUNT, 'chat.postMessage', { channel: 'C0EXAMPLE1', text: 'hi' }, controller.signal)
     controller.abort()
+
     await assert.rejects(abandoned, {
       name: 'BridgeError',
       message: 'The caller abandoned slackCall before it was sent',
     })
+
     const next = client.tab('closeTab', { tabId: 5 })
     const request = await extension.next()
     fromExtension(extension, { type: 'reply', id: 2, result: { tabId: 5 } })
@@ -736,9 +774,11 @@ describe('[client] Bridge client - send boundary', () => {
     it(`should fail with the typed diagnostic and send nothing when ready and a ${reason} arrive in one chunk`, async (context) => {
       // Arrange
       const socketPath = await tempSocketPath(context)
+
       const relay = await startFakeRelay(context, socketPath, (socket) => {
         socket.write(`${encodeLine(hostHello(PROTOCOL_REVISION))}${encodeLine(READY_LEG)}${encodeLine(last)}`)
       })
+
       const { client } = createClient(context, socketPath, REQUEST_TIMEOUT_MS)
 
       // Act
@@ -768,10 +808,12 @@ describe('[client] Bridge client - send boundary', () => {
     // Act
     const late = client.tab('closeTab', { tabId: 5 })
     context.mock.timers.tick(REQUEST_TIMEOUT_MS)
+
     await assert.rejects(late, {
       name: 'BridgeError',
       message: "The caller's deadline passed before closeTab was sent",
     })
+
     context.mock.timers.reset()
     const next = client.tab('closeTab', { tabId: 6 })
     const request = await extension.next()

@@ -56,6 +56,7 @@ import { type SlackEvent, SlackEventSchema } from './slack.js'
 // Events the queue holds at most. When it is full, a new event is dropped and counted, so the queue keeps the oldest
 // run in order.
 export const EVENT_QUEUE_MAX = 2000
+
 // Event ids the extension remembers after their ack, so a second tab reporting the same message later is dropped
 // there; the app's unique event receipt drops any that get past.
 export const EVENT_IDS_REMEMBERED = 5000
@@ -164,6 +165,7 @@ export const restoredQueue = (records: readonly IStoredPendingEvent[], lossRecor
   const droppedEvents = droppedEventsOf(lossRecord)
   const events: SlackEvent[] = []
   const unreadableKeys: IDBValidKey[] = []
+
   for (const { key, value } of records) {
     const event = SlackEventSchema.safeParse(value)
     if (event.success) {

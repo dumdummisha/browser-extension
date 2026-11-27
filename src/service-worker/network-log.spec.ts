@@ -19,10 +19,12 @@ describe('[service-worker] Network log - recording', () => {
       url: `https://app.example.com/api/chat?token=${SLACK_SESSION_TOKEN}`,
       body: `token=${SLACK_SESSION_TOKEN}&channel=C0123`,
     })
+
     log.sentHeaders(TAB_ID, 'req-1', [
       { name: 'Content-Type', value: 'application/x-www-form-urlencoded' },
       { name: 'Cookie', value: `d=${SLACK_SESSION_TOKEN}` },
     ])
+
     log.ended(TAB_ID, 'req-1', { statusCode: 200 })
 
     // Assert
@@ -54,6 +56,7 @@ describe('[service-worker] Network log - recording', () => {
 
     // Assert
     const [request] = log.requests(TAB_ID)
+
     assert.deepEqual(
       { body: request?.body, isBodyTruncated: request?.isBodyTruncated, error: request?.error },
       { body: '{"password":"[redacted]"', isBodyTruncated: true, error: 'net::ERR_FAILED' }
@@ -63,6 +66,7 @@ describe('[service-worker] Network log - recording', () => {
   it('should keep only the latest requests of a tab, and forget a tab that closed', () => {
     // Arrange
     const log = new NetworkLog()
+
     for (let index = 0; index <= NETWORK_LOG_LIMIT; index += 1) {
       log.started(TAB_ID, `req-${index}`, {
         startedAt: STARTED_AT + index,
@@ -71,6 +75,7 @@ describe('[service-worker] Network log - recording', () => {
         body: null,
       })
     }
+
     log.started(TAB_ID + 1, 'req-0', { startedAt: STARTED_AT, method: 'GET', url: 'https://example.com/', body: null })
 
     // Act

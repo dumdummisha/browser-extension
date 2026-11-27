@@ -67,11 +67,14 @@ export class InputControlService {
 
     await this.withModifiers(modifiers, async () => {
       await mouse.press(MOUSE_BUTTONS[button])
+
       try {
         await sleep(holdMs)
+
         for (const point of [...path, to]) {
           await mouse.moveSmooth(point, { durationMs: MOUSE_MOVE_DURATION_MS })
         }
+
         await sleep(dwellMs)
       } finally {
         await mouse.release(MOUSE_BUTTONS[button])
@@ -89,25 +92,30 @@ export class InputControlService {
     const { keyboard } = await this.ensureSession()
     const pressed: { modifier: Modifier; key: Key }[] = []
     let outcome: { isOk: true; value: TResult } | { isOk: false; error: unknown }
+
     try {
       for (const modifier of modifiers) {
         const key = modifierKey(modifier)
         await keyboard.press(key)
         pressed.push({ modifier, key })
       }
+
       outcome = { isOk: true, value: await action() }
     } catch (error) {
       outcome = { isOk: false, error }
     }
 
     const stuck: string[] = []
+
     for (const { modifier, key } of pressed.toReversed()) {
       await keyboard.release(key).catch((error: unknown) => {
         stuck.push(`${modifier} (${errorMessage(error)})`)
       })
     }
+
     if (stuck.length > 0) {
       const after = outcome.isOk ? '' : ` after the action failed (${errorMessage(outcome.error)})`
+
       throw new PluginError(
         `Could not release the modifier keys ${stuck.join(', ')}${after}, so the system may still treat them as ` +
           'held. Ask the user to press and release them on the keyboard before any further input.',
@@ -115,6 +123,7 @@ export class InputControlService {
         outcome.isOk ? undefined : outcome.error
       )
     }
+
     if (!outcome.isOk) {
       throw outcome.error
     }
@@ -144,6 +153,7 @@ export class InputControlService {
   public readonly captureScreen = async (): Promise<ICaptureResult> => {
     const { screen } = await this.ensureSession()
     const monitor = await screen.primaryMonitor()
+
     const image = await screen.captureMonitor(monitor.id).catch((error: unknown) => {
       throw new PluginError(
         `Screen capture failed in ${process.execPath}. macOS returns no image when the binary running this tool ` +
@@ -155,6 +165,7 @@ export class InputControlService {
         error
       )
     })
+
     const path = tempPath('screen', '.png')
     await image.savePng(path)
 

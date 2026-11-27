@@ -27,6 +27,7 @@ export const createMouseClickTool = (inputControl: InputControlService): IToolDe
   input,
   execute: async ({ button = 'left', doubleClick: isDoubleClick = false, modifiers = [] }) => {
     await inputControl.click(button, isDoubleClick, modifiersFromNames(modifiers))
+
     const held = modifiers.length === 0 ? '' : ` with ${modifiers.join('+')} held`
 
     return `${isDoubleClick ? 'Double-click' : 'Click'} (${button}) delivered${held}.`

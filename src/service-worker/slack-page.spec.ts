@@ -14,10 +14,12 @@ const TOKEN = 'xoxc-0000-example'
 // A caller's deadline that has not passed (2100-01-01) and one that has (2000-01-01).
 const LATER = 4_102_444_800_000
 const EARLIER = 946_684_800_000
+
 // The query the service worker sends for the workspace's API, as the page's observer kept it (borrowed-query.ts
 // borrowedQueryString).
 const CLIENT_QUERY =
   '_x_id=0f1e2d3c-1794900000.100&_x_csid=example-csid&slack_route=T0EXAMPLE1&_x_version_ts=1794800000&_x_gantry=true&fp=7a&_x_num_retries=0'
+
 const CALL: Extract<SlackPageCommand, { kind: 'call' }> = {
   kind: 'call',
   account: ACCOUNT,
@@ -41,6 +43,7 @@ const openSlackPage = (
   pathname = '/client/T0EXAMPLE1/C0EXAMPLE1'
 ): Map<string, string> => {
   const stored = new Map<string, string>()
+
   const page = {
     location: { pathname },
     localStorage: {
@@ -50,7 +53,9 @@ const openSlackPage = (
       },
     },
   }
+
   const saved = Object.keys(page).map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)] as const)
+
   for (const [name, value] of Object.entries(page)) {
     Object.defineProperty(globalThis, name, { value, configurable: true })
   }
@@ -72,6 +77,7 @@ describe('[service-worker] Slack page - where the token goes', () => {
   it("should post the token to the workspace's API on its Slack host, with cookies and no redirect", async (context) => {
     // Arrange
     openSlackPage(context, () => savedConfig('https://example.slack.com/'))
+
     const fetched = context.mock.method(globalThis, 'fetch', () =>
       Promise.resolve(Response.json({ ok: true, user_id: 'U0EXAMPLE1' }))
     )
@@ -81,8 +87,10 @@ describe('[service-worker] Slack page - where the token goes', () => {
 
     // Assert
     assert.deepEqual(result, { kind: 'answer', answer: { ok: true, user_id: 'U0EXAMPLE1' } })
+
     const [url, init] = fetched.mock.calls[0]?.arguments ?? []
     const body = init?.body instanceof FormData ? init.body : new FormData()
+
     assert.deepEqual(
       [String(url).split('?')[0], init?.credentials, init?.redirect, body.get('token')],
       ['https://example.slack.com/api/auth.test', 'include', 'error', TOKEN]
@@ -101,10 +109,12 @@ describe('[service-worker] Slack page - where the token goes', () => {
 
     // Assert
     const [url, init] = fetched.mock.calls[0]?.arguments ?? []
+
     assert.equal(
       String(url),
       `https://example.slack.com/api/conversations.info?${CLIENT_QUERY.replace('example-csid', NEW_SESSION_ID)}`
     )
+
     assert.ok(init?.body instanceof FormData)
     assert.deepEqual(Object.fromEntries(init.body.entries()), {
       channel: 'D0EXAMPLE1',
@@ -138,10 +148,12 @@ describe('[service-worker] Slack page - where the token goes', () => {
       'https://example.slack.com:8443/',
       'not an address',
     ]
+
     const fetched = context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
 
     // Act
     const results: SlackPageResult[] = []
+
     for (const address of addresses) {
       openSlackPage(context, () => savedConfig(address))
       results.push(await runSlackPageCommand(CALL))
@@ -152,6 +164,7 @@ describe('[service-worker] Slack page - where the token goes', () => {
       results,
       addresses.map(() => ({ kind: 'failed', failure: 'no-api-address', status: null }))
     )
+
     assert.equal(fetched.mock.callCount(), 0)
   })
 })
@@ -163,6 +176,7 @@ const decodeBase64InPage = (context: TestContext): void => {
     value: (text: string) => new Uint8Array(Buffer.from(text, 'base64')),
     configurable: true,
   })
+
   context.after(() => Reflect.deleteProperty(Uint8Array, 'fromBase64'))
 }
 
@@ -230,17 +244,21 @@ describe('[service-worker] Slack page - activity session', () => {
     const stored = openSlackPage(context, () => savedConfig('https://example.slack.com/'))
     context.mock.timers.enable({ apis: ['Date'], now: NOW })
     context.mock.method(Math, 'random', () => 0)
+
     const expired = storedSession('Sexpired001', NOW - 600_000, NOW - ACTIVE_MS, {
       lastLogged: NOW - 120_000,
       v1Start: NOW - 600_000,
     })
+
     const ended = storedSession('Sended00001', NOW - 30_000, NOW - 1_000, { ended: true })
     const lastKept = storedSession('Slastkept01', NOW - STALE_MS - 60_000, NOW - STALE_MS)
     const stale = storedSession('Sstale00001', NOW - STALE_MS - 60_000, NOW - STALE_MS - 1)
+
     stored.set(
       SESSIONS_KEY,
       JSON.stringify(Object.fromEntries([expired, stale, ended, lastKept].map((session) => [session.id, session])))
     )
+
     const fetched = context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
 
     // Act
@@ -248,6 +266,7 @@ describe('[service-worker] Slack page - activity session', () => {
 
     // Assert
     assert.equal(queryOf(fetched), CLIENT_QUERY.replace('example-csid', NEW_SESSION_ID))
+
     assert.equal(
       stored.get(SESSIONS_KEY),
       JSON.stringify({
@@ -273,6 +292,7 @@ describe('[service-worker] Slack page - activity session', () => {
 
     // Assert
     assert.equal(queryOf(fetched), CLIENT_QUERY.replace('example-csid', 'Searlier001'))
+
     assert.equal(
       stored.get(SESSIONS_KEY),
       JSON.stringify({ [later.id]: later, [earlier.id]: { ...earlier, lastActivity: NOW } })
@@ -282,6 +302,7 @@ describe('[service-worker] Slack page - activity session', () => {
   it("should keep an Enterprise Grid workspace's sessions under its enterprise id, from the saved team or the path", async (context) => {
     // Arrange
     context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
+
     const enterpriseConfig = JSON.stringify({
       teams: {
         E0EXAMPLE1: { user_id: 'U0EXAMPLE1', name: 'Example', token: TOKEN, url: 'https://example.slack.com/' },
@@ -292,7 +313,9 @@ describe('[service-worker] Slack page - activity session', () => {
     const fromTeam = openSlackPage(context, () =>
       savedConfig('https://example.slack.com/', { enterprise_id: 'E0EXAMPLE1' })
     )
+
     await runSlackPageCommand(CALL)
+
     const fromPath = openSlackPage(context, () => enterpriseConfig, '/client/E0EXAMPLE1/C0EXAMPLE1')
     await runSlackPageCommand({ ...CALL, account: { teamId: 'E0EXAMPLE1', userId: 'U0EXAMPLE1' } })
 
@@ -317,6 +340,7 @@ describe('[service-worker] Slack page - activity session', () => {
     // Assert
     assert.deepEqual(result, { kind: 'answer', answer: { ok: true } })
     assert.equal(queryOf(fetched), CLIENT_QUERY.replace('example-csid', NEW_SESSION_ID))
+
     assert.equal(
       stored.get(SESSIONS_KEY),
       JSON.stringify({ [NEW_SESSION_ID]: storedSession(NEW_SESSION_ID, NOW, NOW) })
@@ -329,6 +353,7 @@ describe('[service-worker] Slack page - activity session', () => {
     context.mock.timers.enable({ apis: ['Date'], now: NOW })
     const fetched = context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
     const active = storedSession('Sactive0001', NOW - 20_000, NOW - 1_000)
+
     // An array whose active element's id names no index, primitives the new session cannot be assigned to, a null
     // entry, an active id that names no entry, an active entry with no id, and a last activity + cannot convert.
     const values = [
@@ -344,6 +369,7 @@ describe('[service-worker] Slack page - activity session', () => {
 
     // Act
     const outcomes: [SlackPageResult, string | undefined][] = []
+
     for (const value of values) {
       stored.set(SESSIONS_KEY, value)
       outcomes.push([await runSlackPageCommand(CALL), stored.get(SESSIONS_KEY)])
@@ -371,6 +397,7 @@ describe('[service-worker] Slack page - activity session', () => {
 
     // Act
     const outcomes: [SlackPageResult, string | undefined][] = []
+
     for (const value of values) {
       stored.set(SESSIONS_KEY, value)
       outcomes.push([await runSlackPageCommand(CALL), stored.get(SESSIONS_KEY)])
@@ -378,11 +405,13 @@ describe('[service-worker] Slack page - activity session', () => {
 
     // Assert
     const failed = { kind: 'failed', failure: 'activity-session-unreadable', status: null }
+
     assert.deepEqual(outcomes, [
       [failed, '[]'],
       [failed, '[null]'],
       [failed, JSON.stringify([{ ...indexed, lastActivity: NOW }, null])],
     ])
+
     assert.equal(fetched.mock.callCount(), 0)
   })
 
@@ -416,6 +445,7 @@ describe('[service-worker] Slack page - activity session', () => {
 
     // Assert
     assert.equal(queryOf(fetched), CLIENT_QUERY.replace('example-csid', target.id))
+
     assert.equal(
       stored.get(SESSIONS_KEY),
       JSON.stringify({ [target.id]: { ...target, lastActivity: NOW }, Salias00001: alias })
@@ -433,6 +463,7 @@ describe('[service-worker] Slack page - activity session', () => {
 
     // Act
     const written: (string | undefined)[] = []
+
     for (const session of [noStart, coerced]) {
       stored.set(SESSIONS_KEY, JSON.stringify({ [session.id]: session }))
       await runSlackPageCommand(CALL)
@@ -444,6 +475,7 @@ describe('[service-worker] Slack page - activity session', () => {
       fetched.mock.calls.map((call) => new URL(String(call.arguments[0])).searchParams.get('_x_csid')),
       [noStart.id, coerced.id]
     )
+
     assert.deepEqual(written, [
       JSON.stringify({ [noStart.id]: { ...noStart, lastActivity: NOW } }),
       JSON.stringify({ [coerced.id]: { ...coerced, lastActivity: NOW } }),
@@ -457,10 +489,12 @@ describe('[service-worker] Slack page - activity session', () => {
     const nullStart = { id: 'Snullstart1', startTime: null, lastActivity: NOW - 1_000 }
     const stringStart = { id: 'Sstrstart01', startTime: '5', lastActivity: NOW - 1_000 }
     const numberStart = storedSession('Snumstart01', NOW - 10_000, NOW - 1_000)
+
     stored.set(
       SESSIONS_KEY,
       JSON.stringify(Object.fromEntries([nullStart, numberStart, stringStart].map((session) => [session.id, session])))
     )
+
     const fetched = context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
 
     // Act
@@ -484,6 +518,7 @@ describe('[service-worker] Slack page - activity session', () => {
     // Assert
     assert.deepEqual(result, { kind: 'answer', answer: { ok: true } })
     assert.equal(queryOf(fetched), CLIENT_QUERY.replace('example-csid', NEW_SESSION_ID))
+
     assert.equal(
       stored.get(SESSIONS_KEY),
       JSON.stringify({ [NEW_SESSION_ID]: storedSession(NEW_SESSION_ID, NOW, NOW) })
@@ -495,6 +530,7 @@ describe('[service-worker] Slack page - activity session', () => {
     const stored = openSlackPage(context, () => savedConfig('https://example.slack.com/'))
     context.mock.timers.enable({ apis: ['Date'], now: NOW })
     const active = storedSession('Sactive0001', NOW - 20_000, NOW - 1_000)
+
     // Kept: no object, or no last activity a subtraction reads as a number. Pruned: a last activity a subtraction reads
     // as more than a day ago (a numeric string, null).
     const kept = {
@@ -504,10 +540,12 @@ describe('[service-worker] Slack page - activity session', () => {
       Snolast0001: { id: 'Snolast0001', startTime: NOW - 20_000 },
       Snostart001: { id: 'Snostart001', lastActivity: NOW - 500 },
     }
+
     const pruned = {
       Sstring0001: { id: 'Sstring0001', startTime: 1, lastActivity: '1' },
       Snull000001: { id: 'Snull000001', startTime: 1, lastActivity: null },
     }
+
     stored.set(SESSIONS_KEY, JSON.stringify({ ...kept, ...pruned, [active.id]: active }))
     const fetched = context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
 
@@ -543,11 +581,13 @@ describe('[service-worker] Slack page - activity session', () => {
     const dayOld = storedSession('Sdayold0001', NOW - STALE_MS - 60_000, NOW - STALE_MS)
     stored.set(SESSIONS_KEY, JSON.stringify({ [dayOld.id]: dayOld }))
     const read = stored.get.bind(stored)
+
     context.mock.method(stored, 'get', (key: string) => {
       const value = read(key)
       context.mock.timers.tick(1)
       return value
     })
+
     context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
 
     // Act
@@ -576,9 +616,11 @@ describe('[service-worker] Slack page - activity session', () => {
   it("should answer a failure code, sending nothing, when the page's storage refuses the session", async (context) => {
     // Arrange
     const stored = openSlackPage(context, () => savedConfig('https://example.slack.com/'))
+
     context.mock.method(stored, 'set', () => {
       throw new DOMException('The quota has been exceeded.', 'QuotaExceededError')
     })
+
     const fetched = context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
 
     // Act
@@ -602,6 +644,7 @@ describe('[service-worker] Slack page - activity session', () => {
       url: 'https://files.slack.com/files-pri/T0EXAMPLE1-F0EXAMPLE1/a.txt',
       deadline: LATER,
     })
+
     await runSlackPageCommand({
       kind: 'upload',
       account: ACCOUNT,
@@ -618,6 +661,7 @@ describe('[service-worker] Slack page - activity session', () => {
 
 describe('[service-worker] Slack page - uploads', () => {
   const UPLOAD_URL = 'https://files.slack.com/upload/v1/example-grant'
+
   const UPLOAD: SlackPageCommand = {
     kind: 'upload',
     account: ACCOUNT,
@@ -638,8 +682,10 @@ describe('[service-worker] Slack page - uploads', () => {
 
     // Assert
     assert.deepEqual(result, { kind: 'uploaded' })
+
     const [url, init] = fetched.mock.calls[0]?.arguments ?? []
     const file = init?.body instanceof FormData ? init.body.get('filename') : null
+
     assert.deepEqual([url, init?.method, init?.credentials, init?.redirect], [UPLOAD_URL, 'POST', undefined, 'error'])
     assert.ok(file instanceof File)
     assert.deepEqual([file.name, await file.text()], ['notes.txt', 'made-up notes'])
@@ -678,6 +724,7 @@ describe('[service-worker] Slack page - deadlines', () => {
     openSlackPage(context, () => savedConfig('https://example.slack.com/'))
     decodeBase64InPage(context)
     const fetched = context.mock.method(globalThis, 'fetch', () => Promise.resolve(Response.json({ ok: true })))
+
     const commands: SlackPageCommand[] = [
       { ...CALL, deadline: EARLIER },
       {
@@ -698,6 +745,7 @@ describe('[service-worker] Slack page - deadlines', () => {
 
     // Act
     const results = []
+
     for (const command of commands) {
       results.push(await runSlackPageCommand(command))
     }
@@ -707,6 +755,7 @@ describe('[service-worker] Slack page - deadlines', () => {
       results,
       commands.map(() => ({ kind: 'failed', failure: 'deadline-passed', status: null }))
     )
+
     assert.equal(fetched.mock.callCount(), 0)
   })
 })

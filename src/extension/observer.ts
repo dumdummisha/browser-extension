@@ -70,13 +70,16 @@ const reportSocketState = (): void => {
 // it did count too.
 const onResourceEntries = (list: PerformanceObserverEntryList): void => {
   const entries: PerformanceEntryList = apply(listedEntries, list, [])
+
   for (const entry of entries) {
     const initiatorType: unknown = apply(entryInitiatorType, entry, [])
     const startTime: unknown = apply(entryStartTime, entry, [])
+
     const change =
       typeof initiatorType === 'string' && typeof startTime === 'number'
         ? clientQueries.take({ initiatorType, startTime, url: () => apply(entryName, entry, []) })
         : null
+
     if (change !== null) {
       relays.postState({ kind: 'client-query', ...change })
     }
@@ -102,6 +105,7 @@ const signedInUserOf = (teamId: string): string | undefined => {
   }
 
   let state: unknown
+
   try {
     state = parseJson(saved)
   } catch {
@@ -128,11 +132,13 @@ const onTrusted = (socket: WebSocket, type: string, handler: (event: Event) => v
 
 const observe = (socket: WebSocket): void => {
   let isOpen = false
+
   onTrusted(socket, 'open', () => {
     isOpen = true
     openSockets += 1
     reportSocketState()
   })
+
   // A socket that never opened closes too.
   onTrusted(socket, 'close', () => {
     if (isOpen) {
@@ -140,6 +146,7 @@ const observe = (socket: WebSocket): void => {
       reportSocketState()
     }
   })
+
   // The account is read as the message comes, so the service worker can drop it if the tab is signed in as another
   // account by the time it is admitted. A tab that shows no workspace, or no user for it, keys nothing.
   onTrusted(socket, 'message', (event) => {
@@ -171,6 +178,7 @@ window.WebSocket = new Proxy(window.WebSocket, {
   construct: (target, args: ConstructorParameters<typeof WebSocket>, newTarget: typeof WebSocket) => {
     const url = `${args[0]}`
     const socket: WebSocket = construct(target, [url, args[1]], newTarget)
+
     if (isSlackSocket(url)) {
       observe(socket)
     }

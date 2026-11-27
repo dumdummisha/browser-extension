@@ -46,6 +46,7 @@ export const createClickTool = (browser: BrowserControlService): IToolDefinition
     waitFor,
   }) => {
     const target = clickTarget(ref, x, y, 'click target')
+
     const action = await browser.click({
       target,
       tabId,
@@ -55,6 +56,7 @@ export const createClickTool = (browser: BrowserControlService): IToolDefinition
       waitFor:
         waitFor === undefined ? undefined : { text: waitFor, isGone: false, timeoutMs: WAIT_DEFAULT_SECONDS * 1000 },
     })
+
     return `[PASS] Clicked ${describeTarget(target)}.\n${formatAction(action)}`
   },
 })

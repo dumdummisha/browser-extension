@@ -63,6 +63,7 @@ export const createDragTool = (browser: BrowserControlService): IToolDefinition<
   }) => {
     const from = clickTarget(fromRef, fromX, fromY, 'drag start')
     const to = clickTarget(toRef, toX, toY, 'drag target')
+
     const action = await browser.drag({
       tabId,
       from,
@@ -72,6 +73,7 @@ export const createDragTool = (browser: BrowserControlService): IToolDefinition<
       holdMs,
       dwellMs,
     })
+
     const held = modifiers.length === 0 ? '' : ` with ${modifiers.join('+')} held`
 
     return `[PASS] Dragged ${describeTarget(from)} to ${describeTarget(to)}${held}.\n${formatAction(action)}`

@@ -14,6 +14,7 @@ const TAB: TabInfo = {
   zoom: 1,
   windowBounds: { left: 0, top: 0, width: 1200, height: 900 },
 }
+
 const FIELD_REF = 4
 const REDACTED_TOKEN: FieldContent = { isMasked: false, value: '[redacted]', revision: 0 }
 
@@ -85,12 +86,14 @@ describe('[tools] Browser control - typing settles by revision', () => {
   it('should wait until the revision stops changing while successive tokens read redacted the same', async (context) => {
     // Arrange
     context.after(pretendPlatform('darwin'))
+
     const reads = [
       focusedField({ ...REDACTED_TOKEN, value: '' }),
       focusedField({ ...REDACTED_TOKEN, revision: 1 }),
       focusedField({ ...REDACTED_TOKEN, revision: 2 }),
       focusedField({ ...REDACTED_TOKEN, revision: 3 }),
     ]
+
     const answered: FieldState[] = []
     const browser = typingBrowser(reads, answered)
 
@@ -105,6 +108,7 @@ describe('[tools] Browser control - typing settles by revision', () => {
 
     // Assert
     assert.deepEqual(result, { field: focusedField({ ...REDACTED_TOKEN, revision: 3 }), action: null })
+
     assert.deepEqual(
       answered.map(({ content }) => content.revision),
       [0, 1, 2, 3, 3]
@@ -114,6 +118,7 @@ describe('[tools] Browser control - typing settles by revision', () => {
   it('should keep waiting when a wrapper ref reads another field whose token redacts the same', async (context) => {
     // Arrange
     context.after(pretendPlatform('darwin'))
+
     // The page answers each value of each field a revision of its own: the user token 0, then the bot token, which the
     // wrapper's focus moved to, 1, and the bot token once more typing changed it 2.
     const reads = [
@@ -122,6 +127,7 @@ describe('[tools] Browser control - typing settles by revision', () => {
       focusedField({ ...REDACTED_TOKEN, revision: 1 }),
       focusedField({ ...REDACTED_TOKEN, revision: 2 }),
     ]
+
     const answered: FieldState[] = []
     const browser = typingBrowser(reads, answered)
 
@@ -136,6 +142,7 @@ describe('[tools] Browser control - typing settles by revision', () => {
 
     // Assert
     assert.deepEqual(result, { field: focusedField({ ...REDACTED_TOKEN, revision: 2 }), action: null })
+
     assert.deepEqual(
       answered.map(({ content }) => content.revision),
       [0, 0, 1, 2, 2]

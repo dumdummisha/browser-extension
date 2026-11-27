@@ -34,6 +34,7 @@ const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 const FRAME = { type: 'message', channel: 'D0EXAMPLE1', ts: '1700000001.000100', text: 'hello' } as const
 const EVENT: SlackEvent = { type: 'event', id: slackEventKey(ACCOUNT, FRAME), account: ACCOUNT, frame: FRAME }
 const EXTENSION_VERSION = '1.2.3'
+
 const HOST_HELLO = {
   type: 'hello',
   role: 'host',
@@ -41,6 +42,7 @@ const HOST_HELLO = {
   componentVersion: '9.8.7',
   browserApp: null,
 }
+
 const EXTENSION_HELLO = {
   type: 'hello',
   role: 'extension',
@@ -85,6 +87,7 @@ const assertListenedOn = (port: IFakePort): void => {
   const [hello, status, event, ...later] = typesOf(port)
   assert.deepEqual([hello, status, event], ['hello', 'status', 'event'])
   assert.deepEqual(port.posted[2], EVENT)
+
   assert.ok(
     later.every((type) => type === 'status'),
     `The port posted ${JSON.stringify(port.posted)}`
@@ -128,10 +131,12 @@ const fakeChrome = (state: IFakeChrome): object => ({
 // left with no listener attached when the test ends, so no redelivery timer outlives it.
 const startWorker = async (context: TestContext): Promise<IFakeChrome> => {
   const factory = new IDBFactory()
+
   const seeding = new PendingQueueWriter(() => openPendingQueue(factory), {
     onRestored: () => undefined,
     onHealthChange: () => undefined,
   })
+
   await seeding.recover()
   assert.equal(await seeding.admit(EVENT), 'stored')
 
@@ -140,6 +145,7 @@ const startWorker = async (context: TestContext): Promise<IFakeChrome> => {
   Object.defineProperty(globalThis, 'chrome', { value: fakeChrome(state), configurable: true })
   workers += 1
   await import(`../extension/background.js?native-link=${workers}`)
+
   context.after(() => {
     for (const port of state.ports) {
       emit(port.onDisconnect)
@@ -164,6 +170,7 @@ const typesOf = (port: IFakePort): unknown[] =>
 const holdSnapshot = (state: IFakeChrome): { readonly queried: Promise<void>; readonly release: () => void } => {
   const held = Promise.withResolvers<unknown[]>()
   const queried = Promise.withResolvers<undefined>()
+
   state.tabsAnswer = () => {
     queried.resolve(undefined)
 
@@ -197,12 +204,14 @@ describe('[service-worker] Native link - listener races', () => {
     // Assert - only the handshake frames went out; a fresh compatible link gets the status and the stored event
     assert.deepEqual(first.posted[0], EXTENSION_HELLO)
     assert.deepEqual(typesOf(first), ['hello', 'bridge-incompatible'])
+
     emit(first.onDisconnect)
     emit(state.onAlarm)
     const second = portAt(state, 1)
     emit(second.onMessage, HOST_HELLO)
     emit(second.onMessage, { type: 'listener' })
     await untilPosted(second, 3)
+
     assertListenedOn(second)
   })
 

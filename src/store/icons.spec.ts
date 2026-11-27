@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { opaqueBounds } from './png-pixels.js'
 
 const ICON_DIR = fileURLToPath(new URL('../../src/extension/icons', import.meta.url))
+
 // Chrome Web Store's image guidance for the 128-pixel icon: artwork within a centred 96-pixel square, 16 transparent
 // pixels on each side.
 const STORE_ICON_ARTWORK = 96
@@ -18,12 +19,14 @@ describe('[store] Icons', () => {
 
     // Assert
     const artwork = Math.max(bounds.right - bounds.left + 1, bounds.bottom - bounds.top + 1)
+
     const padding = Math.min(
       bounds.left,
       bounds.top,
       bounds.width - 1 - bounds.right,
       bounds.height - 1 - bounds.bottom
     )
+
     assert.deepEqual([bounds.width, bounds.height, artwork], [128, 128, STORE_ICON_ARTWORK])
     assert.ok(padding >= STORE_ICON_PADDING)
   })

@@ -24,6 +24,7 @@ export const focusAppTool: IToolDefinition<typeof input> = {
   input,
   execute: async ({ app = hostAppBundleId() }, { signal }) => {
     requireMacOs(APP_FOCUS_FEATURE)
+
     if (app === undefined) {
       throw new PluginError(
         'macOS did not report which app this agent runs in (its environment has no __CFBundleIdentifier), so pass ' +

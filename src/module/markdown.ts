@@ -26,6 +26,7 @@ export class MarkdownBuilder {
 
   public readonly table = (headers: string[], rows: string[][]): this => {
     this.push(`| ${headers.join(' | ')} |`, `| ${headers.map(() => '---').join(' | ')} |`)
+
     for (const row of rows) {
       this.push(`| ${row.join(' | ')} |`)
     }

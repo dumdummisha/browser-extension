@@ -92,6 +92,7 @@ export class RelayConnection {
     let failure: Error | undefined
 
     this.socket.setEncoding('utf8')
+
     this.socket.on('data', (chunk: string) => {
       try {
         readLines(chunk)
@@ -99,10 +100,13 @@ export class RelayConnection {
         this.socket.destroy(new BridgeError('The relay sent a message this client cannot read', { cause: error }))
       }
     })
+
     this.socket.on('error', (error) => {
       failure = error
     })
+
     this.socket.on('close', () => this.closed(failure))
+
     this.socket.once('connect', () => {
       const hello: ClientHello = {
         type: 'hello',
@@ -110,6 +114,7 @@ export class RelayConnection {
         protocolRevision: PROTOCOL_REVISION,
         componentVersion,
       }
+
       this.socket.write(encodeLine(hello))
     })
   }
@@ -119,6 +124,7 @@ export class RelayConnection {
   // was waiting before it was sent.
   public whenReady(deadline: number, signal: AbortSignal | undefined, what: string): Promise<void> {
     const { status } = this
+
     switch (status.state) {
       case 'ready':
         return Promise.resolve()
@@ -139,6 +145,7 @@ export class RelayConnection {
   // being ready, the diagnostic of an incompatible one included, and sends nothing.
   public send(message: ClientMessage): void {
     const { status } = this
+
     switch (status.state) {
       case 'ready':
         this.socket.write(encodeLine(message))
@@ -167,6 +174,7 @@ export class RelayConnection {
         signal?.removeEventListener('abort', abandon)
         this.waiters.delete(waiter)
       }
+
       const waiter: IReadinessWaiter = {
         ready: () => {
           settle()
@@ -177,10 +185,12 @@ export class RelayConnection {
           reject(error)
         },
       }
+
       const abandon = (): void => {
         waiter.fail(new BridgeError(`The caller abandoned ${what} before it was sent`))
         this.closeIfUnwaited()
       }
+
       const timer = setTimeout(() => {
         const diagnostic = this.missingHello()
         waiter.fail(new BridgeIncompatibleError(diagnostic))
@@ -256,6 +266,7 @@ export class RelayConnection {
 
     if (control.state === 'ready' && this.state === 'awaiting-hello') {
       this.status = { state: 'ready' }
+
       for (const waiter of this.waiters) {
         waiter.ready()
       }
@@ -273,6 +284,7 @@ export class RelayConnection {
   private incompatible(diagnostic: BridgeIncompatible): void {
     const error = new BridgeIncompatibleError(diagnostic)
     this.status = { state: 'incompatible', diagnostic }
+
     for (const waiter of this.waiters) {
       waiter.fail(error)
     }
@@ -283,6 +295,7 @@ export class RelayConnection {
 
   private closed(failure: Error | undefined): void {
     const hasBeenReady = this.state === 'ready'
+
     const error = this.isHostAgreed
       ? new BridgeError('The browser bridge closed (the browser quit or the extension reloaded)', { cause: failure })
       : new BridgeError(
@@ -290,7 +303,9 @@ export class RelayConnection {
             'loaded and its native host installed?',
           { cause: failure }
         )
+
     this.status = { state: 'closed', error }
+
     for (const waiter of this.waiters) {
       waiter.fail(error)
     }

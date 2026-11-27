@@ -57,6 +57,7 @@ describe('[protocol] Handshake - hello', () => {
       HOST,
       'extension-host'
     )
+
     assert.ok(reading.kind === 'incompatible')
 
     // Act

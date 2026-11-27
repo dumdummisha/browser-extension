@@ -72,6 +72,7 @@ describe('[service-worker] Relay attachment - after an extension reload', () => 
   it('should skip a document that is gone by the time the relay goes in, and inject into no other', async () => {
     // Arrange - the tab navigated after the probe, to a page off Slack, or to one the extension cannot script
     const gone = new Error(`No document with id DOC-A in tab with id ${TAB_ID}`)
+
     const navigatedAway = fakeScripting(
       [
         slackDocument('DOC-A', false),
@@ -79,6 +80,7 @@ describe('[service-worker] Relay attachment - after an extension reload', () => 
       ],
       gone
     )
+
     const unscriptable = fakeScripting([slackDocument('DOC-A', false), null], gone)
 
     // Act

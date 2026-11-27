@@ -63,11 +63,13 @@ const recordMessages = (): IMessageRecord => {
 // handed brings.
 const joinAsRelay = (document: EventTarget): IJoinedRelay => {
   const ports: MessagePort[] = []
+
   const take = (event: Event): void => {
     if (event instanceof MessageEvent && event.ports[0] !== undefined) {
       ports.push(event.ports[0])
     }
   }
+
   document.addEventListener(OBSERVER_PORT_EVENT, take)
   document.dispatchEvent(new CustomEvent(RELAY_READY_EVENT))
   document.removeEventListener(OBSERVER_PORT_EVENT, take)
@@ -76,6 +78,7 @@ const joinAsRelay = (document: EventTarget): IJoinedRelay => {
   const [port] = ports
   assert.ok(port !== undefined && ports.length === 1, 'the observer answers a ready event with exactly one port')
   const record = recordMessages()
+
   port.onmessage = ({ data }: MessageEvent<unknown>) => {
     record.onMessage(data, port)
   }
@@ -120,6 +123,7 @@ describe("[service-worker] Capture handshake - the observer's side", () => {
         { kind: 'socket', isSocketOpen: true },
         { kind: 'frame', text: 'message 1', seq: 0 },
       ])
+
       assert.deepEqual(await second.received(2), [
         { kind: 'socket', isSocketOpen: true },
         { kind: 'frame', text: 'message 1', seq: 0 },
@@ -174,6 +178,7 @@ describe("[service-worker] Capture handshake - the observer's side", () => {
     const document = new EventTarget()
     const hold = holdFrames(HELD_FRAMES_MAX)
     const released = Promise.withResolvers<number>()
+
     const relays = answerRelays(document, () => GREETING, {
       ...hold,
       release: (seq) => {
@@ -181,6 +186,7 @@ describe("[service-worker] Capture handshake - the observer's side", () => {
         released.resolve(seq)
       },
     })
+
     const first = joinAsRelay(document)
     relays.postFrame({ kind: 'frame', text: 'message 1' })
     await first.received(2)
@@ -211,6 +217,7 @@ describe('[service-worker] Capture handshake - the frame hold', () => {
       { kind: 'frame', text: 'message 1', seq: 1 },
       { kind: 'frame', text: 'message 2', seq: 2 },
     ])
+
     assert.deepEqual(heldFrames(hold), [
       { kind: 'frame', text: 'message 1', seq: 1 },
       { kind: 'frame', text: 'message 2', seq: 2 },
@@ -220,6 +227,7 @@ describe('[service-worker] Capture handshake - the frame hold', () => {
   it('should stop holding a released frame, and change nothing for a number it holds no frame under', () => {
     // Arrange
     const hold = holdFrames(3)
+
     for (const text of ['message 0', 'message 1', 'message 2']) {
       hold.hold({ kind: 'frame', text })
     }
@@ -247,9 +255,11 @@ describe("[service-worker] Capture handshake - the relay's side", () => {
       const document = new EventTarget()
       const channel = new MessageChannel()
       openPorts.push(channel.port1, channel.port2)
+
       document.addEventListener(RELAY_READY_EVENT, () => {
         document.dispatchEvent(new MessageEvent(OBSERVER_PORT_EVENT, { ports: [channel.port2] }))
       })
+
       const relay = recordMessages()
 
       // Act
@@ -266,9 +276,11 @@ describe("[service-worker] Capture handshake - the relay's side", () => {
     // Arrange
     const document = new EventTarget()
     let readyEvents = 0
+
     document.addEventListener(RELAY_READY_EVENT, () => {
       readyEvents += 1
     })
+
     const offSlack = { document, origin: 'https://example.com', isTopFrame: true }
     const slackSubframe = { document, origin: SLACK_ORIGIN, isTopFrame: false }
 
@@ -277,10 +289,12 @@ describe("[service-worker] Capture handshake - the relay's side", () => {
       message:
         'A relay takes a channel only in the top frame of https://app.slack.com, not in a top frame of https://example.com',
     })
+
     assert.throws(() => takeObserverPorts(slackSubframe, SLACK_ORIGIN, () => undefined), {
       message:
         'A relay takes a channel only in the top frame of https://app.slack.com, not in a subframe of https://app.slack.com',
     })
+
     assert.equal(readyEvents, 0)
   })
 

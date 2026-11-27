@@ -71,6 +71,7 @@ export const createMouseDragTool = (inputControl: InputControlService): IToolDef
       holdMs: holdMs ?? DRAG_HOLD_DEFAULT_MS,
       dwellMs: dwellMs ?? DRAG_DWELL_DEFAULT_MS,
     })
+
     const held = modifiers.length === 0 ? '' : ` with ${modifiers.join('+')} held`
     const via = path.length === 0 ? '' : ` through ${path.length} point${path.length === 1 ? '' : 's'}`
 

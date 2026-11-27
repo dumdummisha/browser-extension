@@ -54,6 +54,7 @@ export const PAGE_TEXT_REDACTION_DESCRIPTION =
 
 export const TAB_ID_ARG_DESCRIPTION =
   'Tab id from tab_list or tab_read. Defaults to the active tab of the browser window the user used last.'
+
 export const REF_ARG_DESCRIPTION =
   'Element ref: the number in brackets in tab_read output, e.g. 12 for "[12] button". Refs stay valid while the ' +
   'element stays on the page.'

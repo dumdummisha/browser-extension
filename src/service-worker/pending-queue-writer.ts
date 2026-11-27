@@ -40,10 +40,12 @@ interface IDraft {
 export const openPendingQueue = (factory: IDBFactory): Promise<IDBDatabase> =>
   new Promise((resolve, reject) => {
     const opening = factory.open(PENDING_QUEUE_DATABASE, PENDING_QUEUE_DATABASE_VERSION)
+
     opening.onupgradeneeded = () => {
       opening.result.createObjectStore(PENDING_EVENTS_STORE, { keyPath: STORE_KEY_PATH })
       opening.result.createObjectStore(LOSS_STORE, { keyPath: STORE_KEY_PATH })
     }
+
     opening.onsuccess = () => resolve(opening.result)
     opening.onerror = () => reject(opening.error ?? new PendingQueueError('The pending queue did not open'))
   })
@@ -53,6 +55,7 @@ export const openPendingQueue = (factory: IDBFactory): Promise<IDBDatabase> =>
 const read = <TResult>(operation: IDBRequest<TResult>): Promise<TResult> =>
   new Promise((resolve, reject) => {
     operation.onsuccess = () => resolve(operation.result)
+
     operation.onerror = (event) => {
       event.preventDefault()
       reject(operation.error ?? new PendingQueueError('A read of the pending queue failed'))
@@ -67,11 +70,13 @@ const commit = async <TResult>(
 ): Promise<TResult> => {
   const transaction = database.transaction([PENDING_EVENTS_STORE, LOSS_STORE], 'readwrite', { durability: 'strict' })
   const state = { isFinished: false }
+
   const completion = new Promise<void>((resolve, reject) => {
     transaction.oncomplete = () => {
       state.isFinished = true
       resolve()
     }
+
     transaction.onabort = () => {
       state.isFinished = true
       reject(transaction.error ?? new PendingQueueError('The transaction aborted'))
@@ -196,6 +201,7 @@ export class PendingQueueWriter {
   // pending, so it is forwarded again, and the next change that commits deletes it.
   public ack(id: string): Promise<boolean> {
     this.remember(id)
+
     if (!this.drafted.has(id) && this.held.delete(id)) {
       this.reportHealth()
 
@@ -271,17 +277,21 @@ export class PendingQueueWriter {
     }
 
     const database = await this.connect()
+
     const { restored, pending, droppedEvents } = await commit(database, async (events, loss) => {
       const [keys, values, lossRecord] = await Promise.all([
         read(events.getAllKeys()),
         read<unknown[]>(events.getAll()),
         read<unknown>(loss.get(DROPPED_EVENTS_ID)),
       ])
+
       const queue = restoredQueue(
         keys.map((key, index) => ({ key, value: values[index] })),
         lossRecord
       )
+
       this.droppedEvents = queue.droppedEvents
+
       for (const key of queue.unreadableKeys) {
         events.delete(key)
       }
@@ -291,6 +301,7 @@ export class PendingQueueWriter {
         pending: new Map(queue.events.map((event) => [event.id, event])),
         lost: queue.unreadableKeys.length,
       }
+
       this.admitHeld(draft)
 
       return {
@@ -299,6 +310,7 @@ export class PendingQueueWriter {
         droppedEvents: countLoss(loss, lossRecord, draft.lost + this.uncountedEvents),
       }
     })
+
     this.settle(pending, droppedEvents)
     this.isRecovered = true
     this.hooks.onRestored(restored)
@@ -309,9 +321,11 @@ export class PendingQueueWriter {
   // uncounted ones of a failure included.
   private async commitChange<TResult>(work: (draft: IDraft) => TResult): Promise<TResult> {
     const database = await this.connect()
+
     const { result, pending, droppedEvents } = await commit(database, async (events, loss) => {
       const lossRecord = await read<unknown>(loss.get(DROPPED_EVENTS_ID))
       const draft: IDraft = { events, pending: new Map(this.stored), lost: 0 }
+
       for (const id of this.stored.keys()) {
         if (this.acknowledged.has(id)) {
           events.delete(id)
@@ -327,6 +341,7 @@ export class PendingQueueWriter {
         droppedEvents: countLoss(loss, lossRecord, draft.lost + this.uncountedEvents),
       }
     })
+
     this.settle(pending, droppedEvents)
 
     return result

@@ -28,9 +28,11 @@ const PackagedFilesSchema = z.looseObject({
   content_scripts: z.array(z.object({ js: z.array(z.string()) })),
   icons: z.record(z.string(), z.string()),
 })
+
 const BuiltManifestSchema = PackagedFilesSchema.extend({ key: z.string() })
 
 const PackageSchema = z.object({ version: z.string() })
+
 // A manifest as read, every field kept in its order, for writing it back.
 const JsonObjectSchema = z.record(z.string(), z.unknown())
 
@@ -54,6 +56,7 @@ export const chromeVersionProblem = (version: string): string | null => {
 export const builtManifest = (source: unknown, packageJson: unknown): Manifest & { readonly version: string } => {
   const manifest = SourceManifestSchema.parse(source)
   const { version: packageVersion } = PackageSchema.parse(packageJson)
+
   if (manifest.description.length > MANIFEST_DESCRIPTION_MAX_LENGTH) {
     throw new Error(
       `The manifest's description has ${manifest.description.length} characters, more than Chrome's ` +
@@ -89,13 +92,17 @@ export const packStoreArchive = (extensionDir: string, archivePath: string): voi
   // The manifest is checked, but written as it was read, since the schema drops fields it does not name.
   const built: unknown = JSON.parse(readFileSync(join(extensionDir, 'manifest.json'), 'utf8'))
   BuiltManifestSchema.parse(built)
+
   const storeManifest = Object.fromEntries(
     Object.entries(JsonObjectSchema.parse(built)).filter(([field]) => field !== 'key')
   )
+
   const staging = mkdtempSync(join(tmpdir(), 'misha-store-'))
+
   try {
     for (const file of storeArchiveFiles(storeManifest)) {
       mkdirSync(dirname(join(staging, file)), { recursive: true })
+
       if (file === 'manifest.json') {
         writeFileSync(join(staging, file), `${JSON.stringify(storeManifest, null, 2)}\n`)
       } else {
@@ -106,6 +113,7 @@ export const packStoreArchive = (extensionDir: string, archivePath: string): voi
     const archive = resolve(archivePath)
     mkdirSync(dirname(archive), { recursive: true })
     rmSync(archive, { force: true })
+
     execFileSync('/usr/bin/zip', ['-X', '-D', '-q', '-r', archive, '.'], { cwd: staging })
   } finally {
     rmSync(staging, { recursive: true, force: true })

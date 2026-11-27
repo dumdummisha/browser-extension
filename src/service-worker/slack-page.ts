@@ -104,6 +104,7 @@ const UNSENT_FAILURES: ReadonlySet<SlackPageFailure> = new Set([
   'activity-session-unsaved',
   'deadline-passed',
 ])
+
 const ANSWERED_FAILURES: ReadonlySet<SlackPageFailure> = new Set([
   'api-refused',
   'api-no-answer',
@@ -234,6 +235,7 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
     }
 
     let parsed: unknown
+
     try {
       parsed = JSON.parse(saved)
     } catch {
@@ -320,6 +322,7 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
   // characters) have no last activity, so nothing of one is pruned.
   const pruneStaleSessions = (sessions: unknown): void => {
     const now = Date.now()
+
     if (!isRecord(sessions)) {
       return
     }
@@ -355,8 +358,10 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
     // since this function cannot import.
     const teamId = /^\/client\/(?<teamId>[TE][A-Z0-9]+)/u.exec(location.pathname)?.groups?.teamId
     const saved = localStorage.getItem('localConfig_v2')
+
     const config: unknown =
       saved === null ? null : await guarded('client-state-unreadable', (): unknown => JSON.parse(saved))
+
     const team: unknown =
       teamId !== undefined && isRecord(config) && isRecord(config.teams) ? config.teams[teamId] : null
     if (teamId === undefined || !isRecord(team) || typeof team.user_id !== 'string' || typeof team.name !== 'string') {
@@ -376,10 +381,12 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
     }
 
     const { token } = team
+
     // The guard runs on the page's own URL and RegExp, which a page script could replace. Page scripts are out of scope
     // (README, Security), so it keeps the token from a saved address that is not Slack's and is not hardened against
     // such a script.
     const base = URL.parse(team.url)
+
     const isSlackApiBase =
       base?.protocol === 'https:' &&
       base.username === '' &&
@@ -416,6 +423,7 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
       const storageKey = `${ACTIVITY_SESSION_PREFIX}${activitySessionKeyOf(teamId, team.enterprise_id)}`
       let written: string
       let recorded: string
+
       try {
         // recordSessionActivity: extend the active session the selected session's id names (a[i.id].lastActivity = n),
         // or add a new one under its id with the client's fields in the client's order; then prune, then save.
@@ -423,6 +431,7 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
         const sessions = storedSessions(localStorage.getItem(storageKey))
         const active = activeSessionOf(sessions, now)
         let session: unknown
+
         if (active === undefined) {
           const created = {
             id: newSessionId(),
@@ -437,6 +446,7 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
           session = propertyOf(sessions, String(propertyOf(active, 'id')))
           assignProperty(session, 'lastActivity', now)
         }
+
         pruneStaleSessions(sessions)
         written = JSON.stringify(sessions)
         recorded = JSON.stringify(session)
@@ -497,6 +507,7 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
 
       const sessionId = recordedSessionId()
       const url = new URL(method, apiUrl)
+
       url.search = [
         new URLSearchParams(fields.slice(0, routeAt)).toString(),
         ...(sessionId === null ? [] : [`${SESSION_FIELD}=${sessionId}`]),
@@ -504,8 +515,10 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
       ]
         .filter((part) => part !== '')
         .join('&')
+
       // A multipart body, as the client posts: the call's parameters, the token and the client's own fields.
       const body = new FormData()
+
       for (const [name, value] of Object.entries({
         ...params,
         token,
@@ -515,6 +528,7 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
       })) {
         body.append(name, value)
       }
+
       const response = await sent('api-unreachable', () =>
         fetch(url, { method: 'POST', body, credentials: 'include', redirect: 'error' })
       )
@@ -548,6 +562,7 @@ export const runSlackPageCommand = async (command: SlackPageCommand): Promise<Sl
     const upload = async (uploadUrl: string, filename: string, chunks: readonly string[]): Promise<SlackPageResult> => {
       const body = new FormData()
       body.append('filename', new Blob(chunks.map((chunk) => Uint8Array.fromBase64(chunk))), filename)
+
       const posted = await sent('upload-unreachable', () =>
         fetch(uploadUrl, { method: 'POST', body, redirect: 'error' })
       )

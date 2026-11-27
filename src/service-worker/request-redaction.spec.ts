@@ -8,6 +8,7 @@ const MULTIPART_BOUNDARY = '----FormBoundaryExample123'
 
 // Token-shaped samples are assembled at run time, so the repository holds nothing a secret scanner would flag.
 const SLACK_SESSION_TOKEN = ['xoxc', '2048', '4096', 'aBcDeFgHiJkLmNoP'].join('-')
+
 const SHAPED_SAMPLES = {
   'Slack session token': SLACK_SESSION_TOKEN,
   'Slack app-level token': ['xapp', '1', 'A0123456789', 'abcdef0123456789'].join('-'),
@@ -180,6 +181,7 @@ describe('[service-worker] Request redaction - URLs and headers', () => {
       `user@example.test:${OPAQUE_SECRET}`,
       'example-user',
     ]
+
     const redirect = encodeURIComponent(`https://example-user:${OPAQUE_SECRET}@files.example.test/a`)
 
     // Act
@@ -188,6 +190,7 @@ describe('[service-worker] Request redaction - URLs and headers', () => {
 
     // Assert
     assert.deepEqual(redacted, Array(userinfos.length).fill('https://[redacted]@app.example.test/report/@team?page=2'))
+
     assert.equal(
       nested,
       `https://app.example.test/login?next=${encodeURIComponent('https://[redacted]@files.example.test/a')}`
@@ -361,6 +364,7 @@ describe('[service-worker] Request redaction - page text', () => {
     const shortLines = [pemLine('BEGIN', ''), ...Array.from({ length: 30 }, () => 'QUJD'), pemLine('END', '')].join(
       '\n'
     )
+
     const spreadBearer = `Bearer\n\n\n\n${OPAQUE_SECRET}`
 
     // Act

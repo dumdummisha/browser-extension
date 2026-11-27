@@ -50,6 +50,7 @@ export interface IBridgeState {
   readonly connection: ConnectionState
   readonly incompatibility: BridgeIncompatible | null
 }
+
 export type BridgeStateListener = (state: IBridgeState) => void
 export type UploadShare = Omit<SlackBridgeParams<'slackUploadFinish'>, 'account'>
 
@@ -85,6 +86,7 @@ export class BridgeClient {
   public listen(handler: EventHandler): void {
     const connection = this.current()
     this.handler = handler
+
     if (connection.state === 'ready') {
       connection.send({ type: 'listen' })
     } else {
@@ -137,6 +139,7 @@ export class BridgeClient {
   // A private file, pulled from the extension chunk by chunk as the stream is read.
   public async download(account: SlackAccount, url: string, signal?: AbortSignal): Promise<Readable> {
     const { slackDownload } = SLACK_BRIDGE_METHODS
+
     const { downloadId, byteLength } = slackDownload.result.parse(
       await this.request('slackDownload', slackDownload.params.parse({ account, url }), signal)
     )
@@ -153,9 +156,11 @@ export class BridgeClient {
   ): Promise<PreparedUpload> {
     const { slackUploadChunk, slackUploadPrepare } = SLACK_BRIDGE_METHODS
     const uploadId = randomUUID()
+
     for (let index = 0; index < chunkCount(bytes.byteLength); index += 1) {
       const { start, end } = chunkRange(index, bytes.byteLength)
       const data = Buffer.from(bytes.subarray(start, end)).toString('base64')
+
       slackUploadChunk.result.parse(
         await this.request('slackUploadChunk', slackUploadChunk.params.parse({ uploadId, index, data }), signal)
       )
@@ -204,6 +209,7 @@ export class BridgeClient {
 
   private async *downloadChunks(downloadId: string, byteLength: number, signal?: AbortSignal): AsyncGenerator<Buffer> {
     const { slackDownloadChunk } = SLACK_BRIDGE_METHODS
+
     for (let index = 0; index < chunkCount(byteLength); index += 1) {
       const params = slackDownloadChunk.params.parse({ downloadId, index })
       const { data } = slackDownloadChunk.result.parse(await this.request('slackDownloadChunk', params, signal))
@@ -218,6 +224,7 @@ export class BridgeClient {
   // waiting; an abandoned call is cancelled at the extension.
   private async request(method: BridgeMethod, params: unknown, signal?: AbortSignal): Promise<unknown> {
     const deadline = Date.now() + this.options.requestTimeoutMs
+
     if (signal?.aborted === true) {
       throw new BridgeError(`The caller abandoned ${method} before it was sent`)
     }
@@ -239,6 +246,7 @@ export class BridgeClient {
       }
 
       const id = this.nextId
+
       try {
         connection.send({ type: 'request', id, method, params, deadline })
       } catch (error) {
@@ -247,21 +255,25 @@ export class BridgeClient {
       }
 
       this.nextId += 1
+
       const abandon = (): void => {
         connection.calls.delete(id)
         clearTimeout(timer)
         connection.send({ type: 'cancel', id })
         reject(new BridgeError(`The caller abandoned ${method}`))
       }
+
       const timer = setTimeout(() => {
         connection.calls.delete(id)
         signal?.removeEventListener('abort', abandon)
         reject(new BridgeError(`The extension did not answer ${method} within ${this.options.requestTimeoutMs}ms`))
       }, remainingMs)
+
       const release = (): void => {
         clearTimeout(timer)
         signal?.removeEventListener('abort', abandon)
       }
+
       connection.calls.set(id, { method, resolve, reject, release })
       signal?.addEventListener('abort', abandon, { once: true })
     })
@@ -302,6 +314,7 @@ export class BridgeClient {
 
   private connectionReady(connection: RelayConnection): void {
     this.incompatibility = null
+
     if (this.handler !== null) {
       connection.send({ type: 'listen' })
     }
@@ -312,6 +325,7 @@ export class BridgeClient {
   // Only a ready connection brings status, so a status still held came over the connection that just failed.
   private connectionIncompatible(diagnostic: BridgeIncompatible): void {
     this.incompatibility = diagnostic
+
     if (this.latestStatus !== undefined) {
       this.publishStatus(undefined)
     }
@@ -338,6 +352,7 @@ export class BridgeClient {
 
         connection.calls.delete(message.id)
         call.release()
+
         if ('error' in message) {
           call.reject(new BridgeError(`The extension failed ${call.method}: ${message.error}`))
         } else {
@@ -402,6 +417,7 @@ export class BridgeClient {
 
   private publishStatus(status: SlackStatus | undefined): void {
     this.latestStatus = status
+
     for (const listener of this.statusListeners) {
       listener(status)
     }
@@ -409,6 +425,7 @@ export class BridgeClient {
 
   private publishBridgeState(): void {
     const state = this.bridgeState()
+
     for (const listener of this.bridgeStateListeners) {
       listener(state)
     }

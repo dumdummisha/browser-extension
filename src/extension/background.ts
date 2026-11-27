@@ -111,6 +111,7 @@ const pace = new SlackPace(() => paceGapMs(Math.random))
 const clientObserver = new SlackClientObserver(SLACK_ORIGIN, () => {
   void pushStatus()
 })
+
 const SLACK_REQUESTS: chrome.webRequest.RequestFilter = { urls: SLACK_REQUEST_URLS, types: ['xmlhttprequest'] }
 
 const slackTabs = async (): Promise<IdentifiedTab[]> =>
@@ -128,6 +129,7 @@ const injected = async (
     func: runSlackPageCommand,
     args: [command],
   })
+
   if (injection === undefined) {
     throw new Error(`The Slack page in tab ${target.tabId} ran nothing`)
   }
@@ -227,6 +229,7 @@ const relayScripting: IRelayScripting = {
     const injections = await chrome.scripting
       .executeScript({ target: { tabId }, world: 'ISOLATED', func: probeRelay, args: [RELAY_RUNNING_KEY] })
       .catch(() => null)
+
     const [injection] = injections ?? []
     if (injection === undefined) {
       return null
@@ -249,6 +252,7 @@ const relayScripting: IRelayScripting = {
 // outcome, so the answer comes once every attempt settled: the tabs whose attempt failed, each with its error.
 const attachRelays = async (): Promise<readonly { readonly tabId: number; readonly error: unknown }[]> => {
   const tabs = (await slackTabs()).filter((tab) => !tab.discarded)
+
   const failures = await Promise.all(
     tabs.map(({ id }) =>
       attachRelay(relayScripting, id, SLACK_ORIGIN).then(
@@ -268,9 +272,11 @@ const attachRelays = async (): Promise<readonly { readonly tabId: number; readon
 // still running, so its startup pass attaches none and settles at once.
 const relayQueries = async (page: ISlackPage): Promise<ClientQueries | null> => {
   await Promise.allSettled([relaysAttached])
+
   const answer: unknown = await chrome.tabs
     .sendMessage(page.tabId, CLIENT_QUERY, { documentId: page.documentId })
     .catch(() => null)
+
   const read = RelayClientQuerySchema.safeParse(answer)
 
   return read.success ? read.data.queries : null
@@ -307,6 +313,7 @@ const requestInPage = async (
   // Only a Web API call's key, its fresh request id, is this request's alone; the client may fetch a file's address too.
   const release = clientObserver.exclude(page, key, command.kind === 'call')
   let isAnswered = false
+
   try {
     const { answered } = await injected({ tabId: page.tabId, documentIds: [page.documentId] }, command)
     const result = readPageResult(page.tabId, answered)
@@ -356,6 +363,7 @@ const inSlackTab = async (
 ): Promise<SlackTabOutcome> => {
   const reloadTabs: number[] = []
   const unqueriedTabs: number[] = []
+
   for (const page of await signedInPages(account)) {
     const requestFor = await prepare(page)
     if (requestFor === null) {
@@ -398,6 +406,7 @@ const callPreparation =
 
     return () => {
       const requestId = freshRequestId()
+
       const queries = Object.fromEntries(
         Object.entries(clientQueries).map(([origin, query]): [string, string] => [
           origin,
@@ -457,6 +466,7 @@ const uploadParts = (chunks: ReadonlyMap<number, string> | undefined, byteLength
   }
 
   const parts: string[] = []
+
   for (let index = 0; index < chunks.size; index += 1) {
     const part = chunks.get(index)
     const { start, end } = chunkRange(index, byteLength)
@@ -526,10 +536,12 @@ const uploadToSlack = (
 
     const { href } = ticket.uploadUrl
     const { filename } = params
+
     const bytesRequest: IPageRequest = {
       key: href,
       command: { kind: 'upload', account, uploadUrl: href, filename, chunks, deadline },
     }
+
     const uploaded = await send((unsent) => requestInPage(answered.page, bytesRequest, unsent))
 
     return preparedUploadOf(uploaded, ticket.fileId)
@@ -543,6 +555,7 @@ const slackHandlers: Handlers = {
   },
   slackDownload: async (raw, abandonment) => {
     const { account, url } = SLACK_BRIDGE_METHODS.slackDownload.params.parse(raw)
+
     const answered = await pace.turn(account.teamId, abandonment, (send) =>
       inSlackTab(
         account,
@@ -553,6 +566,7 @@ const slackHandlers: Handlers = {
         })
       )
     )
+
     if (answered.kind === 'unanswered') {
       throw new Error(`${NO_SLACK_TAB_ERROR}: no open Slack tab is signed in as ${slackAccountId(account)}`)
     }
@@ -564,6 +578,7 @@ const slackHandlers: Handlers = {
 
     const bytes = Uint8Array.fromBase64(result.data)
     const downloadId = crypto.randomUUID()
+
     if (bytes.byteLength > 0) {
       downloads.set(downloadId, bytes)
     }
@@ -596,6 +611,7 @@ const slackHandlers: Handlers = {
     const { account, uploadId, filename, byteLength } = SLACK_BRIDGE_METHODS.slackUploadPrepare.params.parse(raw)
     const parts = uploadParts(uploads.get(uploadId), byteLength)
     uploads.delete(uploadId)
+
     if (parts === null) {
       return { ok: false, error: `The chunks pushed for upload ${uploadId} do not add up to ${byteLength} bytes` }
     }
@@ -632,6 +648,7 @@ const writer = new PendingQueueWriter(() => openPendingQueue(indexedDB), {
     void pushStatus()
   },
 })
+
 // The forwarder runs only between a listener attaching on a ready link and that link's end (stopPortTraffic).
 const forwarder = new Forwarder(
   (event) => {
@@ -641,12 +658,14 @@ const forwarder = new Forwarder(
   },
   (id) => writer.isPending(id)
 )
+
 const statusQueue = serially()
 const intake = serially()
 
 const statusSnapshot = async (): Promise<SlackStatus> => {
   await writer.settled()
   const tabs = await slackTabs()
+
   const [identities, captures] = await Promise.all([
     Promise.all(tabs.map(({ id }) => identityOf({ tabId: id }))),
     Promise.all(tabs.map(({ id }) => captureOf(id))),
@@ -671,6 +690,7 @@ const pushStatus = (): Promise<void> =>
     }
 
     const snapshot = await statusSnapshot()
+
     if (listenerLink === link) {
       postOn(link, snapshot)
     }
@@ -723,10 +743,12 @@ const onHostFrame = (link: INativeLink, running: Map<number, AbortController>, f
     case 'request': {
       const controller = new AbortController()
       running.set(frame.id, controller)
+
       void answerRequest(handlers, frame, controller.signal).then((reply) => {
         running.delete(frame.id)
         postOn(link, reply)
       })
+
       return
     }
     case 'cancel':
@@ -740,6 +762,7 @@ const onHostFrame = (link: INativeLink, running: Map<number, AbortController>, f
           forwarder.settle(frame.id)
         }
       })
+
       return
     case 'listener':
       void attachListener(link)
@@ -753,6 +776,7 @@ const stopPortTraffic = (link: INativeLink, running: Map<number, AbortController
   }
 
   running.clear()
+
   if (listenerLink === link) {
     listenerLink = null
     forwarder.detach()
@@ -777,6 +801,7 @@ const connect = (): void => {
 
   const opened = chrome.runtime.connectNative(NATIVE_HOST_NAME)
   const running = new Map<number, AbortController>()
+
   const link: INativeLink = {
     port: opened,
     handshake: new HostHandshake(
@@ -791,18 +816,21 @@ const connect = (): void => {
       }
     ),
   }
+
   opened.onMessage.addListener((message: unknown) => {
     const frame = link.handshake.receive(message)
     if (frame !== null) {
       onHostFrame(link, running, frame)
     }
   })
+
   // A port that dropped took its relay with it, and every caller of its requests lost the connection.
   opened.onDisconnect.addListener(() => {
     port = null
     link.handshake.close()
     stopPortTraffic(link, running)
   })
+
   port = opened
   link.handshake.start()
 }
@@ -840,6 +868,7 @@ chrome.webRequest.onBeforeRequest.addListener(
   SLACK_REQUESTS,
   ['requestBody']
 )
+
 chrome.webRequest.onSendHeaders.addListener(
   (details) => {
     clientObserver.headersSent(details)
@@ -847,15 +876,19 @@ chrome.webRequest.onSendHeaders.addListener(
   SLACK_REQUESTS,
   ['requestHeaders', 'extraHeaders']
 )
+
 chrome.webRequest.onCompleted.addListener(({ requestId }) => {
   clientObserver.requestEnded(requestId)
 }, SLACK_REQUESTS)
+
 chrome.webRequest.onErrorOccurred.addListener(({ requestId }) => {
   clientObserver.requestEnded(requestId)
 }, SLACK_REQUESTS)
+
 chrome.tabs.onRemoved.addListener(() => {
   void pushStatus()
 })
+
 chrome.tabs.onUpdated.addListener((_tabId, change, tab) => {
   if ((change.url !== undefined || change.status === 'complete') && tab.url?.startsWith(`${SLACK_ORIGIN}/`) === true) {
     void pushStatus()
@@ -866,12 +899,14 @@ startTabTracking()
 void chrome.alarms.create(RECONNECT_ALARM, { periodInMinutes: RECONNECT_PERIOD_MINUTES })
 chrome.alarms.onAlarm.addListener(() => connect())
 void writer.recover()
+
 // The pass of attachRelays the service worker makes when it starts, which a Web API call waits for before it asks any
 // relay (relayQueries). It settles only once every tab's attempt has, so a tab whose attempt fails early cannot let a
 // call ask another tab whose new relay is still going in, and take that tab for one to reload. A tab whose attempt
 // failed has no relay of this load to answer, and a call skips it as one to reload; the failure is thrown on its own,
 // so Chrome lists it with the extension's errors.
 const relaysAttached = attachRelays()
+
 void relaysAttached.then((failures) => {
   if (failures.length > 0) {
     const tabs = failures.map(({ tabId }) => tabId).join(', tab ')
@@ -881,4 +916,5 @@ void relaysAttached.then((failures) => {
     )
   }
 })
+
 connect()

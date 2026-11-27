@@ -69,6 +69,7 @@ const toContext = (
       }
 
       progress += 1
+
       sendNotification({ method: 'notifications/progress', params: { progressToken, progress, message } }).catch(
         (error: unknown) => reportWarning(`A progress notification failed: ${errorMessage(error)}`)
       )
@@ -80,6 +81,7 @@ const toContext = (
 // client would reach only one of them.
 const toolsOf = (modules: readonly ICreatedModule[]): Map<string, IToolDefinition> => {
   const tools = new Map<string, IToolDefinition>()
+
   for (const [name, tool] of modules.flatMap(({ instance }) => Object.entries(instance.tools))) {
     if (tools.has(name)) {
       throw new Error(`Two modules serve the tool ${name}`)
@@ -95,6 +97,7 @@ const toolsOf = (modules: readonly ICreatedModule[]): Map<string, IToolDefinitio
 // schema, and a call that fails answers `<tool> failed: <message>` as an error result.
 export const createToolServer = (modules: readonly ICreatedModule[], directory: string, version: string): Server => {
   const tools = toolsOf(modules)
+
   const listing = modules.flatMap(({ definition, instance }) =>
     Object.entries(instance.tools).map(([name, tool]) => {
       const { $schema: _draft, ...inputSchema } = definition.jsonSchema(tool.input, {
@@ -108,6 +111,7 @@ export const createToolServer = (modules: readonly ICreatedModule[], directory: 
 
   const server = new Server({ name: SERVER_NAME, version }, { capabilities: { tools: {} } })
   server.setRequestHandler(ListToolsRequestSchema, () => ({ tools: listing }))
+
   server.setRequestHandler(CallToolRequestSchema, async ({ params }, extra) => {
     const tool = tools.get(params.name)
     if (tool === undefined) {

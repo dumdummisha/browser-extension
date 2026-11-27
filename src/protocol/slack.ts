@@ -317,9 +317,11 @@ export const SLACK_BRIDGE_METHODS = {
 } as const
 
 export type SlackBridgeMethod = keyof typeof SLACK_BRIDGE_METHODS
+
 export type SlackBridgeParams<TMethod extends SlackBridgeMethod> = z.infer<
   (typeof SLACK_BRIDGE_METHODS)[TMethod]['params']
 >
+
 export type SlackBridgeResult<TMethod extends SlackBridgeMethod> = z.infer<
   (typeof SLACK_BRIDGE_METHODS)[TMethod]['result']
 >

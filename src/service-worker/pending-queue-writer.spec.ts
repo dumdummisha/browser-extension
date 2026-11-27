@@ -42,6 +42,7 @@ const finished = (transaction: IDBTransaction): Promise<void> =>
 const seed = async (factory: IDBFactory, records: readonly unknown[], lossRecord?: unknown): Promise<void> => {
   const database = await openPendingQueue(factory)
   const transaction = database.transaction([PENDING_EVENTS_STORE, LOSS_STORE], 'readwrite')
+
   for (const record of records) {
     transaction.objectStore(PENDING_EVENTS_STORE).put(record)
   }
@@ -68,14 +69,17 @@ const storedQueue = async (factory: IDBFactory): Promise<IStoredQueue> => {
 // Puts on the database go through control: isLossWriteRefused and onEventPut.
 const interceptPuts = (database: IDBDatabase, control: IQueueControl): void => {
   const openTransaction = database.transaction.bind(database)
+
   Object.defineProperty(database, 'transaction', {
     value: (...args: Parameters<IDBDatabase['transaction']>): IDBTransaction => {
       const transaction = openTransaction(...args)
       const openStore = transaction.objectStore.bind(transaction)
+
       Object.defineProperty(transaction, 'objectStore', {
         value: (name: string): IDBObjectStore => {
           const store = openStore(name)
           const put = store.put.bind(store)
+
           Object.defineProperty(store, 'put', {
             value: (record: unknown): IDBRequest<IDBValidKey> => {
               if (name === LOSS_STORE && control.isLossWriteRefused) {
@@ -110,6 +114,7 @@ const createWriter = (
   }
   const restored: SlackEvent[][] = []
   const healths: QueueHealth[] = []
+
   const writer = new PendingQueueWriter(
     async () => {
       if (control.isOpeningRefused) {
@@ -153,6 +158,7 @@ describe('[service-worker] Pending queue writer - recovery', () => {
     assert.deepEqual(restored, [[earlier, later]])
     assert.deepEqual(writer.pending(), [earlier, later])
     assert.deepEqual(writer.health(), { state: 'committing', droppedEvents: 3 })
+
     assert.deepEqual(await storedQueue(factory), {
       ids: [earlier.id, later.id],
       lossRecord: { id: DROPPED_EVENTS_ID, droppedEvents: 3 },
@@ -170,6 +176,7 @@ describe('[service-worker] Pending queue writer - recovery', () => {
 
     // Assert
     assert.equal(admission, 'held')
+
     assert.deepEqual(writer.health(), {
       state: 'failing',
       error: DISK_FULL,
@@ -201,6 +208,7 @@ describe('[service-worker] Pending queue writer - recovery', () => {
       uncountedEvents: 0,
       loss: { kind: 'last-known', droppedEvents: 17 },
     })
+
     assert.deepEqual(writer.health(), { state: 'committing', droppedEvents: 18 })
     assert.deepEqual((await storedQueue(factory)).lossRecord, { id: DROPPED_EVENTS_ID, droppedEvents: 18 })
   })
@@ -265,6 +273,7 @@ describe('[service-worker] Pending queue writer - failures', () => {
 
     // Assert
     assert.deepEqual([...held, stored], ['held', 'held', 'stored'])
+
     assert.deepEqual(failing, {
       state: 'failing',
       error: DISK_FULL,
@@ -272,11 +281,14 @@ describe('[service-worker] Pending queue writer - failures', () => {
       uncountedEvents: 0,
       loss: { kind: 'last-known', droppedEvents: 0 },
     })
+
     assert.deepEqual(writer.pending(), [first, second, third])
+
     assert.deepEqual(
       (await storedQueue(factory)).ids,
       [first, second, third].map(({ id }) => id)
     )
+
     assert.deepEqual(
       healths.map(({ state }) => state),
       ['committing', 'failing', 'failing', 'committing']
@@ -299,6 +311,7 @@ describe('[service-worker] Pending queue writer - failures', () => {
     // Assert
     assert.equal(isRemoved, true)
     assert.deepEqual(writer.pending(), [kept])
+
     assert.deepEqual(writer.health(), {
       state: 'failing',
       error: DISK_FULL,
@@ -319,6 +332,7 @@ describe('[service-worker] Pending queue writer - failures', () => {
     await writer.admit(held)
     control.isOpeningRefused = false
     const acks: Promise<boolean>[] = []
+
     control.onEventPut = (record) => {
       if (record === held) {
         acks.push(writer.ack(held.id))
@@ -345,6 +359,7 @@ describe('[service-worker] Pending queue writer - failures', () => {
     await writer.admit(held)
     control.isOpeningRefused = false
     const acks: Promise<boolean>[] = []
+
     control.onEventPut = (record) => {
       if (record === held) {
         acks.push(writer.ack(held.id))
@@ -382,6 +397,7 @@ describe('[service-worker] Pending queue writer - failures', () => {
     assert.equal(writer.isPending(oldest.id), false)
     assert.deepEqual(writer.health(), { state: 'committing', droppedEvents: 0 })
     const stored = await storedQueue(factory)
+
     assert.deepEqual(
       [stored.ids.length, stored.ids.includes(newest.id), stored.ids.includes(oldest.id), stored.lossRecord],
       [EVENT_QUEUE_MAX, true, false, undefined]
@@ -408,6 +424,7 @@ describe('[service-worker] Pending queue writer - failures', () => {
     assert.equal(writer.isPending(held.id), true)
     assert.equal(writer.isPending(oldest.id), false)
     const stored = await storedQueue(factory)
+
     assert.deepEqual(
       [stored.ids.length, stored.ids.includes(held.id), stored.lossRecord],
       [EVENT_QUEUE_MAX, true, undefined]

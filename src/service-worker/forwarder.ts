@@ -17,6 +17,7 @@ export class Forwarder {
   public attach(events: readonly SlackEvent[]): void {
     this.clear()
     this.isListening = true
+
     for (const event of events) {
       this.deliver(event, 1)
     }
@@ -42,6 +43,7 @@ export class Forwarder {
   private deliver(event: SlackEvent, sends: number): void {
     this.settle(event.id)
     this.send(event)
+
     this.timers.set(
       event.id,
       setTimeout(() => {

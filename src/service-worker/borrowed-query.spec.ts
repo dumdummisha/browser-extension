@@ -6,6 +6,7 @@ import { borrowedQueryOf, borrowedQueryString, freshRequestId } from './borrowed
 // fields: client.counts, a method the transport never calls itself.
 const CLIENT_COUNTS =
   'https://example.slack.com/api/client.counts?_x_id=0f1e2d3c-1794900000.100&_x_gantry=true&_x_desktop_ia=4&_x_csid=example-csid&slack_route=T0EXAMPLE1&_x_version_ts=1794800000&_x_foreground=true&_x_frontend_build_type=next-0a1b2c3d&fp=7a&_x_num_retries=2'
+
 // The least a client call carries to lend its query: a request id and a workspace route.
 const MINIMAL_CLIENT_CALL =
   'https://example.slack.com/api/client.counts?_x_id=0f1e2d3c-1794900000.100&slack_route=T0EXAMPLE1'
@@ -65,6 +66,7 @@ describe('[service-worker] Borrowed query - from a client call', () => {
   it("should borrow the page's build type only in the forms Slack's client accepts", () => {
     // Arrange
     const accepted = ['current', 'next-0a1b', 'next2-0a1b2c3d', 'next999-0a1b2c3d', `next-${'a'.repeat(40)}`]
+
     const refused = [
       'beta',
       'next1-0a1b',
@@ -90,9 +92,11 @@ describe('[service-worker] Borrowed query - from a client call', () => {
   it('should borrow no value outside the transport fields and their forms: payloads, reasons, tokens, secret-shaped keys', () => {
     // Arrange
     const secrets = ['confidential sentence', 'message-pane/requestHistory', 'xoxc-0000-made-up', 'xoxp-1111-made-up']
+
     const url = new URL(
       'https://example.slack.com/api/search.messages?_x_id=0f1e2d3c-1794900000.100&slack_route=T0EXAMPLE1'
     )
+
     url.searchParams.append('query', 'confidential sentence')
     url.searchParams.append('_x_reason', 'message-pane/requestHistory')
     url.searchParams.append('token', 'xoxc-0000-made-up')

@@ -40,10 +40,12 @@ const extensionFolderOf = (args: readonly string[]): string => {
 const writeLauncher = (): void => {
   ensurePrivateDir(BRIDGE_DIR)
   rmSync(LAUNCHER_PATH, { force: true })
+
   writeFileSync(LAUNCHER_PATH, launcherText(runtimeOf(process.versions, process.execPath)), {
     mode: 0o755,
     flag: 'wx',
   })
+
   process.stdout.write(`  launcher ${LAUNCHER_PATH}\n`)
 }
 
@@ -54,6 +56,7 @@ const registerHost = (id: string): void => {
   }
 
   const manifest = `${JSON.stringify(nativeHostManifest(LAUNCHER_PATH, id), null, 2)}\n`
+
   for (const root of roots) {
     const hostsDir = join(root, 'NativeMessagingHosts')
     mkdirSync(hostsDir, { recursive: true })

@@ -46,6 +46,7 @@ describe('[service-worker] Message projection - new messages', () => {
       thread_ts: '1700000000.000050',
       parent_user_id: 'U0EXAMPLE1',
     }
+
     const fileShare = {
       type: 'message',
       subtype: 'file_share',
@@ -96,6 +97,7 @@ describe('[service-worker] Message projection - new messages', () => {
   it('should pass on a new message whose fields Slack moved, nested values as null, for the relay to refuse', () => {
     // Arrange
     const { ts: _ts, ...withoutTs } = SOCKET_MESSAGE
+
     const moved = [
       withoutTs,
       { ...SOCKET_MESSAGE, text: { token: 'xoxc-0000-example' } },
@@ -107,11 +109,13 @@ describe('[service-worker] Message projection - new messages', () => {
 
     // Assert
     const { ts: _projectedTs, ...projectedWithoutTs } = PROJECTED_MESSAGE
+
     assert.deepEqual(messages, [
       projectedWithoutTs,
       { ...PROJECTED_MESSAGE, text: null },
       { ...PROJECTED_MESSAGE, files: [{ id: undefined }] },
     ])
+
     assert.deepEqual(
       messages.map((message) => SlackMessageFrameSchema.safeParse(message).success),
       [false, false, false]
@@ -122,6 +126,7 @@ describe('[service-worker] Message projection - new messages', () => {
     // Arrange
     const polluted = { subtype: 'message_changed', thread_ts: '1700000000.000099', bot_id: 'B0PAGE', files: [] }
     Object.assign(Object.prototype, polluted)
+
     context.after(() => {
       for (const field of Object.keys(polluted)) {
         Reflect.deleteProperty(Object.prototype, field)

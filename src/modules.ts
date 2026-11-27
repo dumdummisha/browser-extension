@@ -47,6 +47,7 @@ export const browserModule: IModuleDefinition = {
       onHandlerError: (event) =>
         logWarning('browser', `event ${event.id} reached a bridge client that does not listen`),
     })
+
     const browser = new BrowserControlService(bridge, new InputControlService())
 
     return {

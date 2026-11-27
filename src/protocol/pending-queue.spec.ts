@@ -47,6 +47,7 @@ describe('[protocol] Pending queue - restoring', () => {
   it('should hand back the records it cannot deliver, so recovery deletes and counts them', () => {
     // Arrange
     const event = eventAt('C0EXAMPLE1', '1700000001.000100')
+
     const records = [
       { key: event.id, value: { ...event, frame: { ...event.frame, ts: 'not-a-ts' } } },
       { key: 'older-format', value: { id: 'older-format', text: 'hello' } },

@@ -83,6 +83,7 @@ export const keepClientQueries = (): IClientQueryKeeper => {
     },
     queries: () => {
       const queries = create(null) as Record<string, BorrowedQuery>
+
       for (const origin of keys(kept)) {
         const known = kept[origin]
         if (known !== undefined) {

@@ -71,6 +71,7 @@ describe('[service-worker] Bridge requests - callers that gave up', () => {
     // Arrange
     const controller = new AbortController()
     const seen: IAbandonment[] = []
+
     const handlers: Record<string, RequestHandler> = {
       slackCall: (_params, abandonment) => {
         seen.push(abandonment)
@@ -94,6 +95,7 @@ describe('[service-worker] Bridge requests - callers that gave up', () => {
     // Arrange
     const cancelled = new AbortController()
     cancelled.abort()
+
     const abandonments: IAbandonment[] = [
       { deadline: LATER, signal: cancelled.signal },
       { deadline: EARLIER, signal },

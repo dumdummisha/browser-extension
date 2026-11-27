@@ -47,6 +47,7 @@ export const createNetworkTool = (browser: Pick<BrowserControlService, 'network'
     const md = MarkdownBuilder.create().text(
       `Tab ${loggedTabId}: the last ${Math.min(last, matching.length)} of ${matching.length} matching requests.`
     )
+
     for (const request of matching.slice(-last)) {
       appendRequest(md, request, includeHeaders)
     }
@@ -59,6 +60,7 @@ const appendRequest = (md: MarkdownBuilder, request: NetworkRequest, includeHead
   md.heading(`${request.method} ${request.url}`, 3)
     .field('Sent', new Date(request.startedAt).toISOString())
     .field('Outcome', outcome(request))
+
   if (request.body !== null) {
     md.text(request.isBodyTruncated ? 'Body (truncated):' : 'Body:').codeBlock(request.body)
   }

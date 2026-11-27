@@ -59,6 +59,7 @@ export const projectedMessageOf = (text: string): Record<string, unknown> | null
   }
 
   const projected = create(null) as Record<string, unknown>
+
   for (const field in frame) {
     if (hasOwn(frame, field) && isIn(FIELDS, field)) {
       const value = ownValue(frame, field)

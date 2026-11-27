@@ -52,6 +52,7 @@ describe('[service-worker] Slack pace - gaps', () => {
   it('should keep every gap within 500 to 2,000 ms, around a mean of 1,000 ms', () => {
     // Arrange
     let seed = 7
+
     const random = (): number => {
       seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648
 
@@ -80,6 +81,7 @@ describe('[service-worker] Slack pace - turns', () => {
       pace.turn('T0EXAMPLE1', wanted(), (send) => send(request)),
       pace.turn('T0EXAMPLE1', wanted(), (send) => send(request)),
     ]
+
     await settled()
     await tick(context, 300)
     await tick(context, GAP_MS - 1)
@@ -103,6 +105,7 @@ describe('[service-worker] Slack pace - turns', () => {
       pace.turn('T0EXAMPLE1', wanted(), (send) => send(request)),
       pace.turn('T0OTHER001', wanted(), (send) => send(request)),
     ]
+
     await settled()
     await tick(context, 0)
     await Promise.all(turns)
@@ -122,6 +125,7 @@ describe('[service-worker] Slack pace - turns', () => {
       await send(request)
       await send(request)
     })
+
     await settled()
     await tick(context, 0)
     await tick(context, GAP_MS)
@@ -154,6 +158,7 @@ describe('[service-worker] Slack pace - turns', () => {
     mockClock(context)
     const pace = new SlackPace(() => GAP_MS)
     const { sentAt, request } = recorder()
+
     await pace.turn('T0EXAMPLE1', wanted(), (send) =>
       send((unsent) => {
         unsent()
@@ -225,6 +230,7 @@ describe('[service-worker] Slack pace - callers that gave up', () => {
       await pageFound.promise
       await send(request)
     })
+
     const rejected = assert.rejects(turn, GAVE_UP)
     await settled()
     controller.abort()

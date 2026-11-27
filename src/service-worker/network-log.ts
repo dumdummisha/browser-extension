@@ -25,6 +25,7 @@ export class NetworkLog {
   public started(tabId: number, requestId: string, { startedAt, method, url, body }: IStartedRequest): void {
     const log = this.logs.get(tabId) ?? new Map<string, NetworkRequest>()
     log.delete(requestId)
+
     log.set(requestId, {
       startedAt,
       method,
@@ -35,6 +36,7 @@ export class NetworkLog {
       statusCode: null,
       error: null,
     })
+
     const [oldest] = log.keys()
     if (log.size > NETWORK_LOG_LIMIT && oldest !== undefined) {
       log.delete(oldest)

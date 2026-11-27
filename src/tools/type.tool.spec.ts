@@ -37,6 +37,7 @@ describe('[tools] Typing - into the focused element', () => {
     assert.deepStrictEqual(requests, [
       { ref: undefined, text: 'Hello', tabId: undefined, isClearing: false, isSubmitting: false },
     ])
+
     assert.equal(output, '[PASS] Typed into the focused element.\n')
   })
 

@@ -28,6 +28,7 @@ const RENDER_CHUNKS = new Set(['IHDR', 'PLTE', 'tRNS', 'sRGB', 'gAMA', 'cHRM', '
 const CHUNK_HEADER_LENGTH = 8
 const CHUNK_CRC_LENGTH = 4
 const CHUNK_TYPE = /^[A-Za-z]{4}$/u
+
 const CHUNK_DATA_LENGTHS = new Map([
   ['IHDR', 13],
   ['IEND', 0],
@@ -124,9 +125,11 @@ const keepRenderChunks = (png, path) => {
   const seen = new Set()
   let offset = PNG_SIGNATURE.length
   let previous = ''
+
   while (previous !== 'IEND') {
     const { type, end } = readChunk(png, view, offset, path)
     checkChunkOrder(type, previous, seen, path)
+
     if (RENDER_CHUNKS.has(type)) {
       kept.push(png.subarray(offset, end))
     }
@@ -142,6 +145,7 @@ const keepRenderChunks = (png, path) => {
 
   const result = new Uint8Array(kept.reduce((length, chunk) => length + chunk.length, 0))
   let written = 0
+
   for (const chunk of kept) {
     result.set(chunk, written)
     written += chunk.length
@@ -183,10 +187,12 @@ const paddedSvg = (svg, workDir) => {
   const measureSize = Number(declaredWidth)
   /** @type {string} */
   const measured = join(workDir, 'measured.png')
+
   renderPng(SOURCE, measureSize, measured)
   /** @type {Uint8Array} */
   const measuredPng = readFileSync(measured)
   const bounds = opaqueBounds(measuredPng)
+
   const unit = Number(viewBox.width) / measureSize
   const left = Number(viewBox.x) + bounds.left * unit
   const top = Number(viewBox.y) + bounds.top * unit
@@ -195,6 +201,7 @@ const paddedSvg = (svg, workDir) => {
   const side = Math.max(width, height)
   const square = [left + (width - side) / 2, top + (height - side) / 2, side, side].join(' ')
   const padding = (PADDED_SIZE - PADDED_ARTWORK) / 2
+
   const content = svg
     .trim()
     .slice(root.length)
@@ -209,14 +216,18 @@ const paddedSvg = (svg, workDir) => {
 
 /** @type {string} */
 const workDir = mkdtempSync(join(tmpdir(), 'misha-icons-'))
+
 try {
   /** @type {string} */
   const padded = join(workDir, 'padded.svg')
   /** @type {string} */
   const source = readFileSync(SOURCE, 'utf8')
+
   writeFileSync(padded, paddedSvg(source, workDir))
+
   for (const size of SIZES) {
     const target = `${ICON_DIR}/misha-${size}.png`
+
     renderPng(size === PADDED_SIZE ? padded : SOURCE, size, target)
     /** @type {Uint8Array} */
     const rendered = readFileSync(target)

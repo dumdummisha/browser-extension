@@ -64,9 +64,11 @@ export const createTypeTool = (browser: BrowserControlService): IToolDefinition<
 
 const formatTyped = (ref: number | undefined, isSubmitting: boolean, { field, action }: ITypeResult): string => {
   const changes = action === null ? '' : formatAction(action)
+
   if (ref === undefined) {
     return `[PASS] Typed into the focused element${isSubmitting ? ' and pressed Enter' : ''}.\n${changes}`
   }
+
   if (field === null) {
     return `[PASS] Typed into element ${ref} and pressed Enter.\n${changes}`
   }

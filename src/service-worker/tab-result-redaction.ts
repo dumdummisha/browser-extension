@@ -104,6 +104,7 @@ const redactChanges = (raw: RawChanges): TabBridgeResult<'changes'> => {
 const redactFind = ({ outline, sections, matches, isTruncated }: PageFind): TabBridgeResult<'find'> => {
   const lines = redactLines(outline)
   const sectionLines = sections.map(redactLines)
+
   const answered = (match: PageFindMatch): string => {
     switch (match.kind) {
       case 'line':

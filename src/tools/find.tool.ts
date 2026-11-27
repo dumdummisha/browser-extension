@@ -23,9 +23,11 @@ export const createFindTool = (browser: BrowserControlService): IToolDefinition<
     }
 
     const md = MarkdownBuilder.create().text(matches.slice(0, LISTED_MATCHES).join('\n'))
+
     if (matches.length > LISTED_MATCHES) {
       md.italic(`... and ${matches.length - LISTED_MATCHES} more matches; search for something more specific.`)
     }
+
     if (isTruncated) {
       md.italic('The page is longer than find scans; the rest was not searched.')
     }

@@ -11,6 +11,7 @@ const GAP_MAX_MS = 2_000
 // A gap from random, which answers uniform numbers in [0, 1) as Math.random does (the Box-Muller transform).
 export const paceGapMs = (random: () => number): number => {
   let gap: number
+
   do {
     const radius = Math.sqrt(-2 * Math.log(1 - random()))
     gap = GAP_MEAN_MS + GAP_DEVIATION_MS * radius * Math.cos(2 * Math.PI * random())
@@ -32,6 +33,7 @@ const pause = (ms: number, signal: AbortSignal): Promise<void> =>
       signal.removeEventListener('abort', done)
       resolve()
     }
+
     const timer = setTimeout(done, ms)
     signal.addEventListener('abort', done, { once: true })
   })
@@ -79,15 +81,18 @@ export class SlackPace {
     request: (unsent: () => void) => Promise<TResult>
   ): Promise<TResult> {
     throwIfAbandoned(abandonment)
+
     const now = Date.now()
     const sendAt = Math.max(now, workspace.lastEnd + this.drawGapMs())
     throwIfAbandoned(abandonment, sendAt)
+
     if (sendAt > now) {
       await pause(sendAt - now, abandonment.signal)
       throwIfAbandoned(abandonment)
     }
 
     const attempt = { isSent: true }
+
     try {
       return await request(() => {
         attempt.isSent = false

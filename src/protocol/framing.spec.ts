@@ -8,6 +8,7 @@ describe('[protocol] Framing', () => {
     // Arrange
     const messages: unknown[] = []
     const read = createFrameReader((message) => messages.push(message))
+
     const stream = Buffer.concat([
       encodeFrame({ id: 1, text: 'žluťoučký' }),
       encodeFrame({ id: 2 }),

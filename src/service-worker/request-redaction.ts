@@ -90,6 +90,7 @@ const JSON_START = /^\s*[{[]/u
 // A string, whose closing quote a truncated body may have cut off, a punctuation mark, or a bare scalar.
 const JSON_TOKEN = /"(?<literal>(?:[^"\\]|\\[\s\S])*)"?|(?<mark>[{}[\]:,])|[^\s{}[\]:,"]+/gu
 const JSON_ESCAPE = /\\(?:u(?<hex>[\dA-Fa-f]{4})|(?<char>[\s\S]))/gu
+
 const JSON_ESCAPED_CHARS = new Map([
   ['b', '\b'],
   ['f', '\f'],
@@ -97,6 +98,7 @@ const JSON_ESCAPED_CHARS = new Map([
   ['r', '\r'],
   ['t', '\t'],
 ])
+
 // How each bracket changes the nesting depth; every other token leaves it.
 const JSON_DEPTH_CHANGE = new Map([
   ['{', 1],
@@ -104,6 +106,7 @@ const JSON_DEPTH_CHANGE = new Map([
   ['}', -1],
   [']', -1],
 ])
+
 const JSON_REDACTED_VALUE = JSON.stringify(REDACTED_VALUE)
 
 // The extension sends a multipart body the browser did not parse into fields as it went out: a boundary line, then
@@ -145,6 +148,7 @@ export const redactBody = (text: string): string => {
   if (JSON_START.test(text)) {
     return redactJson(text)
   }
+
   if (ABSOLUTE_URL.test(text)) {
     return redactUrl(text)
   }
@@ -155,6 +159,7 @@ export const redactBody = (text: string): string => {
 
     return text.split(delimiter).map(redactMultipartPart).join(delimiter)
   }
+
   if (FORM_BODY.test(text)) {
     return text.split(FORM_FIELD_SEPARATOR).map(redactFormField).join(FORM_FIELD_SEPARATOR)
   }
@@ -165,10 +170,12 @@ export const redactBody = (text: string): string => {
 // A URL as a tab command answers it; navigation keeps the URL as it is.
 export const redactUrl = (url: string): string => {
   const queryStart = url.search(URL_QUERY_START)
+
   const address = (queryStart === -1 ? url : url.slice(0, queryStart)).replace(
     URL_USERINFO,
     `$<scheme>${REDACTED_VALUE}@`
   )
+
   const query = queryStart === -1 ? '' : url.slice(queryStart)
 
   return `${redactAddress(address)}${query.replaceAll(URL_FIELD, (field) => redactFormField(field))}`
@@ -232,7 +239,9 @@ const credentialSpans = (text: string): ICredentialSpan[] => {
   const matches = SHAPE_FINDERS.flatMap((finder) =>
     [...text.matchAll(finder)].map(({ index, 0: match }) => ({ start: index, end: index + match.length }))
   ).sort((first, second) => first.start - second.start)
+
   const spans: ICredentialSpan[] = []
+
   for (const match of matches) {
     const last = spans.at(-1)
     if (last !== undefined && match.start < last.end) {
@@ -298,11 +307,13 @@ const redactJson = (text: string): string => {
   const tokens = [...text.matchAll(JSON_TOKEN)].map(jsonToken)
   const spans: ISpan[] = []
   let index = 0
+
   while (index < tokens.length) {
     const { span, next } = scanJsonToken(tokens, index)
     if (span !== null) {
       spans.push(span)
     }
+
     index = next
   }
 
@@ -320,6 +331,7 @@ const scanJsonToken = (tokens: readonly IJsonToken[], index: number): IJsonStep 
   const isKey = token.isString && tokens[index + 1]?.mark === ':'
   if (!isKey || !isCredentialName(content)) {
     const redacted = redactBody(content)
+
     const span =
       redacted === content ? null : { start: token.start, end: token.end, replacement: JSON.stringify(redacted) }
 
@@ -345,6 +357,7 @@ const jsonToken = (match: RegExpExecArray): IJsonToken => {
   const { literal, mark } = match.groups ?? {}
   const start = match.index
   const end = start + text.length
+
   if (mark !== undefined) {
     return { start, end, content: null, isString: false, mark }
   }
@@ -374,14 +387,17 @@ const jsonValueEnd = (tokens: readonly IJsonToken[], start: number): number | un
   if (first === undefined) {
     return undefined
   }
+
   if (first.mark === null) {
     return start
   }
+
   if (depthChange(first) <= 0) {
     return undefined
   }
 
   let depth = 0
+
   for (let index = start; index < tokens.length; index += 1) {
     depth += depthChange(tokens[index])
     if (depth === 0) {
@@ -397,6 +413,7 @@ const depthChange = (token: IJsonToken | undefined): number => JSON_DEPTH_CHANGE
 const replaceSpans = (text: string, spans: readonly ISpan[]): string => {
   let result = ''
   let copiedUpTo = 0
+
   for (const { start, end, replacement } of spans) {
     result += `${text.slice(copiedUpTo, start)}${replacement}`
     copiedUpTo = end

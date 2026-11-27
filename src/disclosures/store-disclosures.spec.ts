@@ -49,6 +49,7 @@ describe('[disclosures] Store disclosures', () => {
       'Re-attaching works for pages whose observer holds new messages under a sequence number (any build from commit `51b179f` on). A page still running an observer from before that captures again only once the tab reloads, so upgrading from such a build needs each open Slack tab reloaded once.',
       "A page whose observer predates the client's session fields keeps capturing, but its Slack Web API calls fail with a message to reload the tab until it reloads once.",
     ]
+
     const dropped = [
       "The Slack transport sends its Web API calls with the query of Slack's client's own latest Web API call in the page",
       "per page the query of the client's latest Web API call cut down to its listed session fields",
@@ -72,6 +73,7 @@ describe('[disclosures] Store disclosures', () => {
   it('should report a declaration with no disclosure and a disclosure the manifest lacks', () => {
     // Arrange
     const { disclosures, manifest } = readDisclosureInputs()
+
     const changed: IDisclosureInputs = {
       disclosures,
       manifest: {
@@ -99,6 +101,7 @@ describe('[disclosures] Store disclosures', () => {
   it('should report a permission listed as not requested that the manifest requests', () => {
     // Arrange
     const { disclosures, manifest } = readDisclosureInputs()
+
     const changed: IDisclosureInputs = {
       disclosures,
       manifest: { ...manifest, permissions: [...manifest.permissions, 'cookies'] },
@@ -168,6 +171,7 @@ describe('[disclosures] Store disclosures', () => {
   it('should disclose a content script declared in every frame', () => {
     // Arrange
     const { disclosures, manifest } = readDisclosureInputs()
+
     const changed: IDisclosureInputs = {
       disclosures,
       manifest: {

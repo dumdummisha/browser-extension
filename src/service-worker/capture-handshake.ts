@@ -79,6 +79,7 @@ export const holdFrames = (max: number): IFrameHold => {
 
     deleteProperty(held, seq)
     heldCount -= 1
+
     while (oldestSeq < nextSeq && !hasOwn(held, oldestSeq)) {
       oldestSeq += 1
     }
@@ -154,7 +155,9 @@ export const answerRelays = (document: EventTarget, greeting: () => object, hold
       apply(startPort, port, [])
       relays[relayCount] = port
       relayCount += 1
+
       apply(postToPort, port, [greeting()])
+
       hold.forEach((frame) => {
         apply(postToPort, port, [frame])
       })
@@ -196,10 +199,12 @@ export const takeObserverPorts = (
   }
 
   let isOffered = false
+
   const takePort = (event: Event): void => {
     const [port] = event instanceof MessageEvent ? event.ports : []
     if (port !== undefined) {
       isOffered = true
+
       port.onmessage = ({ data }: MessageEvent<unknown>) => {
         onMessage(data, port)
       }

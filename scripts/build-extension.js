@@ -18,14 +18,18 @@ const isStore = process.argv.includes('--store')
 rmSync(EXTENSION_DIR, { recursive: true, force: true })
 
 const options = { bundle: true, target: 'chrome140', outdir: EXTENSION_DIR, logLevel: 'warning' }
+
 await build({ ...options, entryPoints: [`${SOURCE_DIR}/background.ts`], format: 'esm' })
 await build({ ...options, entryPoints: [`${SOURCE_DIR}/observer.ts`, `${SOURCE_DIR}/relay.ts`], format: 'iife' })
+
 /** @type {string} */
 const packageText = readFileSync('package.json', 'utf8')
 /** @type {string} */
 const sourceManifestText = readFileSync(`${SOURCE_DIR}/manifest.json`, 'utf8')
 const manifest = builtManifest(JSON.parse(sourceManifestText), JSON.parse(packageText))
+
 writeFileSync(`${EXTENSION_DIR}/manifest.json`, `${JSON.stringify(manifest, null, 2)}\n`)
+
 // The manifest names the icon folder's PNGs; the SVG they are rendered from stays out of the extension.
 cpSync(`${SOURCE_DIR}/icons`, `${EXTENSION_DIR}/icons`, {
   recursive: true,

@@ -54,10 +54,12 @@ const rgbaPixels = (png: Uint8Array): { readonly width: number; readonly height:
   const bytes = Buffer.from(png.buffer, png.byteOffset, png.byteLength)
   const data: Buffer[] = []
   let header: Buffer | null = null
+
   for (let offset = SIGNATURE_LENGTH; offset < bytes.length;) {
     const length = bytes.readUInt32BE(offset)
     const type = bytes.toString('ascii', offset + 4, offset + 8)
     const body = bytes.subarray(offset + 8, offset + 8 + length)
+
     if (type === 'IHDR') {
       header = body
     } else if (type === 'IDAT') {
@@ -76,13 +78,16 @@ const rgbaPixels = (png: Uint8Array): { readonly width: number; readonly height:
   const stride = width * BYTES_PER_PIXEL
   const raw = inflateSync(Buffer.concat(data))
   const pixels = Buffer.alloc(height * stride)
+
   for (let row = 0; row < height; row += 1) {
     const filter = raw[row * (stride + 1)] ?? 0
+
     for (let column = 0; column < stride; column += 1) {
       const at = row * stride + column
       const left = column >= BYTES_PER_PIXEL ? (pixels[at - BYTES_PER_PIXEL] ?? 0) : 0
       const up = row > 0 ? (pixels[at - stride] ?? 0) : 0
       const upLeft = column >= BYTES_PER_PIXEL && row > 0 ? (pixels[at - stride - BYTES_PER_PIXEL] ?? 0) : 0
+
       pixels[at] = unfiltered(filter, raw[row * (stride + 1) + 1 + column] ?? 0, left, up, upLeft) % 256
     }
   }
@@ -93,6 +98,7 @@ const rgbaPixels = (png: Uint8Array): { readonly width: number; readonly height:
 export const opaqueBounds = (png: Uint8Array): IOpaqueBounds => {
   const { width, height, pixels } = rgbaPixels(png)
   const bounds = { left: width, top: height, right: -1, bottom: -1 }
+
   for (let row = 0; row < height; row += 1) {
     for (let column = 0; column < width; column += 1) {
       if ((pixels[(row * width + column) * BYTES_PER_PIXEL + ALPHA_OFFSET] ?? 0) > 0) {

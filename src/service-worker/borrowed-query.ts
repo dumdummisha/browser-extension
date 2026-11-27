@@ -99,6 +99,7 @@ export const borrowedQueryOf = (url: URL): BorrowedQuery | null => {
 // route among them.
 export const isBorrowedQuery = (query: BorrowedQuery): boolean => {
   const names = query.map(([name]) => name)
+
   const isEachKept = query.every(([name, value]) =>
     value === null ? name === REQUEST_ID_FIELD || name === RETRIES_FIELD : isBorrowable(name, value)
   )

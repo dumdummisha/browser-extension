@@ -220,11 +220,13 @@ export class BrowserControlService {
     { text, isGone, timeoutMs }: IWaitRequest
   ): Promise<string[]> => {
     const deadline = Date.now() + timeoutMs
+
     for (;;) {
       const { matches } = await this.find(tabId, text)
       if ((matches.length === 0) === isGone) {
         return matches
       }
+
       if (Date.now() >= deadline) {
         throw new PluginError(
           `"${text}" ${isGone ? 'still shows' : 'did not show'} on the page after ${timeoutMs / 1000} seconds.`,
@@ -302,6 +304,7 @@ export class BrowserControlService {
         'VALIDATION_ERROR'
       )
     }
+
     if (viewportLayout(tab, start) !== viewportLayout(tab, end)) {
       throw new PluginError(
         'The viewport changed size between locating the drag start and the target (a panel or developer tools ' +
@@ -309,9 +312,11 @@ export class BrowserControlService {
         'VALIDATION_ERROR'
       )
     }
+
     assertInViewport(end)
 
     await this.mark(tab.tabId)
+
     // Correcting a missed landing locates the start again, which can scroll it into view after the checks above.
     const pointed = await this.pointAtTarget(tab, from, start)
     if (pointed.hasScrolled || viewportLayout(tab, pointed) !== viewportLayout(tab, end)) {
@@ -321,6 +326,7 @@ export class BrowserControlService {
         'VALIDATION_ERROR'
       )
     }
+
     const destination = screenPoint(end, this.viewportOffset(tab, end), tab)
     await this.input.drag({ to: destination, button, path: [], modifiers, holdMs, dwellMs })
 
@@ -339,6 +345,7 @@ export class BrowserControlService {
     }
 
     const tab = await this.enterText(tabId, ref, text, isClearing)
+
     if (isSubmitting) {
       await this.mark(tab.tabId)
       await this.input.pressKey('Enter', [])
@@ -367,6 +374,7 @@ export class BrowserControlService {
     submitRef: number | undefined
   ): Promise<{ fields: IFilledField[]; action: IActionResult | null }> => {
     const filled: IFilledField[] = []
+
     for (const { ref, text, option } of fields) {
       filled.push({ ref, value: await this.fillField(tabId, ref, text, option) })
     }
@@ -439,6 +447,7 @@ export class BrowserControlService {
     const tab = await this.activate(tabId)
     await this.mark(tab.tabId)
     await this.typeLines(text)
+
     if (isSubmitting) {
       await this.input.pressKey('Enter', [])
     }
@@ -451,6 +460,7 @@ export class BrowserControlService {
       if (index > 0) {
         await this.input.pressKey('Enter', ['Shift'])
       }
+
       if (line !== '') {
         await this.input.typeText(line)
       }
@@ -475,6 +485,7 @@ export class BrowserControlService {
     if ('ref' in target) {
       return this.pointAt(tab, target.ref, located)
     }
+
     await this.pointAtClientPoint(tab, located)
 
     return located
@@ -506,6 +517,7 @@ export class BrowserControlService {
     if (isClearing) {
       await this.clearField(tab.tabId, ref)
     }
+
     await this.typeLines(text)
 
     return tab
@@ -522,10 +534,12 @@ export class BrowserControlService {
     const app = await this.openBrowserApp()
     await this.call('focusTab', { tabId })
     const deadline = Date.now() + ACTIVATE_TIMEOUT_MS
+
     while (!(await this.hasFocus(tabId))) {
       if (Date.now() > deadline) {
         throw new PluginError(`Tab ${tabId} did not get keyboard focus after ${app} was activated.`, 'TIMEOUT')
       }
+
       await sleep(FOCUS_POLL_INTERVAL_MS)
     }
   }
@@ -546,6 +560,7 @@ export class BrowserControlService {
       timeoutMs: OPEN_TIMEOUT_MS,
       label: 'open',
     })
+
     if (exitCode !== 0) {
       throw new PluginError(`Could not bring ${app} to the front: ${stderr.trim()}`, 'EXTERNAL_API_ERROR')
     }
@@ -569,6 +584,7 @@ export class BrowserControlService {
   ): Promise<TargetPoint> => {
     const landed = await this.moveAndRead(tab.tabId, ref, screenPoint(target, this.viewportOffset(tab, target), tab))
     const measured = this.rememberOffset(tab, target, landed)
+
     if (landed.isOnTarget) {
       return target
     }
@@ -594,6 +610,7 @@ export class BrowserControlService {
       screenPoint(target, this.viewportOffset(tab, target), tab)
     )
     const measured = this.rememberOffset(tab, target, landed)
+
     if (isAtPoint(landed.position, target)) {
       return
     }
@@ -652,10 +669,12 @@ export class BrowserControlService {
       if (state.seq > afterSeq && state.seq === previousSeq && position !== null) {
         return { ...state, position }
       }
+
       previousSeq = state.seq
     }
 
     const { x, y } = await this.input.currentMousePosition()
+
     throw new PluginError(
       `The pointer at (${Math.round(x)}, ${Math.round(y)}) never reached the page in tab ${tabId}. Another window ` +
         'may cover the browser, or developer tools docked at the bottom or side may shift the page; close them and retry.',
@@ -667,6 +686,7 @@ export class BrowserControlService {
   private readonly waitForFieldFocus = async (tabId: number, ref: number): Promise<FieldState> => {
     const deadline = Date.now() + FIELD_FOCUS_TIMEOUT_MS
     let field = await this.call('field', { tabId, ref })
+
     while (!field.isFocused && Date.now() < deadline) {
       await sleep(FOCUS_POLL_INTERVAL_MS)
       field = await this.call('field', { tabId, ref })
@@ -711,6 +731,7 @@ export class BrowserControlService {
       if (isSameContent(current.content, previous.content)) {
         return current
       }
+
       previous = current
     }
 
@@ -724,6 +745,7 @@ export class BrowserControlService {
   private readonly settle = async (tabId: number): Promise<IActionResult> => {
     await sleep(SETTLE_DELAY_MS)
     const tab = await this.call('settle', { tabId })
+
     const changes = await this.call('changes', {
       tabId,
       maxChars: PAGE_SCAN_MAX_CHARS,
@@ -749,6 +771,7 @@ export class BrowserControlService {
     // The browser records the chosen place a moment after the sheet closes.
     const deadline = Date.now() + SAVE_DIALOG_TIMEOUT_MS
     let saved = await this.call('downloads', { tabId, timeoutMs: DOWNLOAD_TIMEOUT_MS })
+
     while (saved.some(({ state }) => state === 'choosingLocation') && Date.now() < deadline) {
       await sleep(DOWNLOAD_POLL_INTERVAL_MS)
       saved = await this.call('downloads', { tabId, timeoutMs: DOWNLOAD_TIMEOUT_MS })

@@ -101,6 +101,7 @@ export class SlackClientObserver {
       isReleased: false,
       isAnswered: false,
     }
+
     this.exclusions.add(exclusion)
 
     return (isAnswered) => {
@@ -124,6 +125,7 @@ export class SlackClientObserver {
     const key = requestKeyOf(parsed)
     const exclusion = key === null ? undefined : this.exclusionOf({ tabId, documentId }, key)
     const started = startedShapeOf(method, parsed, requestBody)
+
     if (exclusion !== undefined) {
       exclusion.starts += 1
       exclusion.inFlight += 1
@@ -139,11 +141,13 @@ export class SlackClientObserver {
   public headersSent({ requestId, requestHeaders = [] }: ISentRequest): void {
     const request = this.pending.get(requestId)
     this.pending.delete(requestId)
+
     if (request === undefined) {
       return
     }
 
     const shape = request.started === null ? null : { ...request.started, headers: headerFieldsOf(requestHeaders) }
+
     if (request.exclusion !== null) {
       request.exclusion.shape = shape ?? request.exclusion.shape
       this.leave(request.exclusion)
@@ -160,6 +164,7 @@ export class SlackClientObserver {
   public requestEnded(requestId: string): void {
     const exclusion = this.pending.get(requestId)?.exclusion
     this.pending.delete(requestId)
+
     if (exclusion !== undefined && exclusion !== null) {
       this.leave(exclusion)
     }

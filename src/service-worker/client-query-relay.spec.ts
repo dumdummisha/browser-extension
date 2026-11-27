@@ -20,22 +20,26 @@ const SLACK_ORIGIN = 'https://app.slack.com'
 const API_ORIGIN = 'https://example.slack.com'
 const CLIENT_CALL = `${API_ORIGIN}/api/client.counts?_x_id=0f1e2d3c-1794900000.100&_x_csid=example-csid&slack_route=T0EXAMPLE1&_x_num_retries=0`
 const NEWER_CLIENT_CALL = `${API_ORIGIN}/api/conversations.history?_x_id=1a2b3c4d-1794900002.000&slack_route=T0EXAMPLE1&_x_foreground=true`
+
 const QUERY = [
   ['_x_id', null],
   ['_x_csid', 'example-csid'],
   ['slack_route', 'T0EXAMPLE1'],
   ['_x_num_retries', null],
 ]
+
 const NEWER_QUERY = [
   ['_x_id', null],
   ['slack_route', 'T0EXAMPLE1'],
   ['_x_foreground', 'true'],
 ]
+
 const FRAME_MESSAGE = {
   kind: 'frame',
   account: { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' },
   frame: { type: 'message', channel: 'C0EXAMPLE1', ts: '1794900000.000100', text: 'a made-up message' },
 }
+
 const CLIENT_QUERY_UNREADABLE = 'The observer sent a client query that does not read'
 
 // A resource timing entry the fake page reports: the address, the initiator type and when it started.
@@ -98,6 +102,7 @@ const waiter = (): { readonly wake: () => void; readonly until: (condition: () =
 const recordPort = (port: MessagePort): IPortRecord => {
   const messages: unknown[] = []
   const { wake, until } = waiter()
+
   port.onmessage = ({ data }: MessageEvent<unknown>) => {
     messages.push(data)
     wake()
@@ -119,6 +124,7 @@ const xhr = (name: string, startTime: number): IReportedEntry => ({ name, initia
 const replaceGlobal = (restores: (() => void)[], name: string, value: unknown): void => {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, name)
   Object.defineProperty(globalThis, name, { value, configurable: true, writable: true })
+
   restores.push(() => {
     if (descriptor === undefined) {
       Reflect.deleteProperty(globalThis, name)
@@ -144,11 +150,13 @@ const openPage = (context: TestContext): IFakePage => {
       ports.push(this.port1, this.port2)
     }
   }
+
   class FakeStorage {
     public getItem(): string | null {
       return null
     }
   }
+
   class FakePerformanceEntry {
     constructor(protected readonly entry: IReportedEntry) {}
 
@@ -160,11 +168,13 @@ const openPage = (context: TestContext): IFakePage => {
       return this.entry.startTime
     }
   }
+
   class FakeResourceTiming extends FakePerformanceEntry {
     public get initiatorType(): string {
       return this.entry.initiatorType
     }
   }
+
   class FakeEntryList {
     constructor(private readonly entries: readonly FakeResourceTiming[]) {}
 
@@ -172,6 +182,7 @@ const openPage = (context: TestContext): IFakePage => {
       return this.entries
     }
   }
+
   class FakePerformanceObserver {
     constructor(private readonly callback: (list: object) => void) {}
 
@@ -192,8 +203,10 @@ const openPage = (context: TestContext): IFakePage => {
 
     Reflect.deleteProperty(globalThis, RELAY_RUNNING_KEY)
   })
+
   const window = { WebSocket: class extends EventTarget {}, top: null as unknown }
   window.top = window
+
   for (const [name, value] of Object.entries({
     document,
     window,
@@ -228,6 +241,7 @@ const openPage = (context: TestContext): IFakePage => {
       const listeners: ((message: unknown, sender: object, respond: (answer: unknown) => void) => unknown)[] = []
       const { wake, until } = waiter()
       Reflect.deleteProperty(globalThis, RELAY_RUNNING_KEY)
+
       replaceGlobal(restores, 'chrome', {
         runtime: {
           id: 'made-up-extension-id',
@@ -240,6 +254,7 @@ const openPage = (context: TestContext): IFakePage => {
           onMessage: { addListener: (listener: (typeof listeners)[number]) => listeners.push(listener) },
         },
       })
+
       loads += 1
       await import(`../extension/relay.js?load=${loads}`)
 
@@ -257,11 +272,13 @@ const openPage = (context: TestContext): IFakePage => {
     },
     joinAsRelay: () => {
       const offered: MessagePort[] = []
+
       const take = (event: Event): void => {
         if (event instanceof MessageEvent && event.ports[0] !== undefined) {
           offered.push(event.ports[0])
         }
       }
+
       document.addEventListener(OBSERVER_PORT_EVENT, take)
       document.dispatchEvent(new CustomEvent(RELAY_READY_EVENT))
       document.removeEventListener(OBSERVER_PORT_EVENT, take)
@@ -272,8 +289,10 @@ const openPage = (context: TestContext): IFakePage => {
     },
     answerAsObserver: (messages) => {
       const channel = new TrackedMessageChannel()
+
       document.addEventListener(RELAY_READY_EVENT, () => {
         document.dispatchEvent(new MessageEvent(OBSERVER_PORT_EVENT, { ports: [channel.port2] }))
+
         for (const message of messages) {
           channel.port1.postMessage(message)
         }
@@ -303,6 +322,7 @@ describe('[extension] Client query - the observer', () => {
       // Arrange
       const page = openPage(context)
       await page.loadObserver()
+
       page.report([
         xhr(CLIENT_CALL, 10),
         { name: `${API_ORIGIN}/api/chat.postMessage?_x_id=1`, initiatorType: 'fetch', startTime: 11 },
@@ -338,6 +358,7 @@ describe('[extension] Client query - the observer', () => {
         { kind: 'client-query', origin: API_ORIGIN, query: QUERY },
         { kind: 'client-query', origin: API_ORIGIN, query: NEWER_QUERY },
       ])
+
       assert.deepEqual(await later.received(2), [
         { kind: 'greeting', isSocketOpen: false, queries: { [API_ORIGIN]: QUERY } },
         { kind: 'client-query', origin: API_ORIGIN, query: NEWER_QUERY },
@@ -442,6 +463,7 @@ describe('[extension] Client query - the relay', () => {
     async (context) => {
       // Arrange
       const page = openPage(context)
+
       page.answerAsObserver([
         { kind: 'greeting', isSocketOpen: true, queries: { [API_ORIGIN]: QUERY } },
         { kind: 'client-query', origin: API_ORIGIN, query: [['token', 'xoxc-0000-made-up-token']] },
@@ -463,6 +485,7 @@ describe('[extension] Client query - the relay', () => {
     async (context) => {
       // Arrange
       const page = openPage(context)
+
       const observer = page.answerAsObserver([
         { kind: 'greeting', isSocketOpen: true, queries: {} },
         { kind: 'client-query', origin: API_ORIGIN, query: QUERY },
@@ -478,10 +501,12 @@ describe('[extension] Client query - the relay', () => {
 
       // Assert
       assert.deepEqual(relay.sent, [{ kind: 'capture' }, FRAME_MESSAGE, FRAME_MESSAGE])
+
       assert.deepEqual(observer.messages, [
         { kind: 'taken', seq: 0 },
         { kind: 'taken', seq: 1 },
       ])
+
       assert.deepEqual(await relay.ask(CAPTURE_QUERY).answer, { isSocketOpen: true, error: null })
       assert.deepEqual(await relay.ask(CLIENT_QUERY).answer, { queries: { [API_ORIGIN]: NEWER_QUERY } })
     }

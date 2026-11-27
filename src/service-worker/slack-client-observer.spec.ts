@@ -94,6 +94,7 @@ interface IObserved {
 
 const observe = (): IObserved => {
   let changes = 0
+
   const observer = new SlackClientObserver(SLACK_ORIGIN, () => {
     changes += 1
   })
@@ -128,6 +129,7 @@ describe('[service-worker] Slack client observer - transport check', () => {
     // Act
     sent(observer, clientPost('client-1'))
     const checked = observer.parity()
+
     mishaSent(
       observer,
       mishaPost('misha-2', { url: `${API_ORIGIN}/api/chat.postMessage?_x_id=b2c3d4e5-1794900004.000` }),
@@ -143,9 +145,11 @@ describe('[service-worker] Slack client observer - transport check', () => {
   it('should match when only excluded fields differ: ids, reasons, tokens, cookies, boundaries and arguments', () => {
     // Arrange
     const { observer } = observe()
+
     const mishaHeaders = HEADERS.map((header) =>
       header.name === 'Content-Type' ? { ...header, value: 'multipart/form-data; boundary=----MishaBoundary' } : header
     )
+
     sent(observer, clientPost('client-1'))
 
     // Act
@@ -163,11 +167,13 @@ describe('[service-worker] Slack client observer - transport check', () => {
     // Arrange
     const { observer } = observe()
     sent(observer, clientPost('client-1'))
+
     const mishaHeaders = [
       ...HEADERS.filter(({ name }) => name !== 'Accept-Language' && name !== 'User-Agent'),
       { name: 'User-Agent', value: 'Mozilla/5.0 Other/1.0' },
       { name: 'X-Made-Up', value: TOKEN },
     ]
+
     const misha = mishaPost('misha-1', {
       method: 'PUT',
       url: `${API_ORIGIN}/api/chat.postMessage?_x_id=${MISHA_ID}&slack_route=T0EXAMPLE1&fp=7a`,
@@ -181,6 +187,7 @@ describe('[service-worker] Slack client observer - transport check', () => {
 
     // Assert
     const parity = observer.parity()
+
     assert.deepEqual(parity, [
       {
         operation: 'chat.postMessage',
@@ -199,6 +206,7 @@ describe('[service-worker] Slack client observer - transport check', () => {
         ],
       },
     ])
+
     assert.ok([...SECRETS, 'offline', 'Other/1.0'].every((value) => !JSON.stringify(parity).includes(value)))
   })
 
@@ -206,6 +214,7 @@ describe('[service-worker] Slack client observer - transport check', () => {
     // Arrange
     const { observer } = observe()
     const secretName = 'xoxp-1111-made-up-name'
+
     sent(observer, clientPost('client-1', { url: `${clientPost('').url}&${secretName}=1` }), [
       ...HEADERS,
       { name: secretName, value: '1' },
@@ -227,6 +236,7 @@ describe('[service-worker] Slack client observer - transport check', () => {
     // A Google API key's shape, built here so the source holds no literal of one; lower-casing changes its prefix.
     const googleKey = `AIza${'a'.repeat(35)}`
     const glued = [`_x_${TOKEN}`, `_x_${awsKey}_suffix`]
+
     const client = clientPost('client-1', {
       url: `${clientPost('').url}&${glued.map((name) => `${name}=1`).join('&')}&_x_frontend_build_type=${awsKey.toLowerCase()}_x`,
       requestBody: {
@@ -238,6 +248,7 @@ describe('[service-worker] Slack client observer - transport check', () => {
         },
       },
     })
+
     sent(observer, client, [
       ...HEADERS.filter(({ name }) => name !== 'Content-Type'),
       { name: 'Content-Type', value: `application/${googleKey}` },
@@ -250,6 +261,7 @@ describe('[service-worker] Slack client observer - transport check', () => {
     // Assert
     const kept = JSON.stringify(observer.parity()).toLowerCase()
     assert.ok([TOKEN, 'akiaabcd', 'aizaaaaa'].every((secret) => !kept.includes(secret)))
+
     assert.deepEqual(observer.parity(), [
       {
         operation: 'chat.postMessage',
@@ -324,8 +336,10 @@ describe('[service-worker] Slack client observer - transport check', () => {
   it("should match a call of Misha's built from the query a client call with a focus field and a next build lent", () => {
     // Arrange
     const { observer } = observe()
+
     const clientQuery =
       '_x_gantry=true&_x_desktop_ia=4&_x_csid=example-csid&slack_route=T0EXAMPLE1&_x_version_ts=1794800000&_x_foreground=true&_x_frontend_build_type=next-0a1b2c3d&fp=7a'
+
     const clientUrl = `${API_ORIGIN}/api/conversations.history?_x_id=0f1e2d3c-1794900000.100&${clientQuery}&_x_num_retries=0`
     sent(observer, clientPost('client-1', { url: clientUrl }))
     const borrowed = borrowedQueryOf(new URL(clientUrl))
@@ -347,12 +361,14 @@ describe('[service-worker] Slack client observer - transport check', () => {
   it('should name both focus fields when the reference carries one and the borrowed query the other', () => {
     // Arrange
     const { observer } = observe()
+
     sent(
       observer,
       clientPost('client-1', {
         url: `${API_ORIGIN}/api/conversations.history?_x_id=0f1e2d3c-1794900000.100&slack_route=T0EXAMPLE1&_x_foreground=true`,
       })
     )
+
     const lendingUrl = `${API_ORIGIN}/api/client.counts?_x_id=2b3c4d5e-1794900003.000&slack_route=T0EXAMPLE1&_x_background=true`
     sent(observer, clientPost('client-2', { url: lendingUrl }))
     const borrowed = borrowedQueryOf(new URL(lendingUrl))
@@ -415,6 +431,7 @@ describe('[service-worker] Slack client observer - same-address collisions', () 
   it("should compare a download with the client's by its headers, never by its address", () => {
     // Arrange
     const { observer } = observe()
+
     sent(
       observer,
       fileGet('client-1', 'https://files.slack.com/files-pri/T0EXAMPLE1-F0OTHER001/other.png?t=xoxe-0000-made-up')
@@ -480,11 +497,13 @@ describe('[service-worker] Slack client observer - bodies it cannot read', () =>
 
     // Act
     const release = observer.exclude(PAGE, MISHA_ID, true)
+
     sent(
       observer,
       mishaPost('misha-1'),
       HEADERS.filter(({ name }) => name !== 'Accept')
     )
+
     release(true)
 
     // Assert

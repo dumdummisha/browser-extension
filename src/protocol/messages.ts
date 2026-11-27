@@ -43,6 +43,7 @@ const helloFields = {
   // The package version of the end that says hello, for diagnostics only: equal revisions talk whatever it says.
   componentVersion: z.string().min(1),
 }
+
 // The host's hello, to the extension and to each client. browserApp: the browser's .app bundle, which the native host
 // reads from its parent process, or null when it could not tell.
 export const HostHelloSchema = z.strictObject({
@@ -50,6 +51,7 @@ export const HostHelloSchema = z.strictObject({
   role: z.literal('host'),
   browserApp: z.string().nullable(),
 })
+
 export const ExtensionHelloSchema = z.strictObject({ ...helloFields, role: z.literal('extension') })
 export const ClientHelloSchema = z.strictObject({ ...helloFields, role: z.enum(['client', 'takeover']) })
 
@@ -61,6 +63,7 @@ export const IncompatibilityReasonSchema = z.enum([
   'malformed-hello',
   'unexpected-frame',
 ])
+
 // What the user does about it (handshake.ts RECOVERY_TEXT).
 export const RecoveryCodeSchema = z.enum([
   'update-extension',
@@ -109,6 +112,7 @@ const RequestSchema = z.strictObject({
   params: z.unknown(),
   deadline: z.number().int().positive(),
 })
+
 // A request whose caller gave up before its deadline: from a client, which abandoned it, and from the relay, for each
 // request of a client whose connection closed. The extension then hands nothing more of it to a Slack page; a command
 // already handed to the page still goes out, as a fetch already started would.
@@ -118,6 +122,7 @@ const ReplyErrorSchema = z.strictObject({ type: z.literal('reply'), id: RequestI
 const AckSchema = z.strictObject({ type: z.literal('ack'), id: z.string() })
 const ListenSchema = z.strictObject({ type: z.literal('listen') })
 const ListenerSchema = z.strictObject({ type: z.literal('listener') })
+
 // The newest browser's host takes the socket over: it connects to the relay holding it, and once both hellos agreed (it
 // says hello as takeover), sends takeover, and that relay closes its server, which removes the socket's path, and then
 // every connection, after which the new host binds the path. The relay that let go stays up for its own browser until

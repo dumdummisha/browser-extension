@@ -17,8 +17,10 @@ import {
 const REPOSITORY_ROOT = new URL('../../', import.meta.url)
 const EXTENSION_DIR = fileURLToPath(new URL('dist/extension', REPOSITORY_ROOT))
 const JsonObjectSchema = z.record(z.string(), z.unknown())
+
 const readJson = (path: string): Record<string, unknown> =>
   JsonObjectSchema.parse(JSON.parse(readFileSync(path, 'utf8')))
+
 const PACKAGE_VERSION = readJson(fileURLToPath(new URL('package.json', REPOSITORY_ROOT))).version
 const SOURCE_MANIFEST = readJson(fileURLToPath(new URL('src/extension/manifest.json', REPOSITORY_ROOT)))
 
@@ -27,6 +29,7 @@ const packedArchive = async (context: TestContext): Promise<string> => {
   const dir = await mkdtemp(join(tmpdir(), 'misha-store-archive-'))
   context.after(() => rm(dir, { recursive: true, force: true }))
   const archive = join(dir, 'misha-browser.zip')
+
   packStoreArchive(EXTENSION_DIR, archive)
 
   return archive
@@ -44,6 +47,7 @@ describe('[store] Store archive - content', () => {
 
     // Assert
     const entries = execFileSync('/usr/bin/unzip', ['-Z1', archive], { encoding: 'utf8' }).trim().split('\n')
+
     assert.deepEqual(entries.toSorted(), [
       'background.js',
       'icons/misha-128.png',
@@ -63,6 +67,7 @@ describe('[store] Store archive - content', () => {
     // Assert
     const built = readJson(join(EXTENSION_DIR, 'manifest.json'))
     const { key, ...withoutKey } = built
+
     assert.deepEqual(archivedManifest(archive), withoutKey)
     assert.equal(key, SOURCE_MANIFEST.key)
   })

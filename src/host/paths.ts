@@ -39,16 +39,19 @@ export const ensurePrivateDir = (dir: string): void => {
 
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   const parent = lstatSync(dirname(dir))
+
   const isParentTrusted =
     parent.isDirectory() &&
     [uid, ROOT_UID].includes(parent.uid) &&
     !hasModeBit(parent.mode, GROUP_WRITE_BIT) &&
     !hasModeBit(parent.mode, OTHER_WRITE_BIT)
+
   if (!isParentTrusted) {
     throw new Error(`${dirname(dir)} must be a folder of this user or root that nobody else may write to`)
   }
 
   refuseAclGrant(dirname(dir))
+
   const folder = lstatSync(dir)
   if (!folder.isDirectory() || folder.uid !== uid) {
     throw new Error(`${dir} must be a folder of this user, not a symlink`)

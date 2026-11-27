@@ -35,6 +35,7 @@ const redirectConsoleToStderr = (): void => {
 // The client ends the server by closing its stdin, then by signalling it: either way every module is disposed first.
 const exitWhenClientLeaves = (modules: readonly ICreatedModule[]): void => {
   let isShuttingDown = false
+
   const shutdown = (reason: string): void => {
     if (isShuttingDown) {
       return
@@ -42,6 +43,7 @@ const exitWhenClientLeaves = (modules: readonly ICreatedModule[]): void => {
 
     isShuttingDown = true
     log('INFO', `Shutting down: ${reason}`)
+
     Promise.all(modules.flatMap(({ instance }) => instance.dispose?.() ?? [])).then(
       () => process.exit(0),
       (error: unknown) => {
@@ -52,6 +54,7 @@ const exitWhenClientLeaves = (modules: readonly ICreatedModule[]): void => {
   }
 
   process.stdin.once('end', () => shutdown('stdin closed'))
+
   for (const signal of SHUTDOWN_SIGNALS) {
     process.on(signal, () => shutdown(signal))
   }
@@ -60,12 +63,14 @@ const exitWhenClientLeaves = (modules: readonly ICreatedModule[]): void => {
 const main = async (): Promise<void> => {
   redirectConsoleToStderr()
   const directory = process.cwd()
+
   const modules = await Promise.all(
     [browserModule, desktopModule].map(async (definition) => ({
       definition,
       instance: await definition.create({ directory }),
     }))
   )
+
   const { version } = z
     .object({ version: z.string() })
     .parse(JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')))

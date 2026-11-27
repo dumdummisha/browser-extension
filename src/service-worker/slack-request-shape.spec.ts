@@ -82,6 +82,7 @@ describe('[service-worker] Slack request shape - what the check keeps', () => {
     const url = new URL(
       'https://example.slack.com/api/chat.postMessage?_x_id=0f1e2d3c-1794900000.100&_x_reason=send&slack_route=T0EXAMPLE1&query=confidential&xoxb-2222-made-up-key=1'
     )
+
     const body = {
       formData: {
         channel: ['C0EXAMPLE1'],
@@ -102,6 +103,7 @@ describe('[service-worker] Slack request shape - what the check keeps', () => {
     // Assert
     assert.ok(shape !== null && shape.query !== null && shape.body !== null)
     const kept = JSON.stringify([shape.method, [...shape.query], [...shape.body]])
+
     assert.deepEqual(
       [shape.operation, shape.method, [...shape.query], [...shape.body]],
       [
@@ -119,6 +121,7 @@ describe('[service-worker] Slack request shape - what the check keeps', () => {
         ],
       ]
     )
+
     assert.ok([TOKEN, MESSAGE, 'confidential', 'xoxb-', 'webapp_message_send'].every((value) => !kept.includes(value)))
   })
 
@@ -188,11 +191,13 @@ describe('[service-worker] Slack request shape - differences', () => {
       body: null,
       headers: new Map(headers),
     })
+
     const client = shape([
       ['accept', '*/*'],
       ['cookie', null],
       ['user-agent', null],
     ])
+
     const misha = shape([
       ['accept', '*/*'],
       ['cookie', null],
@@ -232,7 +237,9 @@ describe('[service-worker] Slack request shape - secret shapes', () => {
     const url = new URL(
       `https://example.slack.com/api/chat.postMessage?_x_id=0f1e2d3c-1794900000.100&_x_${TOKEN}=1&_x_${AWS_KEY}_suffix=1`
     )
+
     const body = { formData: { [`_x_${TOKEN}`]: ['1'], [`_x_${AWS_KEY}_suffix`]: ['1'], _x_mode: ['online'] } }
+
     const headers = [
       { name: AWS_KEY, value: '1' },
       { name: `${AWS_KEY}0`.toLowerCase(), value: '1' },
@@ -248,6 +255,7 @@ describe('[service-worker] Slack request shape - secret shapes', () => {
     // Assert
     assert.ok(shape !== null && shape.query !== null && shape.body !== null)
     const kept = [[...shape.query], [...shape.body], [...fields]]
+
     assert.deepEqual(kept, [[], [['_x_mode', 'online']], [['accept', '*/*']]])
     assert.ok(holdsNoSecret(kept))
   })
@@ -258,7 +266,9 @@ describe('[service-worker] Slack request shape - secret shapes', () => {
       { name: 'User-Agent', value: `Example/1.0_${TOKEN}` },
       { name: 'Accept-Language', value: `en_${AWS_KEY}_suffix` },
     ]
+
     const contentTypes = [`application/${TOKEN}`, `application/${GOOGLE_KEY}`, `application/${JWT}`]
+
     const url = new URL(
       `https://example.slack.com/api/client.counts?_x_id=0f1e2d3c-1794900000.100&slack_route=T0EXAMPLE1&_x_csid=${AWS_KEY}_suffix&_x_frontend_build_type=${AWS_KEY.toLowerCase()}_x`
     )

@@ -26,6 +26,7 @@ const TAB_TOOLS = [
   'tab_press',
   'tab_scroll',
 ]
+
 const MACOS_TOOLS = [
   'macos_mouse_move',
   'macos_mouse_click',
@@ -40,6 +41,7 @@ const MACOS_TOOLS = [
 ]
 
 const echoInput = z.object({ text: z.string().describe('What to echo.') })
+
 const echoTool: IToolDefinition<typeof echoInput> = {
   description: 'Echo the text with a picture.',
   input: echoInput,
@@ -48,6 +50,7 @@ const echoTool: IToolDefinition<typeof echoInput> = {
     attachments: [{ mime: 'image/png', url: 'data:image/png;base64,iVBORw0K', filename: 'echo.png' }],
   }),
 }
+
 const echoModule: IModuleDefinition = { create: () => ({ tools: { echo: echoTool } }), jsonSchema: zodJsonSchema }
 
 const created = async (definitions: readonly IModuleDefinition[]): Promise<ICreatedModule[]> =>
@@ -61,6 +64,7 @@ const connect = async (context: TestContext, modules: readonly ICreatedModule[])
   const client = new Client({ name: 'spec', version: '0.0.0' })
   await server.connect(serverTransport)
   await client.connect(clientTransport)
+
   context.after(async () => {
     await client.close()
     await Promise.all(modules.flatMap(({ instance }) => instance.dispose?.() ?? []))
@@ -79,16 +83,19 @@ describe('[mcp] Tool server', () => {
 
     // Assert
     const network = tools.find(({ name }) => name === 'tab_network')
+
     assert.deepEqual(
       tools.map(({ name }) => name),
       [...TAB_TOOLS, ...MACOS_TOOLS]
     )
+
     assert.deepEqual(Object.keys(network?.inputSchema.properties ?? {}), [
       'tabId',
       'urlContains',
       'includeHeaders',
       'last',
     ])
+
     assert.ok(tools.every(({ description }) => description !== undefined && description.length > 0))
   })
 

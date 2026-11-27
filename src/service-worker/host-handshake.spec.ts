@@ -4,6 +4,7 @@ import { PROTOCOL_REVISION } from '../protocol/messages.js'
 import { HostHandshake } from './host-handshake.js'
 
 const EXTENSION_VERSION = '1.2.3'
+
 const HOST_HELLO = {
   type: 'hello',
   role: 'host',
@@ -11,6 +12,7 @@ const HOST_HELLO = {
   componentVersion: '9.8.7',
   browserApp: null,
 }
+
 const EXTENSION_END = { role: 'extension', protocolRevision: PROTOCOL_REVISION, componentVersion: EXTENSION_VERSION }
 const ACK = { type: 'ack', id: 'T0EXAMPLE1:U0EXAMPLE1:D0EXAMPLE1:1700000000.000100' }
 
@@ -25,6 +27,7 @@ const recordedHandshake = (): IRecorded => {
   const sent: unknown[] = []
   const readies: number[] = []
   const incompatibilities: unknown[] = []
+
   const handshake = new HostHandshake(
     { role: 'extension', componentVersion: EXTENSION_VERSION },
     {
@@ -94,6 +97,7 @@ describe('[service-worker] Host handshake', () => {
         { role: 'host', protocolRevision: revision, componentVersion: '9.8.7' },
         recovery
       )
+
       assert.deepEqual([sent, incompatibilities, ack, handshake.state], [[expected], [expected], null, 'incompatible'])
     })
   }
@@ -150,6 +154,7 @@ describe('[service-worker] Host handshake', () => {
   it("should take the host's diagnostic without answering it", () => {
     // Arrange
     const { handshake, sent, incompatibilities } = recordedHandshake()
+
     const fromHost = {
       type: 'bridge-incompatible',
       reason: 'malformed-hello',

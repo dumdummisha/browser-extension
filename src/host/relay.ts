@@ -105,9 +105,11 @@ const lockBridge = (socketPath: string, stop: AbortSignal): Promise<FileHandle> 
   return new Promise((resolve, reject) => {
     const onStop = (): void => reject(takeoverStopped(socketPath, stop))
     stop.addEventListener('abort', onStop, { once: true })
+
     open(`${socketPath}.lock`, LOCK_OPEN_FLAGS, 0o600).then(
       (lock) => {
         stop.removeEventListener('abort', onStop)
+
         if (stop.aborted) {
           void lock.close()
         } else {
@@ -119,6 +121,7 @@ const lockBridge = (socketPath: string, stop: AbortSignal): Promise<FileHandle> 
         reject(error instanceof Error ? error : new Error(String(error)))
       }
     )
+
     if (stop.aborted) {
       onStop()
     }
@@ -146,10 +149,12 @@ const takeOver = (holder: Socket, socketPath: string, local: IHandshakeEnd, stop
       isStopped: boolean
       failure?: Error
     } = { isGreeted: false, refusal: null, isStopped: false }
+
     const onStop = (): void => {
       state.isStopped = true
       holder.destroy()
     }
+
     const readLines = createLineReader((raw) => {
       if (state.isGreeted) {
         const diagnostic = BridgeIncompatibleSchema.safeParse(raw)
@@ -162,6 +167,7 @@ const takeOver = (holder: Socket, socketPath: string, local: IHandshakeEnd, stop
       }
 
       state.isGreeted = true
+
       const reading = readHello(raw, HostHelloSchema, local, 'host-client')
       if (reading.kind === 'incompatible') {
         state.refusal = reading.diagnostic
@@ -174,6 +180,7 @@ const takeOver = (holder: Socket, socketPath: string, local: IHandshakeEnd, stop
     }, CLIENT_LINE_MAX_LENGTH)
 
     holder.setEncoding('utf8')
+
     holder.on('data', (chunk: string) => {
       try {
         readLines(chunk)
@@ -181,11 +188,14 @@ const takeOver = (holder: Socket, socketPath: string, local: IHandshakeEnd, stop
         holder.destroy(error instanceof Error ? error : new Error(String(error)))
       }
     })
+
     holder.on('error', (error) => {
       state.failure = error
     })
+
     holder.once('close', () => {
       stop.removeEventListener('abort', onStop)
+
       if (state.refusal !== null) {
         reject(new Error(`Could not take ${socketPath} over: ${incompatibilityMessage(state.refusal)}`))
       } else if (state.isStopped) {
@@ -196,6 +206,7 @@ const takeOver = (holder: Socket, socketPath: string, local: IHandshakeEnd, stop
         reject(new Error(`The relay holding ${socketPath} closed before its hello`, { cause: state.failure }))
       }
     })
+
     if (stop.aborted) {
       onStop()
     } else {
@@ -217,22 +228,27 @@ const clearSocketPath = async (socketPath: string, componentVersion: string, sto
 
   // The connect ends with stop too: the connection is destroyed, so one that would complete later goes no further.
   const holder = createConnection(socketPath)
+
   const failure = await new Promise<NodeJS.ErrnoException | null>((resolve, reject) => {
     const onStop = (): void => {
       holder.destroy()
       reject(takeoverStopped(socketPath, stop))
     }
+
     const settle = (outcome: NodeJS.ErrnoException | null): void => {
       stop.removeEventListener('abort', onStop)
       resolve(outcome)
     }
+
     holder.once('connect', () => settle(null))
     holder.on('error', settle)
     stop.addEventListener('abort', onStop, { once: true })
+
     if (stop.aborted) {
       onStop()
     }
   })
+
   if (failure === null) {
     await takeOver(holder, socketPath, { role: 'takeover', componentVersion }, stop)
     return
@@ -341,6 +357,7 @@ export const startNativeHostRelay = async ({
 
   const relayClientMessage = (client: Socket, raw: unknown): void => {
     const message = ClientMessageSchema.parse(raw)
+
     if (extensionLeg.state !== 'ready') {
       throw new Error(`A client sent ${message.type} while the extension leg is ${extensionLeg.state}`)
     }
@@ -349,6 +366,7 @@ export const startNativeHostRelay = async ({
       case 'request': {
         const id = nextId
         nextId += 1
+
         if (!toExtension({ ...message, id })) {
           toClient(client, {
             type: 'reply',
@@ -407,6 +425,7 @@ export const startNativeHostRelay = async ({
         // A takeover never waits for the extension leg: the host that takes the socket over has its own.
         TakeoverSchema.parse(raw)
         server.close()
+
         for (const { socket } of clients) {
           socket.destroy()
         }
@@ -484,6 +503,7 @@ export const startNativeHostRelay = async ({
     clients.add(connection)
     client.setEncoding('utf8')
     const readLines = createLineReader((raw) => receiveClientLine(connection, raw), CLIENT_LINE_MAX_LENGTH)
+
     // A client that breaks the protocol loses its connection; the browser's host and the other clients carry on.
     client.on('data', (chunk: string) => {
       try {
@@ -493,10 +513,13 @@ export const startNativeHostRelay = async ({
         client.destroy()
       }
     })
+
     client.on('error', (error) => warn(`A client connection failed: ${error.message}`))
+
     // A client whose connection closed can take no reply, so its pending requests are given up.
     client.on('close', () => {
       clients.delete(connection)
+
       if (listener === client) {
         listener = null
       }
@@ -511,30 +534,37 @@ export const startNativeHostRelay = async ({
   // The extension's listeners go in before the host's hello, which goes out before the socket is taken, since a
   // takeover may wait on the relay holding it.
   input.on('data', createFrameReader(receiveExtensionFrame))
+
   input.on('end', () => {
     pipe.isOpen = false
     takeoverStop.abort(new Error("the browser's native pipe ended"))
     server.close()
+
     for (const { socket } of clients) {
       socket.destroy()
     }
   })
+
   toExtension(hello)
 
   // The newest browser to start its host takes the socket over. Only this user may open the folder or the socket. One
   // deadline and the pipe's end stop the whole takeover: the wait for the bridge lock, the connect to the holder and the
   // exchange with it. A pipe that ended meanwhile leaves the socket to whoever holds it.
   ensurePrivateDir(dirname(socketPath))
+
   const deadline =
     takeoverDeadlineMs === null
       ? undefined
       : setTimeout(() => {
           takeoverStop.abort(new Error(`the takeover did not finish within ${takeoverDeadlineMs} ms`))
         }, takeoverDeadlineMs)
+
   try {
     const lock = await lockBridge(socketPath, takeoverStop.signal)
+
     try {
       await clearSocketPath(socketPath, componentVersion, takeoverStop.signal)
+
       if (!pipe.isOpen) {
         return server
       }
@@ -543,6 +573,7 @@ export const startNativeHostRelay = async ({
         server.once('error', reject)
         server.listen(socketPath, resolve)
       })
+
       chmodSync(socketPath, 0o600)
     } finally {
       await lock.close()

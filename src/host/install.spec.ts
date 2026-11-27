@@ -60,6 +60,7 @@ describe('[host] Installer - extension folder', () => {
     const empty = join(root, 'empty')
     await writeFile(file, '')
     await mkdir(empty)
+
     const cases = [
       { folder: missing, message: `The extension folder ${missing} is not a directory` },
       { folder: file, message: `The extension folder ${file} is not a directory` },
@@ -75,6 +76,7 @@ describe('[host] Installer - extension folder', () => {
       assert.ok(run.stderr.includes(`Error: ${cases[index]?.message}`), run.stderr)
       assert.equal(run.stdout, '')
     })
+
     assert.equal(existsSync(join(home, '.misha')), false)
   })
 
@@ -94,6 +96,7 @@ describe('[host] Installer - extension folder', () => {
     assert.notEqual(id, PACKAGE_EXTENSION_ID)
     assert.ok(run.stdout.includes(`press Return and click Select:\n  ${folder}\n`), run.stdout)
     assert.ok(run.stdout.includes(`Its id must be ${id}.`), run.stdout)
+
     const hostsDir = join(home, 'Library', 'Application Support', 'Google', 'Chrome', 'NativeMessagingHosts')
     const registered: unknown = JSON.parse(await readFile(join(hostsDir, `${NATIVE_HOST_NAME}.json`), 'utf8'))
     assert.deepEqual(registered, nativeHostManifest(join(home, '.misha', 'browser-bridge', 'native-host'), id))

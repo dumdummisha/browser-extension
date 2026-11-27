@@ -20,6 +20,7 @@ export const clickTarget = (
   if (ref !== undefined && x === undefined && y === undefined) {
     return { ref }
   }
+
   if (ref === undefined && x !== undefined && y !== undefined) {
     return { point: { clientX: x, clientY: y } }
   }

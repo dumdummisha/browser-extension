@@ -7,6 +7,7 @@ const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 const FRAME = { type: 'message', channel: 'C0EXAMPLE1', ts: '1700000000.000100', text: 'hello' }
 const SAVED_STATE = '{"teams":{"T0EXAMPLE1":{"token":"xoxc-0000-example"}}}'
 const API_ORIGIN = 'https://example.slack.com'
+
 // A client query as the observer keeps it, in the client's order.
 const QUERY = [
   ['_x_id', null],
@@ -82,6 +83,7 @@ describe('[service-worker] Observed messages - capture health', () => {
   it('should report a tab detached until its observer reports, attached once it does, and failed with its error', () => {
     // Arrange
     const error = 'The observer sent what does not read'
+
     const answers = [
       { isSocketOpen: null, error: null },
       { isSocketOpen: false, error: null },
@@ -104,6 +106,7 @@ describe('[service-worker] Observed messages - client queries from the observer'
   it('should take a greeting with every kept query and a changed query, each in the order it came', () => {
     // Arrange
     const reordered = [QUERY[3], ...QUERY.slice(0, 3), ...QUERY.slice(4)]
+
     const messages = [
       { kind: 'greeting', isSocketOpen: false, queries: { [API_ORIGIN]: QUERY } },
       { kind: 'greeting', isSocketOpen: true, queries: {} },
@@ -185,6 +188,7 @@ describe('[service-worker] Observed messages - client queries from the observer'
 
     // Act
     const results = origins.map((origin) => isClientQueryRead(QUERY, origin))
+
     const greetings = origins.map(
       (origin) =>
         ObserverMessageSchema.safeParse({ kind: 'greeting', isSocketOpen: true, queries: { [String(origin)]: QUERY } })

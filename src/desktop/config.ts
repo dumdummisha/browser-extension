@@ -1,4 +1,5 @@
 export const MOUSE_MOVE_DURATION_MS = 300
+
 // A drag's default pauses after the press and before the release: enough for Chromium's own drag and drop and for
 // pointer drags. A drag that starts only after a long press, or a target that reacts to hovering, asks for more.
 export const DRAG_HOLD_DEFAULT_MS = 10

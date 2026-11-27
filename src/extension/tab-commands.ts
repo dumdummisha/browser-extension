@@ -105,6 +105,7 @@ export const startTabTracking = (): void => {
     PAGE_REQUESTS,
     ['requestBody']
   )
+
   chrome.webRequest.onBeforeSendHeaders.addListener(
     ({ tabId, requestId, requestHeaders = [] }) => {
       networkLog.sentHeaders(
@@ -116,14 +117,17 @@ export const startTabTracking = (): void => {
     PAGE_REQUESTS,
     ['requestHeaders', 'extraHeaders']
   )
+
   chrome.webRequest.onCompleted.addListener((details) => {
     finishRequest(details)
     networkLog.ended(details.tabId, details.requestId, { statusCode: details.statusCode })
   }, PAGE_REQUESTS)
+
   chrome.webRequest.onErrorOccurred.addListener((details) => {
     finishRequest(details)
     networkLog.ended(details.tabId, details.requestId, { error: details.error })
   }, PAGE_REQUESTS)
+
   chrome.tabs.onRemoved.addListener((tabId) => {
     pendingRequests.delete(tabId)
     networkLog.forget(tabId)
@@ -137,6 +141,7 @@ const resolveTab = async (tabId: number | undefined): Promise<IdentifiedTab> => 
     tabId === undefined
       ? await chrome.tabs.query({ active: true, lastFocusedWindow: true })
       : [await chrome.tabs.get(tabId)]
+
   if (tab?.id === undefined) {
     throw new Error('No browser tab is active. Pass a tabId from tab_list.')
   }
@@ -167,6 +172,7 @@ const tabInfo = async (tab: IdentifiedTab): Promise<TabInfo> => ({
 const waitForLoad = async (tabId: number): Promise<void> => {
   const deadline = Date.now() + LOAD_TIMEOUT_MS
   let tab = await resolveTab(tabId)
+
   while (tab.status === 'loading' && Date.now() < deadline) {
     await sleep(LOAD_POLL_INTERVAL_MS)
     tab = await resolveTab(tabId)
@@ -204,11 +210,13 @@ const runInPage = async <TMethod extends PageMethod>(
   command: Extract<PageCommand, { method: TMethod }>
 ): Promise<{ tab: IdentifiedTab; result: PageResult<TMethod> }> => {
   const tab = await resolveTab(tabId)
+
   const [injection] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     func: runPageCommand,
     args: [command],
   })
+
   if (injection?.result === undefined) {
     throw new Error(`The page in tab ${tab.id} returned nothing.`)
   }
@@ -309,9 +317,11 @@ const RAW_TAB_HANDLERS: RawTabHandlers = {
   openTab: async (raw) => {
     const { url, isNewTab } = tabParams('openTab', raw)
     const openedAt = Date.now()
+
     const opened = isNewTab
       ? await chrome.tabs.create({ url, active: true })
       : await chrome.tabs.update((await resolveTab(undefined)).id, { url })
+
     if (opened?.id === undefined) {
       throw new Error(`The browser did not open ${redactUrl(url)}.`)
     }
@@ -353,6 +363,7 @@ const RAW_TAB_HANDLERS: RawTabHandlers = {
     if (after.documentId === before.documentId && after.url === before.url) {
       const beforeLines = new Set(before.lines)
       const afterLines = new Set(after.lines)
+
       const placesOf = (lines: string[], isKept: (line: string) => boolean): number[] =>
         lines.flatMap((line, index) => (isKept(line) ? [index] : []))
 
@@ -377,6 +388,7 @@ const RAW_TAB_HANDLERS: RawTabHandlers = {
     const since = actionStart(tabId)
     const deadline = Date.now() + timeoutMs
     let downloads = await actionDownloads(since)
+
     while (downloads.some(({ state }) => state === 'receiving') && Date.now() < deadline) {
       await sleep(DOWNLOAD_POLL_INTERVAL_MS)
       downloads = await actionDownloads(since)
@@ -386,6 +398,7 @@ const RAW_TAB_HANDLERS: RawTabHandlers = {
   },
   screenshot: async (raw) => {
     const tab = await resolveTab(tabParams('screenshot', raw).tabId)
+
     const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, {
       format: 'jpeg',
       quality: SCREENSHOT_JPEG_QUALITY,

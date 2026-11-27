@@ -249,10 +249,12 @@ describe('[service-worker] Page command - frames', () => {
 
     // Act
     const lines = outline()
+
     const byOrigin = run<PageFind>({
       method: 'find',
       params: { query: 'embed.example', maxChars: 10_000, sectionLines: 5 },
     })
+
     const byToken = run<PageFind>({
       method: 'find',
       params: { query: OPAQUE_TOKEN, maxChars: 10_000, sectionLines: 5 },
@@ -260,12 +262,14 @@ describe('[service-worker] Page command - frames', () => {
 
     // Assert
     assert.equal(lines, '[frame] https://embed.example.test:8443\n[frame] about:')
+
     assert.deepEqual(byOrigin, {
       outline: ['[frame] https://embed.example.test:8443', '[frame] about:'],
       sections: [],
       matches: [{ kind: 'line', line: 0 }],
       isTruncated: false,
     })
+
     assert.deepEqual(byToken.matches, [])
   })
 })

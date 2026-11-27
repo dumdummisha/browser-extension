@@ -16,6 +16,7 @@ export const createListTabsTool = (browser: BrowserControlService): IToolDefinit
 
     for (const { windowId, isFocused, tabs } of windows) {
       md.heading(`Window ${windowId}${isFocused ? ' (focused)' : ''}`, 3)
+
       for (const { tabId, title, url, isActive } of tabs) {
         md.bullet(`[${tabId}]${isActive ? ' (active)' : ''} ${title === '' ? '(untitled)' : title} - ${url}`)
       }

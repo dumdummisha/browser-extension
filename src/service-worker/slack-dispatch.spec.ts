@@ -84,9 +84,11 @@ const UPLOAD_ID = '00000000-0000-4000-8000-000000000001'
 const NOTES = 'made-up notes'
 const NOW = 1_794_900_000_000
 const DEADLINE = NOW + 60_000
+
 // The gap the pace draws lies in this range (slack-pace.ts).
 const GAP_MIN_MS = 500
 const GAP_MAX_MS = 2_000
+
 // The messages the service worker sends a relay, and the relay's bundle (config.ts, which the build leaves out of the
 // compiled extension).
 const CLIENT_QUERY = 'misha-client-query'
@@ -137,6 +139,7 @@ const inPage = <TResult>(tab: IFakeTab, run: () => Promise<TResult>): Promise<TR
 
     return run()
   })
+
   pageTurns = turn.then(
     () => undefined,
     () => undefined
@@ -165,6 +168,7 @@ const executeScript = async (injection: IInjection): Promise<unknown[]> => {
   }
 
   const { documentId } = tab
+
   if (injection.files?.includes(RELAY_SCRIPT) === true) {
     browser.injections.push({ tabId: tab.id, documentId })
     await tab.injectRelay()
@@ -319,6 +323,7 @@ const startWorker = async (context: TestContext, tabs: IFakeTab[]): Promise<void
   Object.defineProperty(globalThis, 'chrome', { value: fakeChrome(), configurable: true })
   workers += 1
   await import(`../extension/background.js?worker=${workers}`)
+
   emit(workerPort.portMessages, {
     type: 'hello',
     role: 'host',
@@ -367,14 +372,17 @@ const supplyBase64 = (context: TestContext): void => {
     value: (text: string) => new Uint8Array(Buffer.from(text, 'base64')),
     configurable: true,
   })
+
   const encoder = {
     toBase64(this: Uint8Array): string {
       return Buffer.from(this).toString('base64')
     },
   }
+
   // The page function encodes a file's bytes with the built-in Chrome has and Node lacks, so the test supplies it.
   // oxlint-disable-next-line no-extend-native
   Object.defineProperty(Uint8Array.prototype, 'toBase64', { value: encoder.toBase64, configurable: true })
+
   context.after(() => {
     Reflect.deleteProperty(Uint8Array, 'fromBase64')
     Reflect.deleteProperty(Uint8Array.prototype, 'toBase64')
@@ -388,6 +396,7 @@ const unhandledRejection = (context: TestContext): Promise<unknown> => {
   const { promise, resolve } = Promise.withResolvers<unknown>()
   process.removeAllListeners('unhandledRejection')
   process.on('unhandledRejection', resolve)
+
   context.after(() => {
     process.removeAllListeners('unhandledRejection')
     for (const listener of runner) {
@@ -427,6 +436,7 @@ const unqueriedMessage = (tabId: number): string =>
 // Holds the page's run of each command isHeld picks until the returned function releases them.
 const holdInPage = (isHeld: (command: SlackPageCommand) => boolean): (() => void) => {
   const held = Promise.withResolvers<undefined>()
+
   browser.runInPage = async (_tab, command, run) => {
     if (isHeld(command)) {
       await held.promise
@@ -476,6 +486,7 @@ before(() => {
     localStorage: {
       getItem: (key: string) => {
         const { account, storage } = shown()
+
         const saved = {
           name: 'Example',
           user_id: account.userId,
@@ -492,6 +503,7 @@ before(() => {
       },
     },
   }
+
   for (const [name, value] of Object.entries(page)) {
     Object.defineProperty(globalThis, name, { value, configurable: true })
   }
@@ -535,6 +547,7 @@ describe('[extension] Slack dispatch - callers that gave up', () => {
 
     // Assert
     assert.deepEqual(await reply, { type: 'reply', id: 2, error: GAVE_UP })
+
     assert.deepEqual(
       [handedOver('call').map(({ command }) => command.kind === 'call' && command.method), handedOver('upload')],
       [['files.getUploadURLExternal'], []]
@@ -620,12 +633,14 @@ describe('[extension] Slack dispatch - deadlines', () => {
 
     // Assert
     const [call] = handedOver('call')
+
     assert.deepEqual(await reply, {
       type: 'reply',
       id: 1,
       error:
         "The Slack page in tab 21 failed call: The caller's deadline passed before the request went out, so nothing was sent",
     })
+
     assert.deepEqual([call?.at, deadlineOf(call), fetched.mock.callCount()], [NOW, deadline, 0])
   })
 
@@ -719,6 +734,7 @@ describe('[extension] Slack dispatch - the startup attachment', () => {
     // Assert
     assert.deepEqual(await reply, { type: 'reply', id: 1, result: { ok: true } })
     assert.equal(readsBefore, 0)
+
     assert.deepEqual(
       sentCalls(fetched).map(({ method, versionTs }) => [method, versionTs]),
       [['chat.postMessage', VERSION_A]]
@@ -735,6 +751,7 @@ describe('[extension] Slack dispatch - the startup attachment', () => {
 
     // Assert
     assert.deepEqual(reply, { type: 'reply', id: 1, result: { ok: true } })
+
     assert.deepEqual(
       [browser.injections, handedOver('call')[0]?.at, sentCalls(fetched)[0]?.versionTs],
       [[], NOW, VERSION_A]
@@ -776,10 +793,12 @@ describe('[extension] Slack dispatch - the startup attachment', () => {
     // Assert
     assert.deepEqual(await reply, { type: 'reply', id: 1, result: { ok: true } })
     assert.equal(readsWhileBAttaches, 0)
+
     assert.deepEqual(
       handedOver('call').map(({ tabId }) => tabId),
       [45]
     )
+
     assert.equal(fetched.mock.callCount(), 1)
     const failure = await reported
     assert.ok(failure instanceof AggregateError)
@@ -852,6 +871,7 @@ describe('[extension] Slack dispatch - tabs that cannot send', () => {
 
     // Assert
     assert.deepEqual(reply, { type: 'reply', id: 1, result: { ok: true } })
+
     assert.deepEqual(
       handedOver('call').map(({ tabId, at }) => [tabId, at]),
       [
@@ -859,6 +879,7 @@ describe('[extension] Slack dispatch - tabs that cannot send', () => {
         [56, NOW],
       ]
     )
+
     assert.equal(fetched.mock.callCount(), 1)
   })
 
@@ -895,6 +916,7 @@ describe('[extension] Slack dispatch - tabs that cannot send', () => {
       id: 1,
       error: "The Slack page in tab 59 failed call: Slack's Web API refused the call (HTTP 500)",
     })
+
     assert.deepEqual([handedOver('call').map(({ tabId }) => tabId), fetched.mock.callCount()], [[59], 1])
   })
 
@@ -904,6 +926,7 @@ describe('[extension] Slack dispatch - tabs that cannot send', () => {
     supplyBase64(context)
     const fetched = mockSlack(context, TICKET)
     const ticketRelay = tab.relay
+
     tab.relay = {
       answer: () => {
         tab.relay = relayWith(null)
@@ -951,6 +974,7 @@ describe('[extension] Slack dispatch - the client query a call goes out with', (
       threadTs: null,
       initialComment: null,
     })
+
     await until(() => browser.relayReads.length === 2)
     await settled()
     await tick(context, GAP_MAX_MS)
@@ -999,6 +1023,7 @@ describe('[extension] Slack dispatch - tabs that change under a call', () => {
     // Arrange - the tab moves to a new document once its identity was read there
     const tab = await startOnTab(context, 81)
     const fetched = mockSlack(context)
+
     browser.runInPage = async (changed, command, run) => {
       const result = await run()
       if (command.kind === 'identity') {
@@ -1021,6 +1046,7 @@ describe('[extension] Slack dispatch - tabs that change under a call', () => {
     const first = slackTab(82)
     const second = slackTab(83, first.account)
     const answer = first.relay?.answer
+
     first.relay = {
       answer: async () => {
         const queries = await answer?.()
@@ -1029,6 +1055,7 @@ describe('[extension] Slack dispatch - tabs that change under a call', () => {
         return queries
       },
     }
+
     await startWorker(context, [first, second])
     const fetched = mockSlack(context)
 
@@ -1046,6 +1073,7 @@ describe('[extension] Slack dispatch - tabs that change under a call', () => {
     const second = slackTab(85, first.account)
     await startWorker(context, [first, second])
     const fetched = mockSlack(context)
+
     browser.runInPage = (changed, command, run) => {
       if (command.kind === 'call' && changed.id === 84) {
         changed.account = { ...changed.account, userId: 'U0SOMEONE2' }
@@ -1059,6 +1087,7 @@ describe('[extension] Slack dispatch - tabs that change under a call', () => {
 
     // Assert
     assert.deepEqual(reply, { type: 'reply', id: 1, result: { ok: true } })
+
     assert.deepEqual(
       handedOver('call').map(({ tabId, at }) => [tabId, at]),
       [
@@ -1066,6 +1095,7 @@ describe('[extension] Slack dispatch - tabs that change under a call', () => {
         [85, NOW],
       ]
     )
+
     assert.equal(fetched.mock.callCount(), 1)
   })
 })

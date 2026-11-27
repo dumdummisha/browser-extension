@@ -2,7 +2,13 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import { IDBFactory } from 'fake-indexeddb'
 import type { BridgeEvent } from '../protocol/events.js'
-import { DROPPED_EVENTS_ID, EVENT_QUEUE_MAX, LOSS_STORE, PENDING_EVENTS_STORE } from '../protocol/pending-queue.js'
+import {
+  DROPPED_EVENTS_ID,
+  EVENT_IDS_REMEMBERED,
+  EVENT_QUEUE_MAX,
+  LOSS_STORE,
+  PENDING_EVENTS_STORE,
+} from '../protocol/pending-queue.js'
 import { slackEventKey } from '../protocol/slack.js'
 import type { QueueHealth } from '../protocol/status.js'
 import { openPendingQueue, PendingQueueWriter } from './pending-queue-writer.js'
@@ -253,6 +259,25 @@ describe('[service-worker] Pending queue writer - admission and acks', () => {
     assert.equal(writer.pending().length, EVENT_QUEUE_MAX)
     assert.deepEqual(writer.health(), { state: 'committing', droppedEvents: 1 })
     assert.deepEqual((await storedQueue(factory)).lossRecord, { id: DROPPED_EVENTS_ID, droppedEvents: 1 })
+  })
+
+  it('should not let acks of ids no platform carries push a Slack ack out', async () => {
+    // Arrange
+    const event = eventAt('1700000001.000100')
+    const { writer } = createWriter(new IDBFactory())
+    await writer.recover()
+    await writer.admit(event)
+    await writer.ack(event.id)
+
+    // Act
+    for (let index = 0; index < EVENT_IDS_REMEMBERED; index += 1) {
+      await writer.ack(`no-scheme-${index}`)
+    }
+
+    const lateCopy = await writer.admit(event)
+
+    // Assert
+    assert.equal(lateCopy, 'duplicate')
   })
 })
 

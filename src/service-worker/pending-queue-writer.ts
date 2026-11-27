@@ -1,4 +1,4 @@
-import type { BridgeEvent } from '../protocol/events.js'
+import { type BridgeEvent, type BridgePlatform, platformOf, platformOfEventId } from '../protocol/events.js'
 import {
   countedLoss,
   DROPPED_EVENTS_ID,
@@ -30,11 +30,12 @@ interface IWriterHooks {
   readonly onHealthChange: (health: QueueHealth) => void
 }
 
-// One change's view of the queue inside its transaction: the events pending once it commits, and how many events it
-// counts as lost.
+// One change's view of the queue inside its transaction: the events pending once it commits, how many of them each
+// platform has, and how many events it counts as lost.
 interface IDraft {
   readonly events: IDBObjectStore
   readonly pending: Map<string, BridgeEvent>
+  readonly sizes: Map<BridgePlatform, number>
   lost: number
 }
 
@@ -100,20 +101,35 @@ const commit = async <TResult>(
   }
 }
 
-// The admission rule inside a change: an event already pending changes nothing, one that fits is put, and one that does
-// not is counted as lost.
+// How many of the events each platform has.
+const sizesOf = (events: Iterable<BridgeEvent>): Map<BridgePlatform, number> => {
+  const sizes = new Map<BridgePlatform, number>()
+
+  for (const event of events) {
+    const platform = platformOf(event)
+    sizes.set(platform, (sizes.get(platform) ?? 0) + 1)
+  }
+
+  return sizes
+}
+
+// The admission rule inside a change: an event already pending changes nothing, one whose platform's share has room is
+// put, and one whose platform's share is full is counted as lost.
 const admitInto = (draft: IDraft, event: BridgeEvent): Admission => {
   if (draft.pending.has(event.id)) {
     return 'duplicate'
   }
 
-  if (draft.pending.size >= EVENT_QUEUE_MAX) {
+  const platform = platformOf(event)
+  const size = draft.sizes.get(platform) ?? 0
+  if (size >= EVENT_QUEUE_MAX) {
     draft.lost += 1
     return 'lost'
   }
 
   draft.events.put(event)
   draft.pending.set(event.id, event)
+  draft.sizes.set(platform, size + 1)
 
   return 'stored'
 }
@@ -151,8 +167,8 @@ export class PendingQueueWriter {
   private droppedEvents: number | undefined
   // What the last change that did not commit failed with; null once a change commits.
   private failure: string | null = null
-  // Ids acknowledged lately, oldest first, so a second tab's late copy of a message is dropped here.
-  private readonly acknowledged = new Set<string>()
+  // Ids acknowledged lately, by platform, oldest first, so a second tab's late copy of a message is dropped here.
+  private readonly acknowledged = new Map<BridgePlatform, Set<string>>()
   private reportedHealth: string | null = null
 
   constructor(
@@ -173,7 +189,7 @@ export class PendingQueueWriter {
 
   public admit(event: BridgeEvent): Promise<Admission> {
     return this.enqueue(async () => {
-      if (this.acknowledged.has(event.id) || this.isPending(event.id)) {
+      if (this.isAcknowledged(event.id) || this.isPending(event.id)) {
         return 'duplicate'
       }
 
@@ -300,6 +316,7 @@ export class PendingQueueWriter {
       const draft = {
         events,
         pending: new Map(queue.events.map((event) => [event.id, event])),
+        sizes: sizesOf(queue.events),
         lost: queue.unreadableKeys.length,
       }
 
@@ -325,13 +342,20 @@ export class PendingQueueWriter {
 
     const { result, pending, droppedEvents } = await commit(database, async (events, loss) => {
       const lossRecord = await read<unknown>(loss.get(DROPPED_EVENTS_ID))
-      const draft: IDraft = { events, pending: new Map(this.stored), lost: 0 }
 
       for (const id of this.stored.keys()) {
-        if (this.acknowledged.has(id)) {
+        if (this.isAcknowledged(id)) {
           events.delete(id)
-          draft.pending.delete(id)
         }
+      }
+
+      const kept = [...this.stored.values()].filter((event) => !this.isAcknowledged(event.id))
+
+      const draft: IDraft = {
+        events,
+        pending: new Map(kept.map((event) => [event.id, event])),
+        sizes: sizesOf(kept),
+        lost: 0,
       }
 
       const changed = work(draft)
@@ -374,8 +398,9 @@ export class PendingQueueWriter {
     this.database = null
   }
 
+  // At most EVENT_QUEUE_MAX held events of each platform, so no platform's held events take another's room.
   private hold(event: BridgeEvent): Admission {
-    if (this.held.size >= EVENT_QUEUE_MAX) {
+    if ((sizesOf(this.held.values()).get(platformOf(event)) ?? 0) >= EVENT_QUEUE_MAX) {
       this.uncountedEvents += 1
       return 'lost'
     }
@@ -385,13 +410,28 @@ export class PendingQueueWriter {
     return 'held'
   }
 
+  // Each platform remembers its own EVENT_IDS_REMEMBERED acks. An id that names no platform is not remembered: no event
+  // can carry it.
   private remember(id: string): void {
-    this.acknowledged.delete(id)
-    this.acknowledged.add(id)
-    const [oldest] = this.acknowledged
-    if (oldest !== undefined && this.acknowledged.size > EVENT_IDS_REMEMBERED) {
-      this.acknowledged.delete(oldest)
+    const platform = platformOfEventId(id)
+    if (platform === null) {
+      return
     }
+
+    const acknowledged = this.acknowledged.get(platform) ?? new Set<string>()
+    acknowledged.delete(id)
+    acknowledged.add(id)
+    this.acknowledged.set(platform, acknowledged)
+    const [oldest] = acknowledged
+    if (oldest !== undefined && acknowledged.size > EVENT_IDS_REMEMBERED) {
+      acknowledged.delete(oldest)
+    }
+  }
+
+  private isAcknowledged(id: string): boolean {
+    const platform = platformOfEventId(id)
+
+    return platform !== null && (this.acknowledged.get(platform)?.has(id) ?? false)
   }
 
   private async connect(): Promise<IDBDatabase> {

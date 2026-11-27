@@ -21,9 +21,9 @@ import { type BridgeEvent, BridgeEventSchema, eventTimeMicros } from './events.j
 // 1. recovery, when the worker starts and before any intake or ack: read every pending record and the loss record
 //    (restoredQueue), delete the records that hold no readable event, and add their number to the count (countedLoss).
 //    Once it commits, the extension forwards the restored events. An event captured before then waits for it.
-// 2. admitting a captured event: an event already pending changes nothing; with fewer than EVENT_QUEUE_MAX pending, the
-//    event is put, and with the queue full it is counted instead (countedLoss). An event whose put committed is
-//    forwarded from the queue.
+// 2. admitting a captured event: an event already pending changes nothing; with fewer than EVENT_QUEUE_MAX pending
+//    events of its platform, the event is put, and with its platform's share full it is counted instead (countedLoss).
+//    An event whose put committed is forwarded from the queue.
 // 3. the ack, which the app sends after the commit that took the event. The writer remembers the event as acknowledged
 //    at once. An unstored event (below) is dropped from memory and from its redelivery at once, with no transaction,
 //    since the app already committed it; that alone does not end a queue failure. The exception is an unstored event
@@ -36,13 +36,13 @@ import { type BridgeEvent, BridgeEventSchema, eventTimeMicros } from './events.j
 // A change whose transaction does not commit (it aborts or fails, on the quota or anything else) is a queue failure,
 // which the status reports as failing (status.ts QueueHealthSchema) until a change commits. A recovery that failed runs
 // again before the next change, so while it keeps failing every admission fails too. An event whose admission did not
-// commit is unstored: the writer holds it in memory, at most EVENT_QUEUE_MAX of them, and forwards it to the listener
-// directly, now when one is attached and to each listener that attaches later, with the same redelivery waits as a
-// stored event. The app commits an event before it acknowledges it, so an acknowledged unstored event is durable on the
-// app's side, and the ack drops it from memory. An unstored event beyond the limit is lost for want of room, and the
-// writer keeps their number, uncounted. The next change that commits applies its own deletion first when it is an ack,
-// then admits every unstored event still held by rule 2 and adds the uncounted number to the count, all in its own
-// transaction, and the failure clears. If that transaction does not commit, the unstored events stay held.
+// commit is unstored: the writer holds it in memory, at most EVENT_QUEUE_MAX of them for each platform, and forwards it
+// to the listener directly, now when one is attached and to each listener that attaches later, with the same redelivery
+// waits as a stored event. The app commits an event before it acknowledges it, so an acknowledged unstored event is
+// durable on the app's side, and the ack drops it from memory. An unstored event beyond the limit is lost for want of
+// room, and the writer keeps their number, uncounted. The next change that commits applies its own deletion first when
+// it is an ack, then admits every unstored event still held by rule 2 and adds the uncounted number to the count, all
+// in its own transaction, and the failure clears. If that transaction does not commit, the unstored events stay held.
 //
 // The limit that remains: an event is lost without a durable count only when its admission did not commit, the app did
 // not commit it (no listener was attached, or the app had not acknowledged it yet), and the worker restarts before any
@@ -53,12 +53,14 @@ import { type BridgeEvent, BridgeEventSchema, eventTimeMicros } from './events.j
 // restart, since Chrome stops service workers without a clean shutdown, and a gap reported on every restart tells the
 // app nothing.
 
-// Events the queue holds at most. When it is full, a new event is dropped and counted, so the queue keeps the oldest
-// run in order.
+// Events the queue holds at most for each platform (events.ts BRIDGE_PLATFORMS). When a platform's share is full, a new
+// event of that platform is dropped and counted, so the queue keeps each platform's oldest run in order, and no
+// platform's events take another's room.
 export const EVENT_QUEUE_MAX = 2000
 
-// Event ids the extension remembers after their ack, so a second tab reporting the same message later is dropped
-// there; the app's unique event receipt drops any that get past.
+// Event ids the extension remembers after their ack, for each platform, so a second tab reporting the same message
+// later is dropped there; the app's unique event receipt drops any that get past. An ack whose id names no platform is
+// not remembered: no event can carry that id.
 export const EVENT_IDS_REMEMBERED = 5000
 
 export const PENDING_QUEUE_DATABASE = 'misha-pending-queue'

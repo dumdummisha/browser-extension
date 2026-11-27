@@ -36,7 +36,7 @@
   "scripts": {
     "build": "tsc && node scripts/build-extension.js",
     "store-archive": "tsc && node scripts/build-extension.js --store",
-    "install-host": "node dist/host/install.js",
+    "install-host": "node dist/host/install.js dist/extension",
     "disclosures": "tsc && node dist/disclosures/generate.js",
     "render-icons": "tsc && node scripts/render-icons.js",
     "typecheck": "tsc --noEmit",

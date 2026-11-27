@@ -287,14 +287,14 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
     return collapse(parts.join(''))
   }
 
-  const labelOf = (element: Element): string => {
-    const isLabelable =
-      element instanceof HTMLInputElement ||
-      element instanceof HTMLSelectElement ||
-      element instanceof HTMLTextAreaElement
+  // A form control can have labels, and its own text (a textarea's content, a select's options) names nothing.
+  const isFormControl = (element: Element): element is HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement =>
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLSelectElement ||
+    element instanceof HTMLTextAreaElement
 
-    return isLabelable && element.labels !== null ? [...element.labels].map(labelText).join(' ') : ''
-  }
+  const labelOf = (element: Element): string =>
+    isFormControl(element) && element.labels !== null ? [...element.labels].map(labelText).join(' ') : ''
 
   const accessibleName = (element: Element): string => {
     const labelledBy = (element.getAttribute('aria-labelledby') ?? '')
@@ -304,18 +304,13 @@ export const runPageCommand = (command: PageCommand): PageOutcome => {
       .map(textOf)
       .join(' ')
 
-    const isEntryField =
-      element instanceof HTMLInputElement ||
-      element instanceof HTMLTextAreaElement ||
-      element instanceof HTMLSelectElement
-
     const candidates = [
       labelledBy,
       element.getAttribute('aria-label'),
       labelOf(element),
       element instanceof HTMLInputElement && INPUT_ROLES[element.type] === 'button' ? element.value : null,
       element instanceof HTMLImageElement ? element.alt : null,
-      isEntryField ? null : textOf(element),
+      isFormControl(element) ? null : textOf(element),
       element.getAttribute('placeholder'),
       element.getAttribute('title'),
       element.querySelector('img[alt]')?.getAttribute('alt'),

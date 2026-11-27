@@ -13,7 +13,7 @@ import { SLACK_CLIENT_PATH, SLACK_CLIENT_STATE_KEY, SLACK_SOCKET_HOSTNAME } from
 // page's own entry buffer, and adds no request and no wrapper around XHR or fetch. It reads each entry's initiator type,
 // and the address only of the client's XHR entries.
 //
-// Threat model (README, Security): scripts already running in the page, Slack's own or another extension's in this
+// Threat model (docs/security.md): scripts already running in the page, Slack's own or another extension's in this
 // world, are out of scope, since such a script already holds the session and token and can send them anywhere itself.
 // The guarantees are that the extension's own code never moves a credential out of the page, and that Slack message
 // content, remote data that never runs as script, reaches the relay only as a cut-down message that becomes an event,

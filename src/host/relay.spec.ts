@@ -74,6 +74,17 @@ const tempDir = async (context: TestContext): Promise<string> => {
   return dir
 }
 
+// Leaves a socket at socketPath that nothing listens on: the process that listened there was killed.
+const leaveStaleSocket = async (socketPath: string): Promise<void> => {
+  await mkdir(dirname(socketPath), { mode: 0o700 })
+
+  spawnSync(process.execPath, [
+    '-e',
+    "require('node:net').createServer().listen(process.argv[1], () => process.kill(process.pid, 'SIGKILL'))",
+    socketPath,
+  ])
+}
+
 const send = ({ socket }: IClient, message: unknown): void => {
   socket.write(encodeLine(message))
 }
@@ -249,13 +260,7 @@ describe('[host] Relay - socket takeover', () => {
   it('should remove a socket nothing listens on, left by a host that crashed', async (context) => {
     // Arrange
     const socketPath = join(await tempDir(context), 'bridge', 'bridge.sock')
-    await mkdir(dirname(socketPath), { mode: 0o700 })
-
-    spawnSync(process.execPath, [
-      '-e',
-      "require('node:net').createServer().listen(process.argv[1], () => process.kill(process.pid, 'SIGKILL'))",
-      socketPath,
-    ])
+    await leaveStaleSocket(socketPath)
 
     const isStaleSocket = (await lstat(socketPath)).isSocket()
 
@@ -270,13 +275,7 @@ describe('[host] Relay - socket takeover', () => {
   it('should let two hosts that find one stale socket take the path in turn, so neither removes the live one', async (context) => {
     // Arrange
     const socketPath = join(await tempDir(context), 'bridge', 'bridge.sock')
-    await mkdir(dirname(socketPath), { mode: 0o700 })
-
-    spawnSync(process.execPath, [
-      '-e',
-      "require('node:net').createServer().listen(process.argv[1], () => process.kill(process.pid, 'SIGKILL'))",
-      socketPath,
-    ])
+    await leaveStaleSocket(socketPath)
 
     // Act
     const relays = await Promise.all([startRelayAt(context, socketPath), startRelayAt(context, socketPath)])

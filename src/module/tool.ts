@@ -65,7 +65,6 @@ export type ErrorCode =
   | 'NOT_FOUND'
   | 'FORBIDDEN'
   | 'VALIDATION_ERROR'
-  | 'CONNECTION_ERROR'
   | 'TIMEOUT'
   | 'ABORTED'
   | 'EXTERNAL_API_ERROR'

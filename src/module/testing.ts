@@ -3,8 +3,8 @@ import type { IToolContext, IToolDefinition } from './tool.js'
 
 // Spec helpers: a tool called as a host calls it, and a platform a spec pretends to run on.
 
-export const createTestToolContext = (directory = process.cwd()): IToolContext => ({
-  directory,
+const createTestToolContext = (): IToolContext => ({
+  directory: process.cwd(),
   signal: new AbortController().signal,
   progress: () => undefined,
 })
@@ -12,10 +12,9 @@ export const createTestToolContext = (directory = process.cwd()): IToolContext =
 // Calls a tool as a host does: its own schema parses the arguments first.
 export const invokeTool = async <TInput extends z.ZodObject>(
   definition: IToolDefinition<TInput>,
-  args: z.input<TInput>,
-  context: IToolContext = createTestToolContext()
+  args: z.input<TInput>
 ): Promise<string> => {
-  const output = await definition.execute(definition.input.parse(args), context)
+  const output = await definition.execute(definition.input.parse(args), createTestToolContext())
 
   return typeof output === 'string' ? output : output.text
 }

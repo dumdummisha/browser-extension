@@ -141,7 +141,6 @@ export type ClientHello = z.infer<typeof ClientHelloSchema>
 export type BridgeIncompatible = z.infer<typeof BridgeIncompatibleSchema>
 export type IncompatibilityReason = z.infer<typeof IncompatibilityReasonSchema>
 export type RecoveryCode = z.infer<typeof RecoveryCodeSchema>
-export type ExtensionLeg = z.infer<typeof ExtensionLegSchema>
 export type Takeover = z.infer<typeof TakeoverSchema>
 export type ClientMessage = z.infer<typeof ClientMessageSchema>
 export type RelayControl = z.infer<typeof RelayControlSchema>

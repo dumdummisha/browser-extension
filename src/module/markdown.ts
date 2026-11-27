@@ -15,11 +15,11 @@ export class MarkdownBuilder {
   public readonly bullet = (text: string): this => this.push(`- ${text}`)
 
   // The fence outruns every backtick run in the content, so no content line can close the block early.
-  public readonly codeBlock = (content: string, language = ''): this => {
+  public readonly codeBlock = (content: string): this => {
     const longestRun = (content.match(/`+/gu) ?? []).reduce((longest, run) => Math.max(longest, run.length), 0)
     const fence = '`'.repeat(Math.max(3, longestRun + 1))
 
-    return this.push(`${fence}${language}`, content, fence)
+    return this.push(fence, content, fence)
   }
 
   public readonly italic = (text: string): this => this.push(`_${text}_`)

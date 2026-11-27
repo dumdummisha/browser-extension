@@ -180,7 +180,7 @@ export interface IRelayPage {
 }
 
 // The relay's side, in the extension's isolated world, whose built-ins no page script can reach. It takes a channel
-// only from the observer of a page on slackOrigin, in its top frame, where the manifest and the service worker put
+// only from the observer of a page on origin, in its top frame, where the manifest and the service worker put
 // both, and throws anywhere else, before it dispatches anything. It dispatches the ready event on the page's document,
 // and each message a port offered during that dispatch brings goes to onMessage with that port. A port offered at any
 // other time finds no listener. A document keeps its origin for as long as it lives, and the relay goes with it.
@@ -188,14 +188,12 @@ export interface IRelayPage {
 // once this returns true the greeting is already queued on that port, and comes in the relay's next message.
 export const takeObserverPorts = (
   page: IRelayPage,
-  slackOrigin: string,
+  origin: string,
   onMessage: (data: unknown, port: MessagePort) => void
 ): boolean => {
-  if (page.origin !== slackOrigin || !page.isTopFrame) {
+  if (page.origin !== origin || !page.isTopFrame) {
     const frame = page.isTopFrame ? 'top frame' : 'subframe'
-    throw new Error(
-      `A relay takes a channel only in the top frame of ${slackOrigin}, not in a ${frame} of ${page.origin}`
-    )
+    throw new Error(`A relay takes a channel only in the top frame of ${origin}, not in a ${frame} of ${page.origin}`)
   }
 
   let isOffered = false

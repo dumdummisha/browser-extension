@@ -237,8 +237,8 @@ const relayScripting: IRelayScripting = {
 
     return { documentId: injection.documentId, probe: RelayProbeSchema.parse(injection.result) }
   },
-  inject: async (tabId, documentId) => {
-    await chrome.scripting.executeScript({ target: { tabId, documentIds: [documentId] }, files: [RELAY_SCRIPT] })
+  inject: async (tabId, documentId, file) => {
+    await chrome.scripting.executeScript({ target: { tabId, documentIds: [documentId] }, files: [file] })
   },
 }
 
@@ -255,7 +255,7 @@ const attachRelays = async (): Promise<readonly { readonly tabId: number; readon
 
   const failures = await Promise.all(
     tabs.map(({ id }) =>
-      attachRelay(relayScripting, id, SLACK_ORIGIN).then(
+      attachRelay(relayScripting, id, SLACK_ORIGIN, RELAY_SCRIPT).then(
         () => null,
         (error: unknown) => ({ tabId: id, error })
       )

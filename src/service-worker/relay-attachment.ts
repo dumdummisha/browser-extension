@@ -1,8 +1,8 @@
 import { z } from 'zod'
 
-// How the service worker gives an open Slack tab a relay once the extension reloaded (background.ts attachRelays). It
-// lives with the extension's modules the tests load, since the build replaces the compiled extension folder with its
-// bundles.
+// How the service worker gives an open tab a relay once the extension reloaded (background.ts attachRelays, which names
+// the origin a tab's page must be on and the relay script it gets: Slack's). It lives with the extension's modules the
+// tests load, since the build replaces the compiled extension folder with its bundles.
 //
 // The tab is probed first, in the extension's isolated world, where its content scripts run: the probe answers the top
 // document's origin, and whether a relay of this load of the extension runs there, from the mark a relay leaves in that
@@ -31,23 +31,28 @@ export interface IProbedDocument {
 export interface IRelayScripting {
   // The tab's top document, probed; null when the tab holds no document the extension can script.
   readonly probe: (tabId: number) => Promise<IProbedDocument | null>
-  // Injects the relay into that document of the tab and no other; rejects when the document is gone or the injection
-  // failed.
-  readonly inject: (tabId: number, documentId: string) => Promise<void>
+  // Injects the relay script file into that document of the tab and no other; rejects when the document is gone or the
+  // injection failed.
+  readonly inject: (tabId: number, documentId: string, file: string) => Promise<void>
 }
 
-// Gives the tab's top document a relay when it is a page on slackOrigin without one. A document that is gone by the
-// time the relay would go in, because the tab navigated, needs none: the page it shows now loaded after the extension
-// did, so the manifest's scripts ran there if it is Slack's. An injection that fails while its document is still the
-// one the tab shows rejects.
-export const attachRelay = async (scripting: IRelayScripting, tabId: number, slackOrigin: string): Promise<void> => {
+// Gives the tab's top document the relay script file when it is a page on origin without a relay. A document that is
+// gone by the time the relay would go in, because the tab navigated, needs none: the page it shows now loaded after the
+// extension did, so the manifest's scripts ran there if it is on origin. An injection that fails while its document is
+// still the one the tab shows rejects.
+export const attachRelay = async (
+  scripting: IRelayScripting,
+  tabId: number,
+  origin: string,
+  file: string
+): Promise<void> => {
   const probed = await scripting.probe(tabId)
-  if (probed === null || probed.probe.origin !== slackOrigin || probed.probe.hasRelay) {
+  if (probed === null || probed.probe.origin !== origin || probed.probe.hasRelay) {
     return
   }
 
   try {
-    await scripting.inject(tabId, probed.documentId)
+    await scripting.inject(tabId, probed.documentId, file)
   } catch (error) {
     const shown = await scripting.probe(tabId)
     if (shown?.documentId === probed.documentId) {

@@ -61,7 +61,11 @@ const itemAt = <TItem>(items: readonly TItem[], index: number): TItem => {
   return item
 }
 
-const redactTab = (tab: TabInfo): TabInfo => ({ ...tab, title: redactText(tab.title), url: redactUrl(tab.url) })
+const redactTab = <TTab extends Pick<TabInfo, 'title' | 'url'>>(tab: TTab): TTab => ({
+  ...tab,
+  title: redactText(tab.title),
+  url: redactUrl(tab.url),
+})
 
 const redactSnapshot = <TSnapshot extends PageSnapshot>(snapshot: TSnapshot): TSnapshot => ({
   ...snapshot,
@@ -120,11 +124,7 @@ const redactFind = ({ outline, sections, matches, isTruncated }: PageFind): TabB
 }
 
 export const TAB_RESULT_REDACTIONS: TabResultRedactions = {
-  listTabs: (windows) =>
-    windows.map((window) => ({
-      ...window,
-      tabs: window.tabs.map((tab) => ({ ...tab, title: redactText(tab.title), url: redactUrl(tab.url) })),
-    })),
+  listTabs: (windows) => windows.map((window) => ({ ...window, tabs: window.tabs.map(redactTab) })),
   focusTab: redactTab,
   openTab: redactTab,
   closeTab: unchanged,

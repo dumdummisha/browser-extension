@@ -33,6 +33,14 @@ The version is the one in `package.json`. The build writes it into the manifest 
 | Small promo tile, marquee, video | Left out: optional, and not needed for an unlisted first listing                                                                                                                                                |
 | Visibility                       | Unlisted. Anyone with the listing's address can install it; Misha's invites, not the listing, decide who can use the Misha app.                                                                                 |
 
+## Icons
+
+The extension's icons in `src/extension/icons/` are rendered from `misha.svg` beside them, at the sizes Chrome's manifest takes for `icons`, with macOS's `sips`; the 128-pixel icon draws the artwork within a centred 96-pixel square with 16 transparent pixels on each side, as the Chrome Web Store asks. The script keeps only the PNG chunks that describe pixels, so the EXIF block `sips` writes stays out of the repository:
+
+```sh
+pnpm run render-icons
+```
+
 ## Privacy fields
 
 The dashboard's privacy fields take the text of [`../store-permissions.md`](../store-permissions.md), which `pnpm run disclosures` generates from [`../store-disclosures.json`](../store-disclosures.json) and the manifest. Edit those sources, never the generated file; `pnpm test` fails while it is stale.

@@ -242,4 +242,4 @@ What the tab commands can return, on the Slack tab or any other:
 - `tab_screenshot` returns the pixels the tab shows, unredacted, including any credential on screen.
 - Network requests and returned URLs are redacted by name and pattern only, page text by the known credential shapes only. An opaque credential under an ordinary name, such as the key in a share link, comes back unchanged.
 
-Scripts that already run in the Slack page (Slack's own code, or another extension's) are out of scope: they hold the session themselves. The README's Security section states this threat model.
+Scripts that already run in the Slack page (Slack's own code, or another extension's) are out of scope: they hold the session themselves. docs/security.md in the extension's repository states this threat model.

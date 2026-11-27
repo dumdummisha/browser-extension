@@ -2,16 +2,12 @@ import assert from 'node:assert/strict'
 import { describe, it, type TestContext } from 'node:test'
 import type { IAbandonment } from './bridge-requests.js'
 import { paceGapMs, SlackPace } from './slack-pace.js'
+import { LATER, settled, tick } from './testing.js'
 
 const NOW = 1_000_000
 const GAP_MS = 1_000
-// A caller's deadline that has not passed (2100-01-01).
-const LATER = 4_102_444_800_000
 
 const wanted = (deadline = LATER): IAbandonment => ({ deadline, signal: new AbortController().signal })
-
-// Lets the promises that can move on do so; setImmediate is not one of the mocked timers.
-const settled = (): Promise<void> => new Promise((resolve) => setImmediate(resolve))
 
 const mockClock = (context: TestContext): void => {
   context.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: NOW })
@@ -29,11 +25,6 @@ const recorder = (durationMs = 0): { readonly sentAt: number[]; readonly request
       return durationMs === 0 ? Promise.resolve() : new Promise((resolve) => setTimeout(resolve, durationMs))
     },
   }
-}
-
-const tick = async (context: TestContext, ms: number): Promise<void> => {
-  context.mock.timers.tick(ms)
-  await settled()
 }
 
 describe('[service-worker] Slack pace - gaps', () => {

@@ -8,12 +8,10 @@ import {
   type SlackPageResult,
   SlackPageResultSchema,
 } from './slack-page.js'
+import { EARLIER, LATER } from './testing.js'
 
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 const TOKEN = 'xoxc-0000-example'
-// A caller's deadline that has not passed (2100-01-01) and one that has (2000-01-01).
-const LATER = 4_102_444_800_000
-const EARLIER = 946_684_800_000
 
 // The query the service worker sends for the workspace's API, as the page's observer kept it (borrowed-query.ts
 // borrowedQueryString).

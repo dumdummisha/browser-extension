@@ -7,10 +7,7 @@ import {
   type RequestHandler,
   throwIfAbandoned,
 } from './bridge-requests.js'
-
-// A caller's deadline that has not passed (2100-01-01) and one that has (2000-01-01).
-const LATER = 4_102_444_800_000
-const EARLIER = 946_684_800_000
+import { EARLIER, LATER } from './testing.js'
 
 const request = (id: number, method: string): BridgeRequest => ({
   type: 'request',

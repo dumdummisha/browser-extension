@@ -125,10 +125,10 @@ const URL_QUERY_START = /[?#]/u
 // The userinfo of an absolute URL's authority, whatever it holds or encodes: up to the authority's last @, as the
 // browser parses it.
 const URL_USERINFO = /^(?<scheme>[a-z][\d+.a-z-]*:\/\/)[^/]*@/iu
-// URLs whose path grants what it names without a cookie or header, so no shape tells the grant apart: everything after
+// A URL whose path grants what it names without a cookie or header, so no shape tells the grant apart: everything after
 // the prefix is redacted. Slack's file upload URL (files.getUploadURLExternal's upload_url) is
 // https://files.slack.com/upload/v1/<grant>.
-const CAPABILITY_URL_PREFIXES = [/^https:\/\/(?:[^/]*@)?files\.slack\.com(?::443)?\/upload\//iu]
+const CAPABILITY_URL_PREFIX = /^https:\/\/(?:[^/]*@)?files\.slack\.com(?::443)?\/upload\//iu
 // A run of well-formed percent escapes in a path segment; a malformed escape is left as written.
 const PERCENT_ESCAPES = /(?:%[\dA-Fa-f]{2})+/gu
 // A whole value that is an absolute URL, such as a Referer header or a redirect field, is redacted as a URL.
@@ -207,9 +207,7 @@ export const redactLines = (lines: readonly string[]): string[] => {
 // A URL up to its query: an authorization URL loses everything after its prefix, any other URL each path segment
 // shaped like a secret.
 const redactAddress = (address: string): string => {
-  const capability = CAPABILITY_URL_PREFIXES.map((prefix) => prefix.exec(address)?.[0]).find(
-    (kept) => kept !== undefined
-  )
+  const capability = CAPABILITY_URL_PREFIX.exec(address)?.[0]
   if (capability !== undefined) {
     return `${capability}${REDACTED_VALUE}`
   }

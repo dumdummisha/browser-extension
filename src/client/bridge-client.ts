@@ -22,15 +22,23 @@ import {
   type TabBridgeParams,
   type TabBridgeResult,
 } from '../protocol/tab.js'
+import {
+  WHATSAPP_BRIDGE_METHODS,
+  type WhatsAppAccount,
+  type WhatsAppBridgeMethod,
+  type WhatsAppBridgeResult,
+  type WhatsAppHistoryAnchor,
+  type WhatsAppPreparedSend,
+} from '../protocol/whatsapp.js'
 import { BridgeError, RelayConnection } from './relay-connection.js'
 
 export { BridgeError, BridgeIncompatibleError } from './relay-connection.js'
 
-// A client of the relay's socket (src/host/relay.ts): the app's Slack calls, file transfers and, once it listens, the
-// extension's events and status, and the browser tools' tab commands. One connection carries all of it, once its
-// handshake completed (relay-connection.ts); while the client listens, it connects again after the relay went away
-// (the browser quit, the extension reloaded) and sends listen again once ready, so it stays the listener. A client that
-// does not listen connects again on its next request.
+// A client of the relay's socket (src/host/relay.ts): the app's Slack calls and file transfers, its WhatsApp sends and
+// reads, and, once it listens, the extension's events of both platforms and its status, and the browser tools' tab
+// commands. One connection carries all of it, once its handshake completed (relay-connection.ts); while the client
+// listens, it connects again after the relay went away (the browser quit, the extension reloaded) and sends listen again
+// once ready, so it stays the listener. A client that does not listen connects again on its next request.
 
 // The default request timeout: an upload's bytes go to Slack within one request.
 export const REQUEST_TIMEOUT_MS = 120_000
@@ -61,7 +69,7 @@ export interface IBridgeClientOptions {
   readonly onHandlerError: (event: BridgeEvent, error: unknown) => void
 }
 
-type BridgeMethod = SlackBridgeMethod | TabBridgeMethod
+type BridgeMethod = SlackBridgeMethod | WhatsAppBridgeMethod | TabBridgeMethod
 
 export class BridgeClient {
   private connection: RelayConnection | null = null
@@ -178,6 +186,59 @@ export class BridgeClient {
     return slackUploadFinish.result.parse(await this.request('slackUploadFinish', params, signal))
   }
 
+  // The first WhatsApp send step: the page signed in as account builds the message and keeps it under its id, and
+  // nothing leaves. The app records the answer's messageId and token before it commits. signal, here and on the other
+  // WhatsApp methods, works as on call.
+  public async prepareWhatsAppSend(
+    account: WhatsAppAccount,
+    chat: string,
+    text: string,
+    signal?: AbortSignal
+  ): Promise<WhatsAppBridgeResult<'whatsappSendPrepare'>> {
+    const { params, result } = WHATSAPP_BRIDGE_METHODS.whatsappSendPrepare
+
+    return result.parse(await this.request('whatsappSendPrepare', params.parse({ account, chat, text }), signal))
+  }
+
+  // The second WhatsApp send step: sends exactly the prepared message, from the page that prepared it. Only sent
+  // confirms the page's sender took it; unconfirmed and a rejection leave the outcome unknown, and the client sends it
+  // no second time.
+  public async commitWhatsAppSend(
+    account: WhatsAppAccount,
+    chat: string,
+    { messageId, token }: WhatsAppPreparedSend,
+    signal?: AbortSignal
+  ): Promise<WhatsAppBridgeResult<'whatsappSendCommit'>> {
+    const { params, result } = WHATSAPP_BRIDGE_METHODS.whatsappSendCommit
+
+    return result.parse(
+      await this.request('whatsappSendCommit', params.parse({ account, chat, messageId, token }), signal)
+    )
+  }
+
+  // Up to count messages of the chat around anchor (the newest when null), oldest first.
+  public async whatsAppHistory(
+    account: WhatsAppAccount,
+    chat: string,
+    anchor: WhatsAppHistoryAnchor | null,
+    count: number,
+    signal?: AbortSignal
+  ): Promise<WhatsAppBridgeResult<'whatsappHistory'>> {
+    const { params, result } = WHATSAPP_BRIDGE_METHODS.whatsappHistory
+
+    return result.parse(await this.request('whatsappHistory', params.parse({ account, chat, anchor, count }), signal))
+  }
+
+  public async whatsAppContact(
+    account: WhatsAppAccount,
+    wid: string,
+    signal?: AbortSignal
+  ): Promise<WhatsAppBridgeResult<'whatsappContact'>> {
+    const { params, result } = WHATSAPP_BRIDGE_METHODS.whatsappContact
+
+    return result.parse(await this.request('whatsappContact', params.parse({ account, wid }), signal))
+  }
+
   // A tab command of the browser tools, with its result checked against the protocol.
   public async tab<TMethod extends TabBridgeMethod>(
     method: TMethod,
@@ -219,8 +280,8 @@ export class BridgeClient {
   // Resolves with the extension's result. Rejects when no answer came: the connection dropped or turned out
   // incompatible, the call timed out, the caller abandoned it, or the extension answered an error; for a write, the
   // outcome is then unknown. The deadline is set before the connection is, and bounds the handshake, the request and
-  // its reply alike: the request carries it, so the extension sends nothing of it to Slack once the client stopped
-  // waiting; an abandoned call is cancelled at the extension.
+  // its reply alike: the request carries it, so the extension hands nothing of it to a page once the client stopped
+  // waiting; an abandoned call is cancelled at the extension. A request is sent once and never again.
   private async request(method: BridgeMethod, params: unknown, signal?: AbortSignal): Promise<unknown> {
     const deadline = Date.now() + this.options.requestTimeoutMs
 

@@ -19,10 +19,10 @@ export const throwIfAbandoned = ({ deadline, signal }: IAbandonment, at = Date.n
   }
 }
 
-// The reply to one request, from the handler its method names: the Slack methods and the tab methods, whose names
-// never overlap (protocol tab.ts). A handler that throws or rejects answers its own request with the error, so a
-// failing command never reaches the rest of the service worker: the Slack observer, the pending queue and the other
-// requests carry on.
+// The reply to one request, from the handler its method names: the Slack methods, the WhatsApp methods and the tab
+// methods, whose names never overlap (protocol tab.ts). A handler that throws or rejects answers its own request with
+// the error, so a failing command never reaches the rest of the service worker: the Slack observer, the pending queue
+// and the other requests carry on.
 export const answerRequest = async (
   handlers: Readonly<Record<string, RequestHandler>>,
   { id, method, params, deadline }: BridgeRequest,

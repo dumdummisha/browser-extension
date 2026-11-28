@@ -2,7 +2,7 @@
   "name": "misha-browser",
   "version": "0.1.0",
   "private": true,
-  "description": "Browser extension and MCP server for browser and desktop control, with Misha's Slack transport",
+  "description": "Browser extension and MCP server for browser and desktop control, with Misha's Slack and WhatsApp transports",
   "license": "Apache-2.0",
   "type": "module",
   "engines": {

@@ -3,6 +3,7 @@ import { describe, it } from 'node:test'
 import { attachRelay, type IProbedDocument, type IRelayScripting } from './relay-attachment.js'
 
 const SLACK_ORIGIN = 'https://app.slack.com'
+const RELAY_FILE = 'relay.js'
 const TAB_ID = 7
 
 const slackDocument = (documentId: string, hasRelay: boolean): IProbedDocument => ({
@@ -13,6 +14,8 @@ const slackDocument = (documentId: string, hasRelay: boolean): IProbedDocument =
 interface IFakeScripting extends IRelayScripting {
   // Every injection asked for, as [tabId, documentId].
   readonly injections: [number, string][]
+  // The script file each injection named, in the same order.
+  readonly files: string[]
 }
 
 // chrome.scripting as the tab answers it: each probe takes the next of probes, in order, and every injection fails
@@ -20,17 +23,20 @@ interface IFakeScripting extends IRelayScripting {
 const fakeScripting = (probes: (IProbedDocument | null)[], injectionFailure: Error | null): IFakeScripting => {
   const answers = [...probes]
   const injections: [number, string][] = []
+  const files: string[] = []
 
   return {
     injections,
+    files,
     probe: () => {
       const answer = answers.shift()
       assert.ok(answer !== undefined, 'the tab was probed more often than the test answers')
 
       return Promise.resolve(answer)
     },
-    inject: (tabId, documentId) => {
+    inject: (tabId, documentId, file) => {
       injections.push([tabId, documentId])
+      files.push(file)
 
       return injectionFailure === null ? Promise.resolve() : Promise.reject(injectionFailure)
     },
@@ -43,10 +49,11 @@ describe('[service-worker] Relay attachment - after an extension reload', () => 
     const scripting = fakeScripting([slackDocument('DOC-A', false)], null)
 
     // Act
-    await attachRelay(scripting, TAB_ID, SLACK_ORIGIN)
+    await attachRelay(scripting, TAB_ID, SLACK_ORIGIN, RELAY_FILE)
 
     // Assert
     assert.deepEqual(scripting.injections, [[TAB_ID, 'DOC-A']])
+    assert.deepEqual(scripting.files, [RELAY_FILE])
   })
 
   it('should give no relay to a page off Slack, a document whose relay runs, or a tab with no document', async () => {
@@ -59,7 +66,7 @@ describe('[service-worker] Relay attachment - after an extension reload', () => 
 
     // Act
     for (const scripting of tabs) {
-      await attachRelay(scripting, TAB_ID, SLACK_ORIGIN)
+      await attachRelay(scripting, TAB_ID, SLACK_ORIGIN, RELAY_FILE)
     }
 
     // Assert
@@ -84,8 +91,8 @@ describe('[service-worker] Relay attachment - after an extension reload', () => 
     const unscriptable = fakeScripting([slackDocument('DOC-A', false), null], gone)
 
     // Act
-    await attachRelay(navigatedAway, TAB_ID, SLACK_ORIGIN)
-    await attachRelay(unscriptable, TAB_ID, SLACK_ORIGIN)
+    await attachRelay(navigatedAway, TAB_ID, SLACK_ORIGIN, RELAY_FILE)
+    await attachRelay(unscriptable, TAB_ID, SLACK_ORIGIN, RELAY_FILE)
 
     // Assert
     assert.deepEqual(navigatedAway.injections, [[TAB_ID, 'DOC-A']])
@@ -98,6 +105,6 @@ describe('[service-worker] Relay attachment - after an extension reload', () => 
     const scripting = fakeScripting([slackDocument('DOC-A', false), slackDocument('DOC-A', false)], failure)
 
     // Act + Assert
-    await assert.rejects(attachRelay(scripting, TAB_ID, SLACK_ORIGIN), failure)
+    await assert.rejects(attachRelay(scripting, TAB_ID, SLACK_ORIGIN, RELAY_FILE), failure)
   })
 })

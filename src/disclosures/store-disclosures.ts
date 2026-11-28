@@ -3,6 +3,8 @@ import { fileURLToPath } from 'node:url'
 import { z } from 'zod'
 import { MESSAGE_FIELDS, NEW_MESSAGE_SUBTYPES } from '../protocol/slack-message-fields.js'
 import { SLACK_READ_METHODS, SLACK_UPLOAD_METHODS, SLACK_WRITE_METHODS } from '../protocol/slack.js'
+import { WHATSAPP_MESSAGE_TYPES } from '../protocol/whatsapp-fields.js'
+import { WHATSAPP_BRIDGE_METHODS, WHATSAPP_HISTORY_COUNT_MAX, WhatsAppMessageSchema } from '../protocol/whatsapp.js'
 
 // The extension's store disclosures: docs/store-disclosures.json says what each permission, host permission and content
 // script lets the extension do and why, and docs/store-permissions.md is rendered from it and the manifest, for the
@@ -27,13 +29,14 @@ const STORE_DATA_CATEGORIES = [
   'Website content',
 ] as const
 
-// When data flows under a declaration: without any request (automatic), without a request on a Slack tab, or only when
-// the Misha app or a browser tool asks.
-const CollectionTriggerSchema = z.enum(['automatic', 'slack-tab', 'app-request', 'tool-request'])
+// When data flows under a declaration: without any request (automatic), without a request on a Slack tab or a WhatsApp
+// tab, or only when the Misha app or a browser tool asks.
+const CollectionTriggerSchema = z.enum(['automatic', 'slack-tab', 'whatsapp-tab', 'app-request', 'tool-request'])
 
 const COLLECTION_TRIGGER_LABELS: Readonly<Record<z.infer<typeof CollectionTriggerSchema>, string>> = {
   'automatic': 'automatic',
   'slack-tab': 'on a Slack tab',
+  'whatsapp-tab': 'on a WhatsApp tab',
   'app-request': 'on a Misha app request',
   'tool-request': 'on a browser tool request',
 }
@@ -246,6 +249,13 @@ export const renderStorePermissions = (inputs: IDisclosureInputs): string => {
       `- Web API methods the extension calls when the Misha app asks: the reads ${codeList(SLACK_READ_METHODS)}, the writes ${codeList(SLACK_WRITE_METHODS)}, and for an upload ${codeList(SLACK_UPLOAD_METHODS)}.`,
       `- Fields a new message keeps when it leaves the page: ${codeList(MESSAGE_FIELDS)}, and the id of each file it shares.`,
       `- A message is new when it has no subtype or one of ${codeList(NEW_MESSAGE_SUBTYPES)}.`,
+    ].join('\n'),
+    '## WhatsApp transport limits',
+    [
+      `- Chats: one-to-one chats only. Messages of groups, communities, channels, broadcasts, status updates and bots never leave the page.`,
+      `- Message types a new message or a history read reports: ${codeList(WHATSAPP_MESSAGE_TYPES)}. A media message carries only its caption as text; the media itself is never read.`,
+      `- Fields a reported message keeps when it leaves the page: ${codeList(Object.keys(WhatsAppMessageSchema.shape))}.`,
+      `- Methods the extension answers when the Misha app asks: ${codeList(Object.keys(WHATSAPP_BRIDGE_METHODS))}. A history read answers at most ${WHATSAPP_HISTORY_COUNT_MAX} messages.`,
     ].join('\n'),
     "## Where Slack's credentials go",
     ...credentialHandling.paragraphs,

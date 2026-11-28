@@ -1,3 +1,4 @@
+import { type BridgeEvent, type BridgePlatform, platformOf, platformOfEventId } from '../protocol/events.js'
 import {
   countedLoss,
   DROPPED_EVENTS_ID,
@@ -12,7 +13,7 @@ import {
   restoredQueue,
   STORE_KEY_PATH,
 } from '../protocol/pending-queue.js'
-import type { QueueHealth, SlackEvent } from '../protocol/slack.js'
+import type { QueueHealth } from '../protocol/status.js'
 
 // The pending queue's one writer (protocol pending-queue.ts holds the rules it follows). Every change waits for the one
 // before it, recovery first, and runs as one readwrite transaction over both stores. A change that does not commit
@@ -25,15 +26,16 @@ type Admission = 'stored' | 'held' | 'duplicate' | 'lost'
 
 interface IWriterHooks {
   // The stored events recovery found, once it committed, for the service worker to forward.
-  readonly onRestored: (events: readonly SlackEvent[]) => void
+  readonly onRestored: (events: readonly BridgeEvent[]) => void
   readonly onHealthChange: (health: QueueHealth) => void
 }
 
-// One change's view of the queue inside its transaction: the events pending once it commits, and how many events it
-// counts as lost.
+// One change's view of the queue inside its transaction: the events pending once it commits, how many of them each
+// platform has, and how many events it counts as lost.
 interface IDraft {
   readonly events: IDBObjectStore
-  readonly pending: Map<string, SlackEvent>
+  readonly pending: Map<string, BridgeEvent>
+  readonly sizes: Map<BridgePlatform, number>
   lost: number
 }
 
@@ -99,20 +101,35 @@ const commit = async <TResult>(
   }
 }
 
-// The admission rule inside a change: an event already pending changes nothing, one that fits is put, and one that does
-// not is counted as lost.
-const admitInto = (draft: IDraft, event: SlackEvent): Admission => {
+// How many of the events each platform has.
+const sizesOf = (events: Iterable<BridgeEvent>): Map<BridgePlatform, number> => {
+  const sizes = new Map<BridgePlatform, number>()
+
+  for (const event of events) {
+    const platform = platformOf(event)
+    sizes.set(platform, (sizes.get(platform) ?? 0) + 1)
+  }
+
+  return sizes
+}
+
+// The admission rule inside a change: an event already pending changes nothing, one whose platform's share has room is
+// put, and one whose platform's share is full is counted as lost.
+const admitInto = (draft: IDraft, event: BridgeEvent): Admission => {
   if (draft.pending.has(event.id)) {
     return 'duplicate'
   }
 
-  if (draft.pending.size >= EVENT_QUEUE_MAX) {
+  const platform = platformOf(event)
+  const size = draft.sizes.get(platform) ?? 0
+  if (size >= EVENT_QUEUE_MAX) {
     draft.lost += 1
     return 'lost'
   }
 
   draft.events.put(event)
   draft.pending.set(event.id, event)
+  draft.sizes.set(platform, size + 1)
 
   return 'stored'
 }
@@ -136,9 +153,9 @@ export class PendingQueueWriter {
   private database: IDBDatabase | null = null
   private changes: Promise<unknown> = Promise.resolve()
   // The stored queue as of the last change that committed.
-  private stored = new Map<string, SlackEvent>()
+  private stored = new Map<string, BridgeEvent>()
   // Events whose admission did not commit, forwarded from memory until a change commits and stores or counts them.
-  private readonly held = new Map<string, SlackEvent>()
+  private readonly held = new Map<string, BridgeEvent>()
   // The held events the change in progress put in its transaction, which stores them if it commits.
   private readonly drafted = new Set<string>()
   // Events lost for want of room while the queue failed, not in the stored count yet.
@@ -150,8 +167,8 @@ export class PendingQueueWriter {
   private droppedEvents: number | undefined
   // What the last change that did not commit failed with; null once a change commits.
   private failure: string | null = null
-  // Ids acknowledged lately, oldest first, so a second tab's late copy of a message is dropped here.
-  private readonly acknowledged = new Set<string>()
+  // Ids acknowledged lately, by platform, oldest first, so a second tab's late copy of a message is dropped here.
+  private readonly acknowledged = new Map<BridgePlatform, Set<string>>()
   private reportedHealth: string | null = null
 
   constructor(
@@ -170,9 +187,9 @@ export class PendingQueueWriter {
     })
   }
 
-  public admit(event: SlackEvent): Promise<Admission> {
+  public admit(event: BridgeEvent): Promise<Admission> {
     return this.enqueue(async () => {
-      if (this.acknowledged.has(event.id) || this.isPending(event.id)) {
+      if (this.isAcknowledged(event.id) || this.isPending(event.id)) {
         return 'duplicate'
       }
 
@@ -253,7 +270,7 @@ export class PendingQueueWriter {
   }
 
   // Every event waiting for its ack, stored or held: what a listener that attaches gets.
-  public pending(): SlackEvent[] {
+  public pending(): BridgeEvent[] {
     return [...this.stored.values(), ...this.held.values()]
   }
 
@@ -299,6 +316,7 @@ export class PendingQueueWriter {
       const draft = {
         events,
         pending: new Map(queue.events.map((event) => [event.id, event])),
+        sizes: sizesOf(queue.events),
         lost: queue.unreadableKeys.length,
       }
 
@@ -324,13 +342,20 @@ export class PendingQueueWriter {
 
     const { result, pending, droppedEvents } = await commit(database, async (events, loss) => {
       const lossRecord = await read<unknown>(loss.get(DROPPED_EVENTS_ID))
-      const draft: IDraft = { events, pending: new Map(this.stored), lost: 0 }
 
       for (const id of this.stored.keys()) {
-        if (this.acknowledged.has(id)) {
+        if (this.isAcknowledged(id)) {
           events.delete(id)
-          draft.pending.delete(id)
         }
+      }
+
+      const kept = [...this.stored.values()].filter((event) => !this.isAcknowledged(event.id))
+
+      const draft: IDraft = {
+        events,
+        pending: new Map(kept.map((event) => [event.id, event])),
+        sizes: sizesOf(kept),
+        lost: 0,
       }
 
       const changed = work(draft)
@@ -355,7 +380,7 @@ export class PendingQueueWriter {
   }
 
   // A change committed: the draft is the stored queue, every held event is stored or counted, and the failure clears.
-  private settle(pending: Map<string, SlackEvent>, droppedEvents: number): void {
+  private settle(pending: Map<string, BridgeEvent>, droppedEvents: number): void {
     this.stored = pending
     this.held.clear()
     this.drafted.clear()
@@ -373,8 +398,9 @@ export class PendingQueueWriter {
     this.database = null
   }
 
-  private hold(event: SlackEvent): Admission {
-    if (this.held.size >= EVENT_QUEUE_MAX) {
+  // At most EVENT_QUEUE_MAX held events of each platform, so no platform's held events take another's room.
+  private hold(event: BridgeEvent): Admission {
+    if ((sizesOf(this.held.values()).get(platformOf(event)) ?? 0) >= EVENT_QUEUE_MAX) {
       this.uncountedEvents += 1
       return 'lost'
     }
@@ -384,13 +410,28 @@ export class PendingQueueWriter {
     return 'held'
   }
 
+  // Each platform remembers its own EVENT_IDS_REMEMBERED acks. An id that names no platform is not remembered: no event
+  // can carry it.
   private remember(id: string): void {
-    this.acknowledged.delete(id)
-    this.acknowledged.add(id)
-    const [oldest] = this.acknowledged
-    if (oldest !== undefined && this.acknowledged.size > EVENT_IDS_REMEMBERED) {
-      this.acknowledged.delete(oldest)
+    const platform = platformOfEventId(id)
+    if (platform === null) {
+      return
     }
+
+    const acknowledged = this.acknowledged.get(platform) ?? new Set<string>()
+    acknowledged.delete(id)
+    acknowledged.add(id)
+    this.acknowledged.set(platform, acknowledged)
+    const [oldest] = acknowledged
+    if (oldest !== undefined && acknowledged.size > EVENT_IDS_REMEMBERED) {
+      acknowledged.delete(oldest)
+    }
+  }
+
+  private isAcknowledged(id: string): boolean {
+    const platform = platformOfEventId(id)
+
+    return platform !== null && (this.acknowledged.get(platform)?.has(id) ?? false)
   }
 
   private async connect(): Promise<IDBDatabase> {

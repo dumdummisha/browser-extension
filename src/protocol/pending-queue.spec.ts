@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
+import type { BridgeEvent } from './events.js'
 import {
   countedLoss,
   DROPPED_EVENTS_ID,
@@ -10,6 +11,7 @@ import {
   restoredQueue,
 } from './pending-queue.js'
 import { type SlackEvent, slackEventKey } from './slack.js'
+import { type WhatsAppEvent, whatsappEventKey } from './whatsapp.js'
 
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 
@@ -19,7 +21,15 @@ const eventAt = (channel: string, ts: string): SlackEvent => {
   return { type: 'event', id: slackEventKey(ACCOUNT, frame), account: ACCOUNT, frame } as const
 }
 
-const recordOf = (event: SlackEvent): { key: string; value: SlackEvent } => ({ key: event.id, value: event })
+// A WhatsApp message to Leo Novak at timestamp, in unix seconds.
+const whatsappEventAt = (id: string, timestamp: number): WhatsAppEvent => {
+  const account = { wid: '100000000000001@lid' }
+  const message = { chat: '100000000000002@lid', id, timestamp, fromMe: false, type: 'chat', text: 'hello' } as const
+
+  return { type: 'event', id: whatsappEventKey(account, message), account, message }
+}
+
+const recordOf = (event: BridgeEvent): { key: string; value: BridgeEvent } => ({ key: event.id, value: event })
 
 describe('[protocol] Pending queue - restoring', () => {
   it('should restore stored events oldest message first, with the loss count', () => {
@@ -34,6 +44,21 @@ describe('[protocol] Pending queue - restoring', () => {
 
     // Assert
     assert.deepEqual(queue, { events: [earlier, later, sameTs], droppedEvents: 3, unreadableKeys: [] })
+  })
+
+  it('should restore events of both platforms oldest message first on one clock', () => {
+    // Arrange - WhatsApp's times count seconds, Slack's microseconds
+    const slackAt = eventAt('C0EXAMPLE1', '1700000001.000100')
+    const whatsappBefore = whatsappEventAt('3EB0A1B2C3D4E5F60718', 1_700_000_000)
+    const whatsappAfter = whatsappEventAt('3EB0A1B2C3D4E5F60719', 1_700_000_002)
+    const slackJustAfter = eventAt('C0EXAMPLE2', '1700000002.000001')
+    const records = [slackJustAfter, whatsappAfter, slackAt, whatsappBefore].map(recordOf)
+
+    // Act
+    const queue = restoredQueue(records, { id: DROPPED_EVENTS_ID, droppedEvents: 0 })
+
+    // Assert
+    assert.deepEqual(queue.events, [whatsappBefore, slackAt, whatsappAfter, slackJustAfter])
   })
 
   it('should start from no loss when nothing was ever lost', () => {

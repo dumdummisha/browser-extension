@@ -15,25 +15,33 @@ import {
   startTestRelay,
 } from '../host/testing.js'
 import { temporaryDirectory } from '../module/testing.js'
+import type { BridgeEvent } from '../protocol/events.js'
 import { createLineReader, encodeFrame, encodeLine } from '../protocol/framing.js'
 import { PROTOCOL_REVISION } from '../protocol/messages.js'
-import { type SlackEvent, slackEventKey, type SlackStatus } from '../protocol/slack.js'
+import { slackEventKey } from '../protocol/slack.js'
+import type { BridgeStatus } from '../protocol/status.js'
+import { whatsappEventKey } from '../protocol/whatsapp.js'
 import { BridgeClient, BridgeIncompatibleError, type IBridgeState } from './bridge-client.js'
 
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
+const LEO_NOVAK = { wid: '100000000000001@lid' }
+const EMMA_CHAT = '100000000000002@lid'
+const TOKEN = '00000000-0000-4000-8000-000000000001'
+const PREPARED_ID = '3EB0F1E2D3C4B5A69788'
 // The request timeout of a client in these tests, well inside the test runner's timeout.
 const REQUEST_TIMEOUT_MS = 5000
 
-const STATUS: SlackStatus = {
+const STATUS: BridgeStatus = {
   type: 'status',
   identities: [{ tabId: 7, teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1', teamName: 'Example Workspace' }],
   captures: [{ tabId: 7, state: 'attached', isSocketOpen: true }],
   queue: { state: 'committing', droppedEvents: 0 },
   parity: [],
+  whatsapp: [],
 }
 
 interface IRejectedEvent {
-  readonly event: SlackEvent
+  readonly event: BridgeEvent
   readonly error: unknown
 }
 
@@ -44,10 +52,31 @@ interface IExtensionEnd {
   readonly next: () => Promise<unknown>
 }
 
-const eventAt = (ts: string): SlackEvent => {
+const eventAt = (ts: string): BridgeEvent => {
   const frame = { type: 'message', channel: 'D0EXAMPLE1', ts, text: 'hello' } as const
 
   return { type: 'event', id: slackEventKey(ACCOUNT, frame), account: ACCOUNT, frame }
+}
+
+const whatsappEventAt = (id: string): BridgeEvent => {
+  const message = {
+    chat: EMMA_CHAT,
+    id,
+    timestamp: 1_700_000_000,
+    fromMe: false,
+    type: 'chat',
+    text: 'Lunch at noon?',
+  } as const
+
+  return { type: 'event', id: whatsappEventKey(LEO_NOVAK, message), account: LEO_NOVAK, message }
+}
+
+// A frame the relay sent the extension, without the deadline the client set.
+const withoutDeadline = (frame: unknown): unknown => {
+  assert.ok(typeof frame === 'object' && frame !== null && 'deadline' in frame)
+  const { deadline: _deadline, ...rest } = frame
+
+  return rest
 }
 
 const fromExtension = ({ input }: IExtensionEnd, frame: unknown): void => {
@@ -106,7 +135,7 @@ describe('[client] Bridge client - events', () => {
     // Arrange
     const { client, extension } = await startClient(context)
     const event = eventAt('1700000001.000100')
-    const received = Promise.withResolvers<SlackEvent>()
+    const received = Promise.withResolvers<BridgeEvent>()
     const committed = Promise.withResolvers<undefined>()
 
     client.listen((taken) => {
@@ -159,13 +188,57 @@ describe('[client] Bridge client - events', () => {
     assert.deepEqual(ack, { type: 'ack', id: committed.id })
     assert.deepEqual(rejected, [{ event: failed, error: commitError }])
   })
+
+  it("should hand one platform's events to the handler one at a time, in the order they came", async (context) => {
+    // Arrange
+    const { client, extension } = await startClient(context)
+    const [first, second] = [eventAt('1700000001.000100'), eventAt('1700000002.000100')]
+    const [firstCommit, secondCommit] = [Promise.withResolvers<undefined>(), Promise.withResolvers<undefined>()]
+    const firstStarted = Promise.withResolvers<undefined>()
+    const started: BridgeEvent[] = []
+
+    client.listen((event) => {
+      started.push(event)
+      firstStarted.resolve(undefined)
+
+      return (event.id === first.id ? firstCommit : secondCommit).promise
+    })
+
+    await extension.next()
+
+    // Act - the reply comes after both events on the one connection, so both reached the client before it
+    fromExtension(extension, first)
+    fromExtension(extension, second)
+    await firstStarted.promise
+    const answered = client.call(ACCOUNT, 'auth.test', {})
+    await extension.next()
+    fromExtension(extension, { type: 'reply', id: 1, result: { ok: true } })
+    await answered
+    const startedBeforeCommit = [...started]
+    firstCommit.resolve(undefined)
+    const firstAck = await extension.next()
+    secondCommit.resolve(undefined)
+    const secondAck = await extension.next()
+
+    // Assert
+    assert.deepEqual(startedBeforeCommit, [first])
+    assert.deepEqual(started, [first, second])
+
+    assert.deepEqual(
+      [firstAck, secondAck],
+      [
+        { type: 'ack', id: first.id },
+        { type: 'ack', id: second.id },
+      ]
+    )
+  })
 })
 
 describe('[client] Bridge client - status', () => {
   it('should publish each status snapshot, and undefined once the relay went away', async (context) => {
     // Arrange
     const { client, extension } = await startClient(context)
-    const published = createQueue<SlackStatus | undefined>()
+    const published = createQueue<BridgeStatus | undefined>()
     client.onStatus(published.put)
     client.listen(() => Promise.resolve())
     await extension.next()
@@ -729,5 +802,266 @@ describe('[client] Bridge client - send boundary', () => {
     assert.ok(typeof request === 'object' && request !== null && 'params' in request)
     assert.deepEqual(request.params, { tabId: 6 })
     assert.deepEqual(await next, { tabId: 6 })
+  })
+})
+
+describe('[client] Bridge client - WhatsApp', () => {
+  it("should send each method's name and checked params and answer its checked result", async (context) => {
+    // Arrange
+    const { client, extension } = await startClient(context)
+    const anchor = { direction: 'before', messageId: PREPARED_ID, fromMe: true } as const
+    const message = {
+      chat: EMMA_CHAT,
+      id: PREPARED_ID,
+      timestamp: 1_700_000_000,
+      fromMe: true,
+      type: 'chat',
+      text: 'Hi',
+    }
+
+    const calls = [
+      {
+        call: () => client.prepareWhatsAppSend(LEO_NOVAK, EMMA_CHAT, 'See you at noon'),
+        method: 'whatsappSendPrepare',
+        params: { account: LEO_NOVAK, chat: EMMA_CHAT, text: 'See you at noon' },
+        result: { outcome: 'prepared', messageId: PREPARED_ID, token: TOKEN },
+      },
+      {
+        call: () => client.commitWhatsAppSend(LEO_NOVAK, EMMA_CHAT, { messageId: PREPARED_ID, token: TOKEN }),
+        method: 'whatsappSendCommit',
+        params: { account: LEO_NOVAK, chat: EMMA_CHAT, messageId: PREPARED_ID, token: TOKEN },
+        result: { outcome: 'sent', timestamp: 1_794_900_000 },
+      },
+      {
+        call: () => client.whatsAppHistory(LEO_NOVAK, EMMA_CHAT, anchor, 20),
+        method: 'whatsappHistory',
+        params: { account: LEO_NOVAK, chat: EMMA_CHAT, anchor, count: 20 },
+        result: { outcome: 'read', messages: [message], next: null },
+      },
+      {
+        call: () => client.whatsAppContact(LEO_NOVAK, EMMA_CHAT),
+        method: 'whatsappContact',
+        params: { account: LEO_NOVAK, wid: EMMA_CHAT },
+        result: { outcome: 'read', name: 'Emma Lee', isMe: false },
+      },
+    ]
+
+    for (const [index, { call, method, params, result }] of calls.entries()) {
+      // Act
+      const answered = call()
+      const request = await extension.next()
+      fromExtension(extension, { type: 'reply', id: index + 1, result })
+
+      // Assert
+      assert.deepEqual(withoutDeadline(request), { type: 'request', id: index + 1, method, params })
+      assert.deepEqual(await answered, result)
+    }
+  })
+
+  it('should refuse params that do not read before sending anything', async (context) => {
+    // Arrange
+    const { client, extension } = await startClient(context)
+
+    // Act + Assert - an empty text, too many messages, a group's wid
+    await assert.rejects(client.prepareWhatsAppSend(LEO_NOVAK, EMMA_CHAT, ''), { name: 'ZodError' })
+    await assert.rejects(client.whatsAppHistory(LEO_NOVAK, EMMA_CHAT, null, 61), { name: 'ZodError' })
+    await assert.rejects(client.whatsAppContact(LEO_NOVAK, '100000000000002@g.us'), { name: 'ZodError' })
+
+    // Act - the next call is the first request the extension gets
+    const answered = client.whatsAppContact(LEO_NOVAK, EMMA_CHAT)
+    const request = await extension.next()
+    fromExtension(extension, { type: 'reply', id: 1, result: { outcome: 'read', name: null, isMe: false } })
+
+    // Assert
+    assert.deepEqual(withoutDeadline(request), {
+      type: 'request',
+      id: 1,
+      method: 'whatsappContact',
+      params: { account: LEO_NOVAK, wid: EMMA_CHAT },
+    })
+
+    assert.deepEqual(await answered, { outcome: 'read', name: null, isMe: false })
+  })
+
+  it("should refuse an answer that does not read as the method's result", async (context) => {
+    // Arrange
+    const { client, extension } = await startClient(context)
+
+    // Act
+    const answered = client.commitWhatsAppSend(LEO_NOVAK, EMMA_CHAT, { messageId: PREPARED_ID, token: TOKEN })
+    await extension.next()
+    fromExtension(extension, { type: 'reply', id: 1, result: { outcome: 'refused', refusal: 'no-whatsapp-tab' } })
+
+    // Assert
+    await assert.rejects(answered, { name: 'ZodError' })
+  })
+
+  it('should cancel at the extension when the caller aborts a commit', async (context) => {
+    // Arrange
+    const { client, extension } = await startClient(context)
+    const controller = new AbortController()
+
+    const abandoned = client.commitWhatsAppSend(
+      LEO_NOVAK,
+      EMMA_CHAT,
+      { messageId: PREPARED_ID, token: TOKEN },
+      controller.signal
+    )
+
+    await extension.next()
+    const rejected = assert.rejects(abandoned, {
+      name: 'BridgeError',
+      message: 'The caller abandoned whatsappSendCommit',
+    })
+
+    // Act
+    controller.abort()
+    const cancel = await extension.next()
+
+    // Assert
+    assert.deepEqual(cancel, { type: 'cancel', id: 1 })
+    await rejected
+  })
+
+  it('should reject a commit whose answer never arrives once the timeout passes, and send it no second time', async (context) => {
+    // Arrange - the client's timeout is short, so the case waits it out quickly
+    const socketPath = await tempSocketPath(context)
+    const extension = await openRelay(context, socketPath, null)
+    fromExtension(extension, EXTENSION_HELLO)
+    const { client } = createClient(context, socketPath, 200)
+
+    // Act
+    const lost = client.commitWhatsAppSend(LEO_NOVAK, EMMA_CHAT, { messageId: PREPARED_ID, token: TOKEN })
+    const commit = await extension.next()
+    await assert.rejects(lost, {
+      name: 'BridgeError',
+      message: 'The extension did not answer whatsappSendCommit within 200ms',
+    })
+    const answered = client.whatsAppContact(LEO_NOVAK, EMMA_CHAT)
+    const next = await extension.next()
+    fromExtension(extension, { type: 'reply', id: 2, result: { outcome: 'read', name: 'Emma Lee', isMe: false } })
+    await answered
+
+    // Assert
+    assert.equal(Reflect.get(commit as object, 'method'), 'whatsappSendCommit')
+    assert.deepEqual(withoutDeadline(next), {
+      type: 'request',
+      id: 2,
+      method: 'whatsappContact',
+      params: { account: LEO_NOVAK, wid: EMMA_CHAT },
+    })
+  })
+
+  it('should deliver a WhatsApp event to the listener and ack it only after the handler resolved', async (context) => {
+    // Arrange
+    const { client, extension } = await startClient(context)
+    const event = whatsappEventAt('3EB0A1B2C3D4E5F60718')
+    const received = Promise.withResolvers<BridgeEvent>()
+    const committed = Promise.withResolvers<undefined>()
+
+    client.listen((taken) => {
+      received.resolve(taken)
+
+      return committed.promise
+    })
+
+    await extension.next()
+
+    // Act
+    fromExtension(extension, event)
+    const taken = await received.promise
+    const answered = client.whatsAppContact(LEO_NOVAK, EMMA_CHAT)
+    const beforeCommit = await extension.next()
+    fromExtension(extension, { type: 'reply', id: 1, result: { outcome: 'read', name: 'Emma Lee', isMe: false } })
+    await answered
+    committed.resolve(undefined)
+    const afterCommit = await extension.next()
+
+    // Assert
+    assert.deepEqual(taken, event)
+    assert.equal(Reflect.get(beforeCommit as object, 'type'), 'request')
+    assert.deepEqual(afterCommit, { type: 'ack', id: event.id })
+  })
+
+  it("should hand a Slack event to the handler while a WhatsApp event's handler is still pending, and acknowledge each only after its own handler resolved", async (context) => {
+    // Arrange
+    const { client, extension } = await startClient(context)
+    const whatsapp = whatsappEventAt('3EB0A1B2C3D4E5F60718')
+    const slack = eventAt('1700000001.000100')
+    const whatsappCommit = Promise.withResolvers<undefined>()
+    const slackStarted = Promise.withResolvers<undefined>()
+
+    client.listen((event) => {
+      if (event.id === whatsapp.id) {
+        return whatsappCommit.promise
+      }
+
+      slackStarted.resolve(undefined)
+
+      return Promise.resolve()
+    })
+
+    await extension.next()
+
+    // Act
+    fromExtension(extension, whatsapp)
+    fromExtension(extension, slack)
+    await slackStarted.promise
+    const firstAck = await extension.next()
+    whatsappCommit.resolve(undefined)
+    const secondAck = await extension.next()
+
+    // Assert
+    assert.deepEqual(
+      [firstAck, secondAck],
+      [
+        { type: 'ack', id: slack.id },
+        { type: 'ack', id: whatsapp.id },
+      ]
+    )
+  })
+
+  it("should keep WhatsApp's events in order behind a pending WhatsApp handler", async (context) => {
+    // Arrange
+    const { client, extension } = await startClient(context)
+    const [first, second] = [whatsappEventAt('3EB0A1B2C3D4E5F60718'), whatsappEventAt('3EB0A1B2C3D4E5F60719')]
+    const [firstCommit, secondCommit] = [Promise.withResolvers<undefined>(), Promise.withResolvers<undefined>()]
+    const firstStarted = Promise.withResolvers<undefined>()
+    const started: BridgeEvent[] = []
+
+    client.listen((event) => {
+      started.push(event)
+      firstStarted.resolve(undefined)
+
+      return (event.id === first.id ? firstCommit : secondCommit).promise
+    })
+
+    await extension.next()
+
+    // Act - the reply comes after both events on the one connection, so both reached the client before it
+    fromExtension(extension, first)
+    fromExtension(extension, second)
+    await firstStarted.promise
+    const answered = client.whatsAppContact(LEO_NOVAK, EMMA_CHAT)
+    await extension.next()
+    fromExtension(extension, { type: 'reply', id: 1, result: { outcome: 'read', name: 'Emma Lee', isMe: false } })
+    await answered
+    const startedBeforeCommit = [...started]
+    firstCommit.resolve(undefined)
+    const firstAck = await extension.next()
+    secondCommit.resolve(undefined)
+    const secondAck = await extension.next()
+
+    // Assert
+    assert.deepEqual(startedBeforeCommit, [first])
+    assert.deepEqual(started, [first, second])
+
+    assert.deepEqual(
+      [firstAck, secondAck],
+      [
+        { type: 'ack', id: first.id },
+        { type: 'ack', id: second.id },
+      ]
+    )
   })
 })

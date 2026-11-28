@@ -8,8 +8,8 @@ const STORE_ARCHIVE_DIR = 'dist/store-archive'
 
 // tsc compiles the extension's modules for the type check, and the build helpers this script imports; Chrome loads
 // bundles instead, since its service worker cannot resolve the packages they import and content scripts cannot be
-// modules. The folder holds only what the manifest names, next to the manifest itself, which gets the package.json
-// version (store-archive.ts builtManifest). Nothing is minified, so the function the service worker injects into
+// modules. The folder holds the bundles and the icons, next to the manifest itself, which gets the package.json
+// version (store-archive.ts builtManifest); the store archive packs only what the manifest names. Nothing is minified, so the function the service worker injects into
 // Slack's page stays the self-contained source it was written as. With --store, the built extension is also packed as
 // the Chrome Web Store archive (store-archive.ts packStoreArchive); nothing is uploaded.
 /** @type {boolean} */
@@ -20,7 +20,16 @@ rmSync(EXTENSION_DIR, { recursive: true, force: true })
 const options = { bundle: true, target: 'chrome140', outdir: EXTENSION_DIR, logLevel: 'warning' }
 
 await build({ ...options, entryPoints: [`${SOURCE_DIR}/background.ts`], format: 'esm' })
-await build({ ...options, entryPoints: [`${SOURCE_DIR}/observer.ts`, `${SOURCE_DIR}/relay.ts`], format: 'iife' })
+await build({
+  ...options,
+  entryPoints: [
+    `${SOURCE_DIR}/observer.ts`,
+    `${SOURCE_DIR}/relay.ts`,
+    `${SOURCE_DIR}/whatsapp-observer.ts`,
+    `${SOURCE_DIR}/whatsapp-relay.ts`,
+  ],
+  format: 'iife',
+})
 
 /** @type {string} */
 const packageText = readFileSync('package.json', 'utf8')

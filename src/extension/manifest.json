@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Misha Browser",
-  "description": "Connect local AI agents to your browser and signed-in Slack through the Misha app on your Mac.",
+  "description": "Connect local AI agents to your browser, signed-in Slack and WhatsApp Web through the Misha app on your Mac.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0dSZGPmCueNqXNI+P2U4AHXqaPXzJX+/1NDz6w2l5C+ZaDrJ0kJ6b5aL7q6bnJrfasIk0b5jgxkeIPj7jmF8oMkF3z7akjoiWR7/c8hEt8z2YyM5isVw16ZReggmWulfgUIRqkFlD+FT5QE7B0FRZqVdrAEHHSaZ0GWgcbfPv8zjBiFw+cFhJQOG3B+SQw/qdpebVYATyArZM58KzVVT28uDdtr4yNLeKwsUpTjVKe7SmhG7a2oDvxwFVSlZPU3b3EYK6KcTClb3Y6rN22zt2YNNDG3CVBvQ0z228YgADmjix225b6KcDBYfOXeEH3uYovM7EEfirA2ABIF5Dh2rZQIDAQAB",
   "minimum_chrome_version": "140",
   "icons": {
@@ -29,6 +29,17 @@
       "run_at": "document_start",
       "world": "MAIN"
     },
-    { "matches": ["https://app.slack.com/*"], "js": ["relay.js"], "run_at": "document_start" }
+    { "matches": ["https://app.slack.com/*"], "js": ["relay.js"], "run_at": "document_start" },
+    {
+      "matches": ["https://web.whatsapp.com/*"],
+      "js": ["whatsapp-observer.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://web.whatsapp.com/*"],
+      "js": ["whatsapp-relay.js"],
+      "run_at": "document_start"
+    }
   ]
 }

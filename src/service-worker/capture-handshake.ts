@@ -22,12 +22,19 @@
 // each one, under a sequence number, until a relay reports that the service worker took it (FRAME_TAKEN), and posts
 // every frame it still holds to each relay that asks after its greeting. A frame two relays pass on reaches the service
 // worker twice under the same event id, which its pending queue and the app's receipts take once.
+//
+// A WhatsApp tab's observer and relay (extension/whatsapp-observer.ts, whatsapp-relay.ts) open their channel the same
+// way, and theirs also carries commands the other way: the relay posts a command on its port, and the observer posts
+// the command's one answer back on that port only. Slack's channel takes no command.
 export const RELAY_READY_EVENT = 'misha-relay-ready'
 export const OBSERVER_PORT_EVENT = 'misha-observer-port'
 
 // What a relay posts back on its channel once the service worker took a frame it passed on: { kind, seq }, with the
 // frame's sequence number.
 const FRAME_TAKEN = 'taken'
+
+// What a relay posts on a channel that carries commands: { kind, ...command } (whatsapp-observed.ts ObserverCommand).
+const COMMAND = 'command'
 
 // The frames the observer holds at most. A reload leaves a tab without a relay for a moment, in which a few messages
 // come at most; only an extension that stays away (turned off) leaves more untaken, and past this the oldest one held
@@ -119,22 +126,40 @@ interface IRelayLinks {
   readonly postFrame: (message: object) => void
 }
 
+// Acts on a command a relay posted, and posts its one answer with answer, which goes on that relay's port only.
+export type RelayCommandHandler = (command: object, answer: (message: object) => void) => void
+
 // The observer's side: answers every relay's ready event on document with a channel of its own, and posts greeting()
 // to the new relay, then each frame hold still holds. Before the first relay asks, nothing is posted, so nothing piles
 // up in a port nobody reads. A relay whose extension went away closes its port on the next message (relay.ts), and
-// posts to it go nowhere.
-export const answerRelays = (document: EventTarget, greeting: () => object, hold: IFrameHold): IRelayLinks => {
+// posts to it go nowhere. A command a relay posts goes to onCommand; an observer whose channel takes no command passes
+// null, and a command posted to it changes nothing.
+export const answerRelays = (
+  document: EventTarget,
+  greeting: () => object,
+  hold: IFrameHold,
+  onCommand: RelayCommandHandler | null
+): IRelayLinks => {
   const relays = create(null) as Record<number, MessagePort>
   let relayCount = 0
 
-  const onRelayReport = (event: Event): void => {
+  const onRelayReport = (port: MessagePort, event: Event): void => {
     const report: unknown = apply(messageData, event, [])
-    if (typeof report !== 'object' || report === null || ownValue(report, 'kind') !== FRAME_TAKEN) {
+    if (typeof report !== 'object' || report === null) {
+      return
+    }
+
+    const kind = ownValue(report, 'kind')
+    if (kind === COMMAND && onCommand !== null) {
+      onCommand(report, (message) => {
+        apply(postToPort, port, [message])
+      })
+
       return
     }
 
     const seq = ownValue(report, 'seq')
-    if (typeof seq === 'number') {
+    if (kind === FRAME_TAKEN && typeof seq === 'number') {
       hold.release(seq)
     }
   }
@@ -151,7 +176,14 @@ export const answerRelays = (document: EventTarget, greeting: () => object, hold
       const channel = new NativeMessageChannel()
       const port = channel.port1
       apply(dispatch, document, [new NativeMessageEvent(OBSERVER_PORT_EVENT, { ports: [channel.port2] })])
-      apply(listen, port, ['message', onRelayReport])
+
+      apply(listen, port, [
+        'message',
+        (event: Event) => {
+          onRelayReport(port, event)
+        },
+      ])
+
       apply(startPort, port, [])
       relays[relayCount] = port
       relayCount += 1
@@ -180,7 +212,7 @@ export interface IRelayPage {
 }
 
 // The relay's side, in the extension's isolated world, whose built-ins no page script can reach. It takes a channel
-// only from the observer of a page on slackOrigin, in its top frame, where the manifest and the service worker put
+// only from the observer of a page on origin, in its top frame, where the manifest and the service worker put
 // both, and throws anywhere else, before it dispatches anything. It dispatches the ready event on the page's document,
 // and each message a port offered during that dispatch brings goes to onMessage with that port. A port offered at any
 // other time finds no listener. A document keeps its origin for as long as it lives, and the relay goes with it.
@@ -188,14 +220,12 @@ export interface IRelayPage {
 // once this returns true the greeting is already queued on that port, and comes in the relay's next message.
 export const takeObserverPorts = (
   page: IRelayPage,
-  slackOrigin: string,
+  origin: string,
   onMessage: (data: unknown, port: MessagePort) => void
 ): boolean => {
-  if (page.origin !== slackOrigin || !page.isTopFrame) {
+  if (page.origin !== origin || !page.isTopFrame) {
     const frame = page.isTopFrame ? 'top frame' : 'subframe'
-    throw new Error(
-      `A relay takes a channel only in the top frame of ${slackOrigin}, not in a ${frame} of ${page.origin}`
-    )
+    throw new Error(`A relay takes a channel only in the top frame of ${origin}, not in a ${frame} of ${page.origin}`)
   }
 
   let isOffered = false

@@ -18,9 +18,15 @@ import {
   SlackIdentitySchema,
   type SlackMessageFrame,
   type SlackMethod,
-  type SlackStatus,
   type SlackUploadMethod,
 } from '../protocol/slack.js'
+import type { BridgeStatus } from '../protocol/status.js'
+import {
+  type WhatsAppAccount,
+  WhatsAppEventSchema,
+  whatsappEventKey,
+  type WhatsAppMessage,
+} from '../protocol/whatsapp.js'
 import { borrowedQueryString, freshRequestId } from '../service-worker/borrowed-query.js'
 import { answerRequest, type IAbandonment } from '../service-worker/bridge-requests.js'
 import { Forwarder } from '../service-worker/forwarder.js'
@@ -33,10 +39,10 @@ import {
 } from '../service-worker/observed-message.js'
 import { openPendingQueue, PendingQueueWriter } from '../service-worker/pending-queue-writer.js'
 import { attachRelay, type IRelayScripting, probeRelay, RelayProbeSchema } from '../service-worker/relay-attachment.js'
+import { type PacedSend, paceGapMs, RequestPace } from '../service-worker/request-pace.js'
 import { serially } from '../service-worker/serially.js'
 import { type ISlackPage, SlackClientObserver } from '../service-worker/slack-client-observer.js'
 import { slackEventOf } from '../service-worker/slack-frame.js'
-import { type PacedSend, paceGapMs, SlackPace } from '../service-worker/slack-pace.js'
 import {
   isAnsweredBySlack,
   isNothingSent,
@@ -46,6 +52,9 @@ import {
   type SlackPageResult,
   SlackPageResultSchema,
 } from '../service-worker/slack-page.js'
+import { whatsappHandlers } from '../service-worker/whatsapp-bridge.js'
+import { WhatsAppObservedMessageSchema, whatsappAnswerOf } from '../service-worker/whatsapp-observed.js'
+import { type IOpenWhatsAppTabs, type WhatsAppDocumentAsk, WhatsAppTabs } from '../service-worker/whatsapp-tabs.js'
 import {
   CAPTURE_QUERY,
   CLIENT_QUERY,
@@ -56,14 +65,20 @@ import {
   SLACK_ORIGIN,
   SLACK_REQUEST_URLS,
   SLACK_TAB_URL,
+  WHATSAPP_ORIGIN,
+  WHATSAPP_RELAY_SCRIPT,
+  WHATSAPP_REPORT_REQUEST,
+  WHATSAPP_STATE_REQUEST,
+  WHATSAPP_TAB_URL,
 } from './config.js'
 import { startTabTracking, TAB_HANDLERS } from './tab-commands.js'
 
 // The service worker: the native port to the host, the pending queue and its forwarding, the status, the Slack bridge
-// methods, each run in a Slack tab signed in as the account it names and at a person's pace (slack-pace.ts), and the
-// tab commands of the browser tools (tab-commands.ts). What the page reports is data: it becomes events and status,
-// never a native command, and the client query its relay holds only shapes the envelope of a Web API call the Misha
-// app asked for (callSlack).
+// methods, each run in a Slack tab signed in as the account it names and at a person's pace (request-pace.ts), the
+// WhatsApp bridge methods, each run in the one WhatsApp tab recorded as signed in as the account it names
+// (whatsapp-bridge.ts), and the tab commands of the browser tools (tab-commands.ts). What the page reports is data: it
+// becomes events and status, never a native command, and the client query its relay holds only shapes the envelope of
+// a Web API call the Misha app asked for (callSlack).
 
 // zod compiles its parsers with new Function unless told not to, and an extension's CSP refuses that.
 z.config({ jitless: true })
@@ -104,8 +119,9 @@ const postOn = (link: INativeLink, frame: ExtensionFrame): void => {
 const downloads = new Map<string, Uint8Array>()
 const uploads = new Map<string, Map<number, string>>()
 
-// Every request the transport sends Slack, at a person's pace.
-const pace = new SlackPace(() => paceGapMs(Math.random))
+// Every request the transport sends Slack, and every message it builds or sends in WhatsApp, at a person's pace: a
+// Slack turn is keyed by its workspace's team id, a WhatsApp one by its account's id, so neither waits for the other.
+const pace = new RequestPace(() => paceGapMs(Math.random))
 
 // What Slack's client sends from its own pages, beside the requests the transport sends there.
 const clientObserver = new SlackClientObserver(SLACK_ORIGIN, () => {
@@ -114,8 +130,12 @@ const clientObserver = new SlackClientObserver(SLACK_ORIGIN, () => {
 
 const SLACK_REQUESTS: chrome.webRequest.RequestFilter = { urls: SLACK_REQUEST_URLS, types: ['xmlhttprequest'] }
 
-const slackTabs = async (): Promise<IdentifiedTab[]> =>
-  (await chrome.tabs.query({ url: SLACK_TAB_URL })).filter((tab): tab is IdentifiedTab => tab.id !== undefined)
+const identifiedTabs = async (url: string): Promise<IdentifiedTab[]> =>
+  (await chrome.tabs.query({ url })).filter((tab): tab is IdentifiedTab => tab.id !== undefined)
+
+const slackTabs = (): Promise<IdentifiedTab[]> => identifiedTabs(SLACK_TAB_URL)
+
+const whatsappTabs = (): Promise<IdentifiedTab[]> => identifiedTabs(WHATSAPP_TAB_URL)
 
 // What the command answered in the target's page, unchecked (undefined when it answered nothing), and the document it
 // ran in.
@@ -221,6 +241,45 @@ const captureOf = (tabId: number): Promise<CaptureHealth> =>
     (): CaptureHealth => ({ tabId, state: 'detached' })
   )
 
+// Asks a WhatsApp tab's document, with a request pinned to it, for its relay's state: the relay answers at once
+// (whatsapp-relay.ts). An answer that does not read is the failed state (whatsappAnswerOf). Chrome rejects the request
+// when no relay of that document answers; only whether it rejected is read, never Chrome's error.
+const askWhatsAppDocument: WhatsAppDocumentAsk = (tabId, documentId) =>
+  chrome.tabs
+    .sendMessage(tabId, WHATSAPP_STATE_REQUEST, { documentId })
+    .then((answer: unknown) => whatsappAnswerOf(tabId, answer))
+
+// Has whatever relay a WhatsApp tab shows now post a report, so the worker asks its document. It goes to every frame of
+// the tab, since only a top frame runs a relay (whatsapp-relay.ts) and a prerendered page's top frame may not be frame
+// 0. A relay posts a report only while its page is the one its tab shows. Nothing reads the outcome: a tab with no relay
+// of this load has no receiver, and the relay the WhatsApp attachment pass injects there reports on its own.
+const askWhatsAppTab = (tabId: number): void => {
+  void chrome.tabs.sendMessage(tabId, WHATSAPP_REPORT_REQUEST).catch(() => undefined)
+}
+
+// What the worker knows of each WhatsApp tab, from what the tab's document answered (whatsapp-tabs.ts). A change of what
+// the status shows pushes it.
+const whatsappTabState = new WhatsAppTabs(askWhatsAppDocument, askWhatsAppTab, () => {
+  void pushStatus()
+})
+
+// The open WhatsApp tabs, with the number of the registry's last request sent before they were listed, so a record a
+// later request made is never taken for one of a closed tab (whatsapp-tabs.ts openRecords).
+const openWhatsAppTabs = async (): Promise<IOpenWhatsAppTabs> => {
+  const asOf = whatsappTabState.requestsSent()
+  const ids = (await whatsappTabs()).map(({ id }) => id)
+
+  return { ids, asOf }
+}
+
+// Has the relay of every WhatsApp tab that holds a page report, so the registry asks each one's document: when the
+// worker starts, and when a command found no recorded page (whatsapp-bridge.ts). A discarded tab holds no page.
+const askWhatsAppTabs = async (): Promise<void> => {
+  for (const { id } of (await whatsappTabs()).filter((tab) => !tab.discarded)) {
+    askWhatsAppTab(id)
+  }
+}
+
 // The relay's injection, bound to the top document the probe ran in (relay-attachment.ts). A tab whose page the
 // extension cannot script (still loading, an error page, a document that is gone) holds no document to probe, as for
 // identityOf.
@@ -237,25 +296,30 @@ const relayScripting: IRelayScripting = {
 
     return { documentId: injection.documentId, probe: RelayProbeSchema.parse(injection.result) }
   },
-  inject: async (tabId, documentId) => {
-    await chrome.scripting.executeScript({ target: { tabId, documentIds: [documentId] }, files: [RELAY_SCRIPT] })
+  inject: async (tabId, documentId, file) => {
+    await chrome.scripting.executeScript({ target: { tabId, documentIds: [documentId] }, files: [file] })
   },
 }
 
 // Chrome puts the manifest's content scripts only into documents that load after the extension did, and cuts the relay
 // of every open tab off from the extension once it reloads, updates or is turned off and on, which starts a new worker.
-// The observer a tab loaded with keeps watching Slack's socket and keeping the client's query, so each open Slack page
-// with no relay of this load of the extension gets a new one, which asks the observer for a channel of its own
-// (capture-handshake.ts). A page that loaded before the extension did, or with an observer that answers only its first
-// relay, gives the new relay no channel, and stays detached until it reloads. A discarded tab holds no page, and runs
-// the manifest's scripts once it loads again. Every tab's attempt runs at once, and each failure is taken as that tab's
-// outcome, so the answer comes once every attempt settled: the tabs whose attempt failed, each with its error.
-const attachRelays = async (): Promise<readonly { readonly tabId: number; readonly error: unknown }[]> => {
-  const tabs = (await slackTabs()).filter((tab) => !tab.discarded)
+// The observer a tab loaded with keeps watching its page (Slack's socket and the client's query, WhatsApp Web's
+// stores), so each open page among tabs() that is on origin and has no relay of this load of the extension gets file, a
+// new relay, which asks the observer for a channel of its own (capture-handshake.ts). A page that loaded before the extension
+// did, or with an observer that answers only its first relay, gives the new relay no channel, and stays detached until
+// it reloads. A discarded tab holds no page, and runs the manifest's scripts once it loads again. Every tab's attempt
+// runs at once, and each failure is taken as that tab's outcome, so the answer comes once every attempt settled: the
+// tabs whose attempt failed, each with its error.
+const attachRelays = async (
+  tabs: () => Promise<IdentifiedTab[]>,
+  origin: string,
+  file: string
+): Promise<readonly { readonly tabId: number; readonly error: unknown }[]> => {
+  const shown = (await tabs()).filter((tab) => !tab.discarded)
 
   const failures = await Promise.all(
-    tabs.map(({ id }) =>
-      attachRelay(relayScripting, id, SLACK_ORIGIN).then(
+    shown.map(({ id }) =>
+      attachRelay(relayScripting, id, origin, file).then(
         () => null,
         (error: unknown) => ({ tabId: id, error })
       )
@@ -301,7 +365,7 @@ interface IPageRequest {
 // injection. While it runs, the observer takes the request it sends as Misha's, never as one of the client's, and checks
 // it once the command settled.
 // The command is handed to the page with nothing asynchronous before it, so the pace's check that its caller still
-// waits comes right before the hand-off, from which the pace counts the request as sent (slack-pace.ts). unsent: tells
+// waits comes right before the hand-off, from which the pace counts the request as sent (request-pace.ts). unsent: tells
 // the pace that the page's result, read, shows nothing went out to Slack. A page that held no client query for the
 // workspace answers its no-client-query failure as the result, as one signed in as another account answers
 // other-account, so inSlackTab can try the next page; every other failure is thrown.
@@ -636,7 +700,16 @@ const slackHandlers: Handlers = {
   },
 }
 
-const handlers = { ...slackHandlers, ...TAB_HANDLERS }
+// A WhatsApp command goes to its relay pinned to the document the registry recorded, and to no other (U2-R40 point 7).
+const whatsappBridgeHandlers = whatsappHandlers({
+  tabs: whatsappTabState,
+  openTabs: openWhatsAppTabs,
+  askTabs: askWhatsAppTabs,
+  pace,
+  handOver: ({ tabId, documentId }, command) => chrome.tabs.sendMessage(tabId, command, { documentId }),
+})
+
+const handlers = { ...slackHandlers, ...whatsappBridgeHandlers, ...TAB_HANDLERS }
 
 const writer = new PendingQueueWriter(() => openPendingQueue(indexedDB), {
   onRestored: (events) => {
@@ -662,13 +735,16 @@ const forwarder = new Forwarder(
 const statusQueue = serially()
 const intake = serially()
 
-const statusSnapshot = async (): Promise<SlackStatus> => {
+// A WhatsApp tab's status is what its document last answered (whatsapp-tabs.ts): the snapshot lists the open WhatsApp
+// tabs, which the browser answers, and asks no WhatsApp document, so no WhatsApp tab can hold a status up (U2-R30).
+const statusSnapshot = async (): Promise<BridgeStatus> => {
   await writer.settled()
   const tabs = await slackTabs()
 
-  const [identities, captures] = await Promise.all([
+  const [identities, captures, openWhatsApp] = await Promise.all([
     Promise.all(tabs.map(({ id }) => identityOf({ tabId: id }))),
     Promise.all(tabs.map(({ id }) => captureOf(id))),
+    openWhatsAppTabs(),
   ])
 
   return {
@@ -677,6 +753,7 @@ const statusSnapshot = async (): Promise<SlackStatus> => {
     captures,
     queue: writer.health(),
     parity: clientObserver.parity(),
+    whatsapp: whatsappTabState.statuses(openWhatsApp),
   }
 }
 
@@ -729,6 +806,18 @@ const admitFrame = async (
   if (event === null) {
     return
   }
+
+  const admission = await writer.admit(event)
+  if (admission === 'stored' || admission === 'held') {
+    forwarder.forward(event)
+  }
+}
+
+// A new message a WhatsApp tab's observer reported, under the account it read while it handled the message in the
+// same document (whatsapp-capture.ts). It asks the tab nothing: a wait on a WhatsApp tab here would hold up intake,
+// which Slack's admissions share (U2-R30). An event that does not read throws, and nothing is admitted.
+const admitWhatsAppMessage = async (account: WhatsAppAccount, message: WhatsAppMessage): Promise<void> => {
+  const event = WhatsAppEventSchema.parse({ type: 'event', id: whatsappEventKey(account, message), account, message })
 
   const admission = await writer.admit(event)
   if (admission === 'stored' || admission === 'held') {
@@ -835,14 +924,47 @@ const connect = (): void => {
   link.handshake.start()
 }
 
-// Only the relay in a Slack tab's top frame sends messages here. A frame is answered once its admission ran, and only
-// then does the relay tell the page's observer that the frame was taken (capture-handshake.ts); until then the observer
-// holds it, so a frame this worker never took reaches the relay that replaces the tab's relay if the extension reloads.
+// A WhatsApp tab's relay sends a report, which only makes the registry ask the document that sent it, and new messages,
+// each answered once its admission ran, after which the relay tells the observer it was taken. Its document is asked
+// too unless it is the recorded one (whatsapp-tabs.ts messaged). Admission asks no tab.
+const onWhatsAppMessage = (tabId: number, documentId: string, message: unknown, sendResponse: () => void): boolean => {
+  const observed = WhatsAppObservedMessageSchema.parse(message)
+  if (observed.kind === 'whatsapp-report') {
+    whatsappTabState.reported(tabId, documentId)
+    return false
+  }
+
+  whatsappTabState.messaged(tabId, documentId)
+
+  void intake(() => admitWhatsAppMessage(observed.account, observed.message)).then(() => {
+    sendResponse()
+  })
+
+  return true
+}
+
+const outsideRelay = (origin: string | undefined): Error =>
+  new Error(`A message came from outside a Slack or WhatsApp tab's relay (${origin ?? 'no origin'})`)
+
+// Only a relay sends messages here: Slack's in a Slack tab's top frame, and WhatsApp's, which runs only in the top frame
+// of a page on web.whatsapp.com (whatsapp-relay.ts). Chrome's frame number is not read for WhatsApp, since an activated
+// prerendered page's top frame may not be frame 0, and a WhatsApp message only makes the worker ask a pinned question
+// or admits an event (U2-R42). A frame is answered once its admission ran, and only then does the relay tell the page's
+// observer that the frame was taken (capture-handshake.ts); until then the observer holds it, so a frame this worker
+// never took reaches the relay that replaces the tab's relay if the extension reloads.
 chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) => {
   const tabId = sender.tab?.id
-  const { documentId } = sender
-  if (tabId === undefined || documentId === undefined || sender.origin !== SLACK_ORIGIN || sender.frameId !== 0) {
-    throw new Error(`A message came from outside a Slack tab's relay (${sender.origin ?? 'no origin'})`)
+  const { documentId, origin } = sender
+  if (tabId === undefined || documentId === undefined) {
+    throw outsideRelay(origin)
+  }
+
+  if (origin === WHATSAPP_ORIGIN) {
+    return onWhatsAppMessage(tabId, documentId, message, sendResponse)
+  }
+
+  if (origin !== SLACK_ORIGIN || sender.frameId !== 0) {
+    throw outsideRelay(origin)
   }
 
   const observed = ObservedMessageSchema.parse(message)
@@ -885,14 +1007,26 @@ chrome.webRequest.onErrorOccurred.addListener(({ requestId }) => {
   clientObserver.requestEnded(requestId)
 }, SLACK_REQUESTS)
 
-chrome.tabs.onRemoved.addListener(() => {
+chrome.tabs.onRemoved.addListener((tabId) => {
+  whatsappTabState.forget(tabId)
   void pushStatus()
 })
 
-chrome.tabs.onUpdated.addListener((_tabId, change, tab) => {
+// The removed tab's record goes. The added tab has no record yet and its URL is not named, so it is asked to report.
+chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
+  whatsappTabState.forget(removedTabId)
+  askWhatsAppTab(addedTabId)
+  void pushStatus()
+})
+
+// Any change of a WhatsApp tab, or of a tab the registry has a record of, is a reason to ask (whatsapp-tabs.ts
+// tabChanged).
+chrome.tabs.onUpdated.addListener((tabId, change, tab) => {
   if ((change.url !== undefined || change.status === 'complete') && tab.url?.startsWith(`${SLACK_ORIGIN}/`) === true) {
     void pushStatus()
   }
+
+  whatsappTabState.tabChanged(tabId, tab.url?.startsWith(`${WHATSAPP_ORIGIN}/`) === true)
 })
 
 startTabTracking()
@@ -900,21 +1034,30 @@ void chrome.alarms.create(RECONNECT_ALARM, { periodInMinutes: RECONNECT_PERIOD_M
 chrome.alarms.onAlarm.addListener(() => connect())
 void writer.recover()
 
-// The pass of attachRelays the service worker makes when it starts, which a Web API call waits for before it asks any
-// relay (relayQueries). It settles only once every tab's attempt has, so a tab whose attempt fails early cannot let a
-// call ask another tab whose new relay is still going in, and take that tab for one to reload. A tab whose attempt
-// failed has no relay of this load to answer, and a call skips it as one to reload; the failure is thrown on its own,
-// so Chrome lists it with the extension's errors.
-const relaysAttached = attachRelays()
-
-void relaysAttached.then((failures) => {
-  if (failures.length > 0) {
-    const tabs = failures.map(({ tabId }) => tabId).join(', tab ')
-    throw new AggregateError(
-      failures.map(({ error }) => error),
-      `No relay could be attached in Slack tab ${tabs}`
-    )
+// A pass's failures are thrown on their own, so Chrome lists them with the extension's errors.
+const throwAttachFailures =
+  (platform: string) =>
+  (failures: readonly { readonly tabId: number; readonly error: unknown }[]): void => {
+    if (failures.length > 0) {
+      const tabs = failures.map(({ tabId }) => tabId).join(', tab ')
+      throw new AggregateError(
+        failures.map(({ error }) => error),
+        `No relay could be attached in ${platform} tab ${tabs}`
+      )
+    }
   }
-})
+
+// The pass of attachRelays the service worker makes over Slack's tabs when it starts, which a Web API call waits for
+// before it asks any relay (relayQueries). It settles only once every tab's attempt has, so a tab whose attempt fails
+// early cannot let a call ask another tab whose new relay is still going in, and take that tab for one to reload. A tab
+// whose attempt failed has no relay of this load to answer, and a call skips it as one to reload.
+const relaysAttached = attachRelays(slackTabs, SLACK_ORIGIN, RELAY_SCRIPT)
+
+void relaysAttached.then(throwAttachFailures('Slack'))
+
+// The WhatsApp pass, which nothing awaits, so no WhatsApp tab holds up a Slack call (U2-R30); a relay it injects reports
+// on its own. The registry starts empty, so every WhatsApp tab with a relay of this load is asked to report.
+void attachRelays(whatsappTabs, WHATSAPP_ORIGIN, WHATSAPP_RELAY_SCRIPT).then(throwAttachFailures('WhatsApp'))
+void askWhatsAppTabs()
 
 connect()

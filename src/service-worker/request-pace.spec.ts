@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it, type TestContext } from 'node:test'
 import type { IAbandonment } from './bridge-requests.js'
-import { paceGapMs, SlackPace } from './slack-pace.js'
+import { paceGapMs, RequestPace } from './request-pace.js'
 import { LATER, settled, tick } from './testing.js'
 
 const NOW = 1_000_000
@@ -27,7 +27,7 @@ const recorder = (durationMs = 0): { readonly sentAt: number[]; readonly request
   }
 }
 
-describe('[service-worker] Slack pace - gaps', () => {
+describe('[service-worker] Request pace - gaps', () => {
   it('should draw a gap from the normal distribution, again whenever it falls outside 500 to 2,000 ms', () => {
     // Arrange
     const draws = [0.9999, 0, 0.9999, 0.5, 1 - Math.exp(-0.5), 0]
@@ -60,11 +60,11 @@ describe('[service-worker] Slack pace - gaps', () => {
   })
 })
 
-describe('[service-worker] Slack pace - turns', () => {
+describe('[service-worker] Request pace - turns', () => {
   it("should send a workspace's requests one at a time, each a gap after the previous one ended", async (context) => {
     // Arrange
     mockClock(context)
-    const pace = new SlackPace(() => GAP_MS)
+    const pace = new RequestPace(() => GAP_MS)
     const { sentAt, request } = recorder(300)
 
     // Act
@@ -88,7 +88,7 @@ describe('[service-worker] Slack pace - turns', () => {
   it('should not make another workspace wait', async (context) => {
     // Arrange
     mockClock(context)
-    const pace = new SlackPace(() => GAP_MS)
+    const pace = new RequestPace(() => GAP_MS)
     const { sentAt, request } = recorder()
 
     // Act
@@ -108,7 +108,7 @@ describe('[service-worker] Slack pace - turns', () => {
   it("should wait a gap between two requests of one turn, as between an upload's ticket and its bytes", async (context) => {
     // Arrange
     mockClock(context)
-    const pace = new SlackPace(() => GAP_MS)
+    const pace = new RequestPace(() => GAP_MS)
     const { sentAt, request } = recorder()
 
     // Act
@@ -129,7 +129,7 @@ describe('[service-worker] Slack pace - turns', () => {
   it('should send at once when the gap since the previous request has passed already', async (context) => {
     // Arrange
     mockClock(context)
-    const pace = new SlackPace(() => GAP_MS)
+    const pace = new RequestPace(() => GAP_MS)
     const { sentAt, request } = recorder()
     const first = pace.turn('T0EXAMPLE1', wanted(), (send) => send(request))
     await settled()
@@ -147,7 +147,7 @@ describe('[service-worker] Slack pace - turns', () => {
   it('should leave no gap behind an attempt whose result shows it sent nothing, such as a page signed in as another account', async (context) => {
     // Arrange
     mockClock(context)
-    const pace = new SlackPace(() => GAP_MS)
+    const pace = new RequestPace(() => GAP_MS)
     const { sentAt, request } = recorder()
 
     await pace.turn('T0EXAMPLE1', wanted(), (send) =>
@@ -168,7 +168,7 @@ describe('[service-worker] Slack pace - turns', () => {
   it('should keep the queue going after a request handed over failed, a gap later, since it may have gone out', async (context) => {
     // Arrange
     mockClock(context)
-    const pace = new SlackPace(() => GAP_MS)
+    const pace = new RequestPace(() => GAP_MS)
     const { sentAt, request } = recorder()
 
     // Act
@@ -184,13 +184,13 @@ describe('[service-worker] Slack pace - turns', () => {
   })
 })
 
-describe('[service-worker] Slack pace - callers that gave up', () => {
+describe('[service-worker] Request pace - callers that gave up', () => {
   const GAVE_UP = { message: 'The caller gave up on the request before it was sent, so it was not sent' }
 
   it('should send nothing of a request cancelled while it waited for its turn', async (context) => {
     // Arrange
     mockClock(context)
-    const pace = new SlackPace(() => GAP_MS)
+    const pace = new RequestPace(() => GAP_MS)
     const { sentAt, request } = recorder(300)
     const controller = new AbortController()
     const first = pace.turn('T0EXAMPLE1', wanted(), (send) => send(request))
@@ -211,7 +211,7 @@ describe('[service-worker] Slack pace - callers that gave up', () => {
   it('should hand nothing over when the caller cancelled while the turn found its page', async (context) => {
     // Arrange
     mockClock(context)
-    const pace = new SlackPace(() => GAP_MS)
+    const pace = new RequestPace(() => GAP_MS)
     const { sentAt, request } = recorder()
     const controller = new AbortController()
     const pageFound = Promise.withResolvers<undefined>()
@@ -235,7 +235,7 @@ describe('[service-worker] Slack pace - callers that gave up', () => {
   it('should send nothing of a request cancelled during its gap, and stop waiting at once', async (context) => {
     // Arrange
     mockClock(context)
-    const pace = new SlackPace(() => GAP_MS)
+    const pace = new RequestPace(() => GAP_MS)
     const { sentAt, request } = recorder()
     const controller = new AbortController()
     await pace.turn('T0EXAMPLE1', wanted(), (send) => send(request))
@@ -254,7 +254,7 @@ describe('[service-worker] Slack pace - callers that gave up', () => {
   it("should send nothing more of a turn cancelled after its first request, such as an upload's bytes", async (context) => {
     // Arrange
     mockClock(context)
-    const pace = new SlackPace(() => GAP_MS)
+    const pace = new RequestPace(() => GAP_MS)
     const { sentAt, request } = recorder()
     const controller = new AbortController()
 
@@ -273,7 +273,7 @@ describe('[service-worker] Slack pace - callers that gave up', () => {
   it('should drop at once a request whose deadline passes before its gap would end', async (context) => {
     // Arrange
     mockClock(context)
-    const pace = new SlackPace(() => GAP_MS)
+    const pace = new RequestPace(() => GAP_MS)
     const { sentAt, request } = recorder()
     await pace.turn('T0EXAMPLE1', wanted(), (send) => send(request))
 
@@ -288,7 +288,7 @@ describe('[service-worker] Slack pace - callers that gave up', () => {
   it('should drop a request whose deadline passed while it waited for its turn', async (context) => {
     // Arrange
     mockClock(context)
-    const pace = new SlackPace(() => GAP_MS)
+    const pace = new RequestPace(() => GAP_MS)
     const { sentAt, request } = recorder(1_500)
     const first = pace.turn('T0EXAMPLE1', wanted(), (send) => send(request))
     const late = pace.turn('T0EXAMPLE1', wanted(NOW + 1_000), (send) => send(request))

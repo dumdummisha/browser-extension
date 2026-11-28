@@ -29,11 +29,12 @@ The "Load unpacked" picker shows an app as a single item it does not open. A fol
 
 ## What a reload keeps
 
-The extension reads Slack's socket from a script that has to run before Slack's own. A Slack tab that was open before you first loaded the extension therefore shows as signed in but not capturing until it reloads.
+The extension reads Slack's socket from a script that has to run before Slack's own. A Slack tab that was open before you first loaded the extension therefore shows as signed in but not capturing until it reloads. The extension does not put WhatsApp's observer into a page that is already open, so a WhatsApp Web tab that was open before you first loaded the extension is listed as detached and captures nothing until it reloads.
 
 After that, reloading the extension needs no tab reload:
 
 - An open Slack tab keeps capturing. The service worker gives the page a new relay, which takes a channel from the page's observer, along with any new message that came while no relay ran.
 - Slack calls keep working. The observer keeps the query of the latest Web API call Slack's own client made in the page, and hands it to the new relay.
+- An open WhatsApp Web tab keeps capturing and taking the Misha app's requests in the same way: its observer gives the new relay a channel and the new messages that came while no relay ran. A message the page built for sending before the reload can still be sent from that page within its 2 minutes.
 
 The extension, the native host and the client talk only when they speak the same protocol revision ([Protocol and library](protocol.md)). The [changelog](../CHANGELOG.md) lists the upgrades that need a one-time reload.

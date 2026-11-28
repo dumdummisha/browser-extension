@@ -17,7 +17,9 @@ import {
 const TEST_OPTIONS = { timeout: 5_000 }
 
 const GREETING = { kind: 'socket', isSocketOpen: true }
+const STATE = { kind: 'socket', isSocketOpen: false }
 const SLACK_ORIGIN = 'https://app.slack.com'
+const WHATSAPP_ORIGIN = 'https://web.whatsapp.com'
 
 const slackPage = (document: EventTarget): IRelayPage => ({ document, origin: SLACK_ORIGIN, isTopFrame: true })
 
@@ -108,7 +110,7 @@ describe("[service-worker] Capture handshake - the observer's side", () => {
       // Arrange
       const document = new EventTarget()
       let isSocketOpen = false
-      const relays = answerRelays(document, () => ({ kind: 'socket', isSocketOpen }), holdFrames(HELD_FRAMES_MAX))
+      const relays = answerRelays(document, () => ({ kind: 'socket', isSocketOpen }), holdFrames(HELD_FRAMES_MAX), null)
       const first = joinAsRelay(document)
       isSocketOpen = true
       relays.postState({ kind: 'socket', isSocketOpen })
@@ -137,7 +139,7 @@ describe("[service-worker] Capture handshake - the observer's side", () => {
     async () => {
       // Arrange - a state posted then reaches no one, and the greeting tells the relay the state as it stands
       const document = new EventTarget()
-      const relays = answerRelays(document, () => GREETING, holdFrames(HELD_FRAMES_MAX))
+      const relays = answerRelays(document, () => GREETING, holdFrames(HELD_FRAMES_MAX), null)
       relays.postState({ kind: 'socket', isSocketOpen: false })
       relays.postFrame({ kind: 'frame', text: 'message 0' })
 
@@ -160,7 +162,7 @@ describe("[service-worker] Capture handshake - the observer's side", () => {
     async () => {
       // Arrange - the relay a reload cut off gets the frame and never reports it taken
       const document = new EventTarget()
-      const relays = answerRelays(document, () => GREETING, holdFrames(HELD_FRAMES_MAX))
+      const relays = answerRelays(document, () => GREETING, holdFrames(HELD_FRAMES_MAX), null)
       const cutOff = joinAsRelay(document)
       relays.postFrame({ kind: 'frame', text: 'message 1' })
       await cutOff.received(2)
@@ -179,13 +181,18 @@ describe("[service-worker] Capture handshake - the observer's side", () => {
     const hold = holdFrames(HELD_FRAMES_MAX)
     const released = Promise.withResolvers<number>()
 
-    const relays = answerRelays(document, () => GREETING, {
-      ...hold,
-      release: (seq) => {
-        hold.release(seq)
-        released.resolve(seq)
+    const relays = answerRelays(
+      document,
+      () => GREETING,
+      {
+        ...hold,
+        release: (seq) => {
+          hold.release(seq)
+          released.resolve(seq)
+        },
       },
-    })
+      null
+    )
 
     const first = joinAsRelay(document)
     relays.postFrame({ kind: 'frame', text: 'message 1' })
@@ -200,6 +207,74 @@ describe("[service-worker] Capture handshake - the observer's side", () => {
     // Assert
     assert.equal(releasedSeq, 0)
     assert.deepEqual(await later.received(2), [GREETING, { kind: 'frame', text: 'message 2', seq: 1 }])
+  })
+
+  it(
+    "should pass a relay's command to the observer and post the answer on that relay's port only",
+    TEST_OPTIONS,
+    async () => {
+      // Arrange
+      const document = new EventTarget()
+      const commands: object[] = []
+
+      const relays = answerRelays(
+        document,
+        () => GREETING,
+        holdFrames(HELD_FRAMES_MAX),
+        (command, answer) => {
+          commands.push(command)
+          answer({ kind: 'answer', id: 'command-1', answer: 'done' })
+        }
+      )
+
+      const first = joinAsRelay(document)
+      const second = joinAsRelay(document)
+
+      // Act
+      second.port.postMessage({ kind: 'command', id: 'command-1' })
+      await second.received(2)
+      relays.postState(STATE)
+
+      // Assert - the first relay gets the state after its greeting, and no answer before it
+      assert.deepEqual(commands, [{ kind: 'command', id: 'command-1' }])
+
+      assert.deepEqual(await second.received(3), [GREETING, { kind: 'answer', id: 'command-1', answer: 'done' }, STATE])
+
+      assert.deepEqual(await first.received(2), [GREETING, STATE])
+    }
+  )
+
+  it('should take no command when the observer takes none', TEST_OPTIONS, async () => {
+    // Arrange - the hold tells the test when the observer read the report that followed the command
+    const document = new EventTarget()
+    const hold = holdFrames(HELD_FRAMES_MAX)
+    const released = Promise.withResolvers<number>()
+
+    const relays = answerRelays(
+      document,
+      () => GREETING,
+      {
+        ...hold,
+        release: (seq) => {
+          hold.release(seq)
+          released.resolve(seq)
+        },
+      },
+      null
+    )
+
+    const relay = joinAsRelay(document)
+    relays.postFrame({ kind: 'frame', text: 'message 1' })
+    await relay.received(2)
+
+    // Act
+    relay.port.postMessage({ kind: 'command', id: 'command-1' })
+    reportTaken(relay.port, 0)
+    await released.promise
+    relays.postState(STATE)
+
+    // Assert
+    assert.deepEqual(await relay.received(3), [GREETING, { kind: 'frame', text: 'message 1', seq: 0 }, STATE])
   })
 })
 
@@ -298,6 +373,30 @@ describe("[service-worker] Capture handshake - the relay's side", () => {
     assert.equal(readyEvents, 0)
   })
 
+  it('should take a channel in the top frame of whichever origin it is named, and in no other origin', () => {
+    // Arrange
+    const document = new EventTarget()
+    const channel = new MessageChannel()
+    openPorts.push(channel.port1, channel.port2)
+
+    document.addEventListener(RELAY_READY_EVENT, () => {
+      document.dispatchEvent(new MessageEvent(OBSERVER_PORT_EVENT, { ports: [channel.port2] }))
+    })
+
+    const whatsappPage = { document, origin: WHATSAPP_ORIGIN, isTopFrame: true }
+
+    // Act
+    const isOffered = takeObserverPorts(whatsappPage, WHATSAPP_ORIGIN, () => undefined)
+
+    // Assert
+    assert.equal(isOffered, true)
+
+    assert.throws(() => takeObserverPorts(whatsappPage, SLACK_ORIGIN, () => undefined), {
+      message:
+        'A relay takes a channel only in the top frame of https://app.slack.com, not in a top frame of https://web.whatsapp.com',
+    })
+  })
+
   it('should answer that no port was offered, and leave a port offered after its ready event untaken', () => {
     // Arrange
     const document = new EventTarget()
@@ -315,7 +414,7 @@ describe("[service-worker] Capture handshake - the relay's side", () => {
   it('should get a channel of its own from an observer that answered a relay before', TEST_OPTIONS, async () => {
     // Arrange - the relay that came with the page holds the observer's first channel
     const document = new EventTarget()
-    const relays = answerRelays(document, () => GREETING, holdFrames(HELD_FRAMES_MAX))
+    const relays = answerRelays(document, () => GREETING, holdFrames(HELD_FRAMES_MAX), null)
     const first = joinAsRelay(document)
     const later = recordMessages()
 

@@ -70,6 +70,32 @@ describe('[disclosures] Store disclosures', () => {
     )
   })
 
+  it('should disclose that the WhatsApp observer reads only the chat of a message outside a one-to-one chat, and that a broken one recovers only with a page that loads again', () => {
+    // Arrange
+    const kept = [
+      'As the page adds each message to its store, it first looks at which chat the message belongs to, and reads it further only when that is a one-to-one chat. Of a message of a group, community, channel, broadcast, status update or bot it reads which chat it belongs to and nothing more, and nothing of it leaves the page.',
+      'refuses every request, so nothing of the page reaches the extension or the Misha app and nothing is sent, until the page loads again with an observer that reads it: after WhatsApp Web changes back, or after the extension was updated and the tab was reloaded.',
+    ]
+
+    const dropped = [
+      'Only one-to-one chats: messages of groups, communities, channels, broadcasts, status updates and bots never leave the page.',
+      'until the page reloads into a version it reads or the extension is updated.',
+      'reads and sends nothing until the page loads again with an observer that reads it',
+    ]
+
+    // Act
+    const rendered = renderStorePermissions(readDisclosureInputs())
+
+    // Assert
+    assert.deepEqual(
+      [
+        kept.filter((sentence) => !rendered.includes(sentence)),
+        dropped.filter((sentence) => rendered.includes(sentence)),
+      ],
+      [[], []]
+    )
+  })
+
   it('should report a declaration with no disclosure and a disclosure the manifest lacks', () => {
     // Arrange
     const { disclosures, manifest } = readDisclosureInputs()
@@ -95,6 +121,8 @@ describe('[disclosures] Store disclosures', () => {
       "The manifest's content script watcher.js has no disclosure",
       'The disclosed content script observer.js is not in the manifest',
       'The disclosed content script relay.js is not in the manifest',
+      'The disclosed content script whatsapp-observer.js is not in the manifest',
+      'The disclosed content script whatsapp-relay.js is not in the manifest',
     ])
   })
 
@@ -190,6 +218,24 @@ describe('[disclosures] Store disclosures', () => {
       )
     )
     assert.ok(!rendered.includes('in the top frame only'))
+  })
+
+  it('should run the WhatsApp content scripts in the top frame only', () => {
+    // Act
+    const whatsapp = readRawManifest().content_scripts.filter((script) =>
+      String(script.matches).startsWith('https://web.whatsapp.com/')
+    )
+
+    // Assert
+    assert.deepEqual(whatsapp, [
+      {
+        matches: ['https://web.whatsapp.com/*'],
+        js: ['whatsapp-observer.js'],
+        run_at: 'document_start',
+        world: 'MAIN',
+      },
+      { matches: ['https://web.whatsapp.com/*'], js: ['whatsapp-relay.js'], run_at: 'document_start' },
+    ])
   })
 
   it('should refuse to render disclosures that do not match the manifest', () => {

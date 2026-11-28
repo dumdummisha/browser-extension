@@ -1,5 +1,6 @@
 import { z } from 'zod'
-import { SlackEventSchema, SlackStatusSchema } from './slack.js'
+import { BridgeEventSchema } from './events.js'
+import { BridgeStatusSchema } from './status.js'
 
 // The wire between the extension, the native host's relay and the relay's socket clients (the app, and any process
 // that drives the browser). Every connection opens with a hello from each end (handshake.ts): no other traffic flows
@@ -19,8 +20,9 @@ export const NATIVE_HOST_NAME = 'misha.browser_bridge'
 // The wire's one protocol revision. Two ends talk only when their revisions are exactly equal, whatever their package
 // versions say; there is no negotiation and no adapter between revisions. Raise it with every change to a message
 // that the other end must understand. 1 is the first versioned contract: an end that sends no revision is not taken
-// for revision 1.
-export const PROTOCOL_REVISION = 1
+// for revision 1. Revision 2 added WhatsApp: its events beside Slack's, each WhatsApp tab in the status, and the
+// WhatsApp bridge methods.
+export const PROTOCOL_REVISION = 2
 
 // Who says hello: the extension and the host on the native leg; the host and a client, or a host that takes the socket
 // over (takeover), on the socket leg.
@@ -104,7 +106,7 @@ const RequestIdSchema = z.number().int()
 
 // method stays a string on the wire, so an extension older than its client can name what it does not know. deadline:
 // when the client stops waiting for the reply, in milliseconds since the epoch on this Mac's clock; once it has passed,
-// the extension hands nothing of the request to a Slack page, and the page fetches nothing.
+// the extension hands nothing of the request to a page, and the page fetches nothing.
 const RequestSchema = z.strictObject({
   type: z.literal('request'),
   id: RequestIdSchema,
@@ -114,7 +116,7 @@ const RequestSchema = z.strictObject({
 })
 
 // A request whose caller gave up before its deadline: from a client, which abandoned it, and from the relay, for each
-// request of a client whose connection closed. The extension then hands nothing more of it to a Slack page; a command
+// request of a client whose connection closed. The extension then hands nothing more of it to a page; a command
 // already handed to the page still goes out, as a fetch already started would.
 const CancelSchema = z.strictObject({ type: z.literal('cancel'), id: RequestIdSchema })
 const ReplyResultSchema = z.strictObject({ type: z.literal('reply'), id: RequestIdSchema, result: z.unknown() })
@@ -134,11 +136,16 @@ export const ClientMessageSchema = z.union([RequestSchema, CancelSchema, ListenS
 // The relay to a client, one per line, at any time after its hello: the state of its extension leg, or its diagnostic.
 export const RelayControlSchema = z.union([ExtensionLegSchema, BridgeIncompatibleSchema])
 // The relay to a ready client, one per line: replies to its requests and, to the listener, events and status snapshots.
-export const RelayMessageSchema = z.union([ReplyResultSchema, ReplyErrorSchema, SlackEventSchema, SlackStatusSchema])
+export const RelayMessageSchema = z.union([ReplyResultSchema, ReplyErrorSchema, BridgeEventSchema, BridgeStatusSchema])
 // The relay to the extension, one per native messaging frame, once both hellos agreed.
 export const HostFrameSchema = z.union([RequestSchema, CancelSchema, AckSchema, ListenerSchema])
 // The extension to the relay, one per native messaging frame, once both hellos agreed.
-export const ExtensionFrameSchema = z.union([ReplyResultSchema, ReplyErrorSchema, SlackEventSchema, SlackStatusSchema])
+export const ExtensionFrameSchema = z.union([
+  ReplyResultSchema,
+  ReplyErrorSchema,
+  BridgeEventSchema,
+  BridgeStatusSchema,
+])
 
 export type HostHello = z.infer<typeof HostHelloSchema>
 export type ExtensionHello = z.infer<typeof ExtensionHelloSchema>

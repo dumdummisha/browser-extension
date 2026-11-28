@@ -29,6 +29,25 @@ export const CLIENT_QUERY = 'misha-client-query'
 export const RELAY_SCRIPT = 'relay.js'
 export const RELAY_RUNNING_KEY = 'mishaRelayRunning'
 
+export const WHATSAPP_ORIGIN = 'https://web.whatsapp.com'
+export const WHATSAPP_TAB_URL = `${WHATSAPP_ORIGIN}/*`
+
+// The WhatsApp relay's bundle, as the manifest names it, which the service worker injects into an open WhatsApp tab
+// whose relay it cannot reach once the extension reloaded. It leaves the same RELAY_RUNNING_KEY mark: a document is on
+// one origin, so it holds either relay, never both.
+export const WHATSAPP_RELAY_SCRIPT = 'whatsapp-relay.js'
+
+// What the service worker asks a WhatsApp tab's relay, pinned to the relay's document (chrome.tabs.sendMessage with
+// documentId): the relay answers at once with its state, or not-shown while its document is not the page its tab shows
+// (whatsapp-observed.ts WhatsAppRelayAnswerSchema). Only an answer to this request makes or replaces the worker's record
+// of a tab (whatsapp-tabs.ts).
+export const WHATSAPP_STATE_REQUEST = 'misha-whatsapp-state-request'
+
+// What the service worker sends to every frame of a WhatsApp tab, unpinned, to have whatever relay the tab shows now
+// post a report, so the worker can ask that relay's document (WHATSAPP_STATE_REQUEST). The relay answers nothing, and
+// the worker reads nothing of the request's outcome.
+export const WHATSAPP_REPORT_REQUEST = 'misha-whatsapp-report-request'
+
 // The tab commands. A tab that is still loading after LOAD_TIMEOUT_MS is answered as it is; a slow page is no error.
 export const LOAD_POLL_INTERVAL_MS = 100
 export const LOAD_TIMEOUT_MS = 10_000

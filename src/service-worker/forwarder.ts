@@ -1,5 +1,5 @@
+import type { BridgeEvent } from '../protocol/events.js'
 import { redeliveryDelayMs } from '../protocol/pending-queue.js'
-import type { SlackEvent } from '../protocol/slack.js'
 
 // Forwards pending events to the app's listener: each one at once, then again under the same id after the redelivery
 // waits, for as long as it stays pending. Nothing goes out before a listener attaches. One that attaches gets every
@@ -10,11 +10,11 @@ export class Forwarder {
   private isListening = false
 
   constructor(
-    private readonly send: (event: SlackEvent) => void,
+    private readonly send: (event: BridgeEvent) => void,
     private readonly isPending: (id: string) => boolean
   ) {}
 
-  public attach(events: readonly SlackEvent[]): void {
+  public attach(events: readonly BridgeEvent[]): void {
     this.clear()
     this.isListening = true
 
@@ -23,7 +23,7 @@ export class Forwarder {
     }
   }
 
-  public forward(event: SlackEvent): void {
+  public forward(event: BridgeEvent): void {
     if (this.isListening) {
       this.deliver(event, 1)
     }
@@ -40,7 +40,7 @@ export class Forwarder {
     this.isListening = false
   }
 
-  private deliver(event: SlackEvent, sends: number): void {
+  private deliver(event: BridgeEvent, sends: number): void {
     this.settle(event.id)
     this.send(event)
 

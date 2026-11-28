@@ -113,6 +113,7 @@ const fakeChrome = {
     getZoom: () => Promise.resolve(1),
     onRemoved: chromeEvent(),
     onUpdated: chromeEvent(),
+    onReplaced: chromeEvent(),
   },
   windows: {
     get: () => Promise.resolve({ left: 0, top: 0, width: 1200, height: 900 }),

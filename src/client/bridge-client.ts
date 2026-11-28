@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { Readable } from 'node:stream'
 import { COMPONENT_VERSION } from '../host/component-version.js'
+import { type BridgeEvent, type BridgePlatform, platformOf } from '../protocol/events.js'
 import type { ConnectionState } from '../protocol/handshake.js'
 import type { BridgeIncompatible, RelayMessage } from '../protocol/messages.js'
 import {
@@ -12,25 +13,32 @@ import {
   type SlackAnswer,
   type SlackBridgeMethod,
   type SlackBridgeParams,
-  type SlackEvent,
   type SlackMethod,
-  type SlackStatus,
 } from '../protocol/slack.js'
+import type { BridgeStatus } from '../protocol/status.js'
 import {
   TAB_BRIDGE_METHODS,
   type TabBridgeMethod,
   type TabBridgeParams,
   type TabBridgeResult,
 } from '../protocol/tab.js'
+import {
+  WHATSAPP_BRIDGE_METHODS,
+  type WhatsAppAccount,
+  type WhatsAppBridgeMethod,
+  type WhatsAppBridgeResult,
+  type WhatsAppHistoryAnchor,
+  type WhatsAppPreparedSend,
+} from '../protocol/whatsapp.js'
 import { BridgeError, RelayConnection } from './relay-connection.js'
 
 export { BridgeError, BridgeIncompatibleError } from './relay-connection.js'
 
-// A client of the relay's socket (src/host/relay.ts): the app's Slack calls, file transfers and, once it listens, the
-// extension's events and status, and the browser tools' tab commands. One connection carries all of it, once its
-// handshake completed (relay-connection.ts); while the client listens, it connects again after the relay went away
-// (the browser quit, the extension reloaded) and sends listen again once ready, so it stays the listener. A client that
-// does not listen connects again on its next request.
+// A client of the relay's socket (src/host/relay.ts): the app's Slack calls and file transfers, its WhatsApp sends and
+// reads, and, once it listens, the extension's events of both platforms and its status, and the browser tools' tab
+// commands. One connection carries all of it, once its handshake completed (relay-connection.ts); while the client
+// listens, it connects again after the relay went away (the browser quit, the extension reloaded) and sends listen again
+// once ready, so it stays the listener. A client that does not listen connects again on its next request.
 
 // The default request timeout: an upload's bytes go to Slack within one request.
 export const REQUEST_TIMEOUT_MS = 120_000
@@ -38,10 +46,10 @@ export const RECONNECT_DELAY_MS = 2_000
 
 // Takes one event. The client acknowledges it only once the promise resolves, which the app makes happen only after it
 // committed the event; a rejection leaves it unacknowledged, and the extension forwards it again.
-export type EventHandler = (event: SlackEvent) => Promise<void>
+export type EventHandler = (event: BridgeEvent) => Promise<void>
 // Every status snapshot the extension pushes, and undefined each time a ready connection to the relay stops being
 // ready (it dropped, or turned out incompatible).
-export type StatusListener = (status: SlackStatus | undefined) => void
+export type StatusListener = (status: BridgeStatus | undefined) => void
 
 // The bridge's own state, apart from Slack's: the state of the client's current connection (closed when it has none),
 // and the latest incompatibility it learned, kept through disconnects until a later handshake completes.
@@ -58,19 +66,21 @@ export interface IBridgeClientOptions {
   readonly requestTimeoutMs: number
   readonly reconnectDelayMs: number
   // Where an event the handler rejected is reported; it stays unacknowledged.
-  readonly onHandlerError: (event: SlackEvent, error: unknown) => void
+  readonly onHandlerError: (event: BridgeEvent, error: unknown) => void
 }
 
-type BridgeMethod = SlackBridgeMethod | TabBridgeMethod
+type BridgeMethod = SlackBridgeMethod | WhatsAppBridgeMethod | TabBridgeMethod
 
 export class BridgeClient {
   private connection: RelayConnection | null = null
   private handler: EventHandler | null = null
-  private latestStatus: SlackStatus | undefined
+  private latestStatus: BridgeStatus | undefined
   private incompatibility: BridgeIncompatible | null = null
   private readonly statusListeners = new Set<StatusListener>()
   private readonly bridgeStateListeners = new Set<BridgeStateListener>()
-  private events: Promise<void> = Promise.resolve()
+  // Each platform's events, one at a time in the order they came: an event waits only for its own platform's previous
+  // one, so a handler that has not settled holds back its platform's events and no other's.
+  private readonly eventChains = new Map<BridgePlatform, Promise<void>>()
   private reconnectTimer: NodeJS.Timeout | undefined
   private nextId = 1
   private isClosed = false
@@ -92,7 +102,7 @@ export class BridgeClient {
   }
 
   // The latest status snapshot; undefined while the client is not connected or has had none since it connected.
-  public status(): SlackStatus | undefined {
+  public status(): BridgeStatus | undefined {
     return this.latestStatus
   }
 
@@ -176,6 +186,59 @@ export class BridgeClient {
     return slackUploadFinish.result.parse(await this.request('slackUploadFinish', params, signal))
   }
 
+  // The first WhatsApp send step: the page signed in as account builds the message and keeps it under its id, and
+  // nothing leaves. The app records the answer's messageId and token before it commits. signal, here and on the other
+  // WhatsApp methods, works as on call.
+  public async prepareWhatsAppSend(
+    account: WhatsAppAccount,
+    chat: string,
+    text: string,
+    signal?: AbortSignal
+  ): Promise<WhatsAppBridgeResult<'whatsappSendPrepare'>> {
+    const { params, result } = WHATSAPP_BRIDGE_METHODS.whatsappSendPrepare
+
+    return result.parse(await this.request('whatsappSendPrepare', params.parse({ account, chat, text }), signal))
+  }
+
+  // The second WhatsApp send step: sends exactly the prepared message, from the page that prepared it. Only sent
+  // confirms the page's sender took it; unconfirmed and a rejection leave the outcome unknown, and the client sends it
+  // no second time.
+  public async commitWhatsAppSend(
+    account: WhatsAppAccount,
+    chat: string,
+    { messageId, token }: WhatsAppPreparedSend,
+    signal?: AbortSignal
+  ): Promise<WhatsAppBridgeResult<'whatsappSendCommit'>> {
+    const { params, result } = WHATSAPP_BRIDGE_METHODS.whatsappSendCommit
+
+    return result.parse(
+      await this.request('whatsappSendCommit', params.parse({ account, chat, messageId, token }), signal)
+    )
+  }
+
+  // Up to count messages of the chat around anchor (the newest when null), oldest first.
+  public async whatsAppHistory(
+    account: WhatsAppAccount,
+    chat: string,
+    anchor: WhatsAppHistoryAnchor | null,
+    count: number,
+    signal?: AbortSignal
+  ): Promise<WhatsAppBridgeResult<'whatsappHistory'>> {
+    const { params, result } = WHATSAPP_BRIDGE_METHODS.whatsappHistory
+
+    return result.parse(await this.request('whatsappHistory', params.parse({ account, chat, anchor, count }), signal))
+  }
+
+  public async whatsAppContact(
+    account: WhatsAppAccount,
+    wid: string,
+    signal?: AbortSignal
+  ): Promise<WhatsAppBridgeResult<'whatsappContact'>> {
+    const { params, result } = WHATSAPP_BRIDGE_METHODS.whatsappContact
+
+    return result.parse(await this.request('whatsappContact', params.parse({ account, wid }), signal))
+  }
+
   // A tab command of the browser tools, with its result checked against the protocol.
   public async tab<TMethod extends TabBridgeMethod>(
     method: TMethod,
@@ -217,8 +280,8 @@ export class BridgeClient {
   // Resolves with the extension's result. Rejects when no answer came: the connection dropped or turned out
   // incompatible, the call timed out, the caller abandoned it, or the extension answered an error; for a write, the
   // outcome is then unknown. The deadline is set before the connection is, and bounds the handshake, the request and
-  // its reply alike: the request carries it, so the extension sends nothing of it to Slack once the client stopped
-  // waiting; an abandoned call is cancelled at the extension.
+  // its reply alike: the request carries it, so the extension hands nothing of it to a page once the client stopped
+  // waiting; an abandoned call is cancelled at the extension. A request is sent once and never again.
   private async request(method: BridgeMethod, params: unknown, signal?: AbortSignal): Promise<unknown> {
     const deadline = Date.now() + this.options.requestTimeoutMs
 
@@ -359,8 +422,12 @@ export class BridgeClient {
         return
       }
       case 'event': {
-        const next = this.events.then(() => this.deliver(connection, message))
-        this.events = next.catch(() => undefined)
+        const platform = platformOf(message)
+        const next = (this.eventChains.get(platform) ?? Promise.resolve()).then(() => this.deliver(connection, message))
+        this.eventChains.set(
+          platform,
+          next.catch(() => undefined)
+        )
         void next
         return
       }
@@ -369,10 +436,10 @@ export class BridgeClient {
     }
   }
 
-  // Events are handled one at a time, in the order they came. The ack goes back on the connection that brought the
-  // event while it is still ready; if it closed or turned out incompatible meanwhile, the extension forwards the event
-  // again to a compatible listener, and the app's commit takes the repeat.
-  private async deliver(connection: RelayConnection, event: SlackEvent): Promise<void> {
+  // Each platform's events are handled one at a time, in the order they came. The ack goes back on the connection that
+  // brought the event while it is still ready; if it closed or turned out incompatible meanwhile, the extension
+  // forwards the event again to a compatible listener, and the app's commit takes the repeat.
+  private async deliver(connection: RelayConnection, event: BridgeEvent): Promise<void> {
     const { handler } = this
     if (handler === null) {
       return
@@ -412,7 +479,7 @@ export class BridgeClient {
     }
   }
 
-  private publishStatus(status: SlackStatus | undefined): void {
+  private publishStatus(status: BridgeStatus | undefined): void {
     this.latestStatus = status
 
     for (const listener of this.statusListeners) {

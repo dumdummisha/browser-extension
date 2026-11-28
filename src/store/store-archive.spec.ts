@@ -55,6 +55,8 @@ describe('[store] Store archive - content', () => {
       'manifest.json',
       'observer.js',
       'relay.js',
+      'whatsapp-observer.js',
+      'whatsapp-relay.js',
     ])
   })
 

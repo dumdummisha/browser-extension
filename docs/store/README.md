@@ -11,7 +11,7 @@ pnpm install
 pnpm run store-archive
 ```
 
-This builds the extension and packs `dist/store-archive/misha-browser-<version>.zip`: `manifest.json` at the archive's root, the service worker and the two content scripts as built (bundled, not minified), and the four icons the manifest names. Nothing else goes in: no native host or MCP server code, no source maps, no specs, no folder around the files. The archive's manifest leaves out `key`; the built extension in `dist/extension` keeps it, so the unpacked extension keeps its id.
+This builds the extension and packs `dist/store-archive/misha-browser-<version>.zip`: `manifest.json` at the archive's root, the service worker and the four content scripts as built (bundled, not minified), and the four icons the manifest names. Nothing else goes in: no native host or MCP server code, no source maps, no specs, no folder around the files. The archive's manifest leaves out `key`; the built extension in `dist/extension` keeps it, so the unpacked extension keeps its id.
 
 The version is the one in `package.json`. The build writes it into the manifest and fails on one Chrome does not accept (one to four dot-separated integers from 0 to 65535, without leading zeros, not all zero). Raise it before each upload: the store refuses an archive whose version is not higher than the published one.
 
@@ -20,7 +20,7 @@ The version is the one in `package.json`. The build writes it into the manifest 
 | Field                            | Content                                                                                                                                                                                                         |
 | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Name                             | Misha Browser                                                                                                                                                                                                   |
-| Summary                          | The manifest's `description`: "Connect local AI agents to your browser and signed-in Slack through the Misha app on your Mac." The build fails on one longer than Chrome's 132 characters.                      |
+| Summary                          | The manifest's `description`: "Connect local AI agents to your browser, signed-in Slack and WhatsApp Web through the Misha app on your Mac." The build fails on one longer than Chrome's 132 characters.        |
 | Description                      | [`listing.md`](listing.md)                                                                                                                                                                                      |
 | Category                         | Productivity, or the dashboard's nearest equivalent                                                                                                                                                             |
 | Language                         | English                                                                                                                                                                                                         |

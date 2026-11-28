@@ -32,7 +32,7 @@ export const RELAY_RUNNING_KEY = 'mishaRelayRunning'
 export const WHATSAPP_ORIGIN = 'https://web.whatsapp.com'
 export const WHATSAPP_TAB_URL = `${WHATSAPP_ORIGIN}/*`
 
-// The WhatsApp relay's bundle (scripts/build-extension.js), which the service worker injects into an open WhatsApp tab
+// The WhatsApp relay's bundle, as the manifest names it, which the service worker injects into an open WhatsApp tab
 // whose relay it cannot reach once the extension reloaded. It leaves the same RELAY_RUNNING_KEY mark: a document is on
 // one origin, so it holds either relay, never both.
 export const WHATSAPP_RELAY_SCRIPT = 'whatsapp-relay.js'

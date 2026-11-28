@@ -54,11 +54,12 @@ const clientQueries = keepClientQueries()
 // Every relay that asked gets a greeting with the socket state and the client queries as they stand, every new message
 // no relay reported taken yet, and then each change and each new message. A relay the service worker injects after the
 // extension reloaded asks while the socket is already open and the client has already called the Web API, and learns
-// both at once, along with the messages that came while no relay passed them on.
+// both at once, along with the messages that came while no relay passed them on. The channel takes no command.
 const relays = answerRelays(
   document,
   () => ({ kind: 'greeting', isSocketOpen: openSockets > 0, queries: clientQueries.queries() }),
-  holdFrames(HELD_FRAMES_MAX)
+  holdFrames(HELD_FRAMES_MAX),
+  null
 )
 
 const reportSocketState = (): void => {

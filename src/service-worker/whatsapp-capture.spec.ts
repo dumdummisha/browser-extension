@@ -318,6 +318,22 @@ describe('[service-worker] WhatsApp capture - readiness', () => {
     assert.equal(internals.isListening(), true)
   })
 
+  it('should report broken with no-module-system when the page has none, and answer a command broken', async () => {
+    // Arrange - a capture that never starts
+    const host = fakeHost()
+    const posts: object[] = []
+    const capture = whatsappCapture((message) => posts.push(message), host)
+    const harness = { capture, internals: fakeInternals(), host, posts }
+
+    // Act
+    capture.noModuleSystem()
+
+    // Assert
+    const broken = { state: 'broken', drift: 'no-module-system' }
+    assert.deepEqual(posts, [{ kind: 'capture', capture: broken }])
+    assert.deepEqual(await prepare(harness), { outcome: 'broken', drift: 'no-module-system' })
+  })
+
   it('should report signed-out when the lid getter answers null and the phone-number getter undefined, whatever the socket state', () => {
     // Act
     const { capture } = started((internals) => {

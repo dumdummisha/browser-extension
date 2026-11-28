@@ -151,6 +151,10 @@ export interface IWhatsAppInternals {
 // The page's module system: window.require, which answers a module by name and throws for one it does not hold.
 export type PageRequire = (name: string) => unknown
 
+// The modules the observer's entry waits for with the page's requireLazy before the capture starts: the stores, the
+// signed-in user and the socket (design C.1). The capture then checks every need at once (U2-R8).
+export const WHATSAPP_CORE_MODULES = ['WAWebCollections', 'WAWebUserPrefsMeUser', 'WAWebSocketModel']
+
 type PageObject = Record<string, unknown>
 
 // What the page's socket model reads as connected; it exports no enum of its state names (P10).

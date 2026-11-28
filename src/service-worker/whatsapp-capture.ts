@@ -63,6 +63,9 @@ export interface IWhatsAppCapture {
   // Checks every need of the page's internals (U2-R8), reports the state that follows, and from then on listens to the
   // page's messages and connection changes.
   readonly start: (internals: IWhatsAppInternals) => void
+  // The page had no module system once its window loaded: the capture is broken with no-module-system, reports it, and
+  // never starts.
+  readonly noModuleSystem: () => void
   // Acts on one command a relay passed on and posts its one answer with answer: { kind: 'answer', id, answer }, or
   // { kind: 'failed', id } when a prepare's or a read's page call threw while every internal it uses still checks
   // out. The relay already read the command against its schema, so this reads only what it uses, and a command that
@@ -817,6 +820,9 @@ export const whatsappCapture = (post: (message: object) => void, host: ICaptureH
           pageInternals.onConnectionChange(onConnectionChange)
         })
       })
+    },
+    noModuleSystem: () => {
+      breakWith('no-module-system')
     },
     command: (raw, answer) => {
       const read = readCommand(raw)

@@ -82,6 +82,7 @@ const fakeChrome = (state: IFakeChrome): object => ({
     sendMessage: () => Promise.reject(new Error('No tab in this test has a relay')),
     onRemoved: chromeEvent(),
     onUpdated: chromeEvent(),
+    onReplaced: chromeEvent(),
   },
   scripting: { executeScript: () => Promise.reject(new Error('No tab in this test runs a script')) },
   webRequest: fakeWebRequest(),

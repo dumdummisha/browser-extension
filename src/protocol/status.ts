@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { CaptureHealthSchema, OperationParitySchema, SlackIdentitySchema } from './slack.js'
+import { WhatsAppTabStatusSchema } from './whatsapp.js'
 
 const EventCountSchema = z.number().int().nonnegative()
 
@@ -36,12 +37,14 @@ export const QueueHealthSchema = z.discriminatedUnion('state', [
 // The extension's status, pushed to the listener when it attaches and on every change (background.ts pushStatus).
 // identities, captures and parity are Slack's (slack.ts); parity is the transport check, one entry per operation the
 // transport sent since the service worker started. queue is the pending queue every platform's events share.
+// whatsapp: one entry per open WhatsApp Web tab (whatsapp.ts WhatsAppTabStatusSchema).
 export const BridgeStatusSchema = z.strictObject({
   type: z.literal('status'),
   identities: z.array(SlackIdentitySchema),
   captures: z.array(CaptureHealthSchema),
   queue: QueueHealthSchema,
   parity: z.array(OperationParitySchema),
+  whatsapp: z.array(WhatsAppTabStatusSchema),
 })
 
 export type QueueHealth = z.infer<typeof QueueHealthSchema>

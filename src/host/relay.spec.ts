@@ -46,6 +46,7 @@ const STATUS = {
   captures: [],
   queue: { state: 'committing', droppedEvents: 0 },
   parity: [],
+  whatsapp: [],
 }
 
 interface IRelay {

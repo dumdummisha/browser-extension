@@ -32,6 +32,7 @@ const STATUS: BridgeStatus = {
   captures: [{ tabId: 7, state: 'attached', isSocketOpen: true }],
   queue: { state: 'committing', droppedEvents: 0 },
   parity: [],
+  whatsapp: [],
 }
 
 interface IRejectedEvent {

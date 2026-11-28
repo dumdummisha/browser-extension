@@ -5,7 +5,7 @@ import { BridgeStatusSchema } from './status.js'
 describe('[protocol] Status', () => {
   it('should state in every snapshot whether the queue commits, with the stored count when it does', () => {
     // Arrange
-    const silent = { type: 'status', identities: [], captures: [], parity: [] }
+    const silent = { type: 'status', identities: [], captures: [], parity: [], whatsapp: [] }
     const committing = { ...silent, queue: { state: 'committing', droppedEvents: 2 } }
     const uncounted = { ...silent, queue: { state: 'committing', droppedEvents: null } }
     const unstated = { ...silent, queue: { state: 'committing' } }
@@ -27,6 +27,7 @@ describe('[protocol] Status', () => {
       captures: [],
       queue: { state: 'failing', error: 'QuotaExceededError', unstoredEvents: 2, uncountedEvents: 1, loss },
       parity: [],
+      whatsapp: [],
     })
 
     const losses = [
@@ -52,6 +53,7 @@ describe('[protocol] Status', () => {
       captures: [],
       queue: { state: 'committing', droppedEvents: 0 },
       parity,
+      whatsapp: [],
     })
 
     const reports = [
@@ -80,5 +82,38 @@ describe('[protocol] Status', () => {
 
     // Assert
     assert.deepEqual(parsed, [true, false, false, false])
+  })
+
+  it("should report each WhatsApp tab's state, and refuse a tab whose state does not read", () => {
+    // Arrange
+    const withWhatsApp = (whatsapp: unknown): unknown => ({
+      type: 'status',
+      identities: [],
+      captures: [],
+      queue: { state: 'committing', droppedEvents: 0 },
+      parity: [],
+      whatsapp,
+    })
+
+    const reports = [
+      [
+        { tabId: 41, state: 'ready', account: { wid: '100000000000001@lid' }, isConnected: true, hasSynced: false },
+        { tabId: 42, state: 'signed-out' },
+        { tabId: 43, state: 'loading' },
+        { tabId: 44, state: 'broken', drift: 'send' },
+        { tabId: 45, state: 'detached' },
+        { tabId: 46, state: 'failed', error: 'The observer sent a message that does not read' },
+      ],
+      [{ tabId: 41, state: 'broken', drift: 'unheard-of' }],
+      [{ tabId: 41, state: 'ready', account: { wid: '100000000000001@c.us' }, isConnected: true, hasSynced: true }],
+      [{ state: 'detached' }],
+      undefined,
+    ]
+
+    // Act
+    const parsed = reports.map((whatsapp) => BridgeStatusSchema.safeParse(withWhatsApp(whatsapp)).success)
+
+    // Assert
+    assert.deepEqual(parsed, [true, false, false, false, false])
   })
 })

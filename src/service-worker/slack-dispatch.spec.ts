@@ -86,6 +86,7 @@ const GAP_MAX_MS = 2_000
 const CLIENT_QUERY = 'misha-client-query'
 const CAPTURE_QUERY = 'misha-capture-query'
 const RELAY_SCRIPT = 'relay.js'
+const WHATSAPP_TAB_URL = 'https://web.whatsapp.com/*'
 const NO_RECEIVER = 'Could not establish connection. Receiving end does not exist.'
 const GAVE_UP = 'The caller gave up on the request before it was sent, so it was not sent'
 const VERSION_A = '1794800000'
@@ -201,13 +202,16 @@ const fakeChrome = (): object => {
     },
     action: { setBadgeText: () => Promise.resolve(), setTitle: () => Promise.resolve() },
     tabs: {
-      query: () =>
+      query: ({ url }: { readonly url?: string }) =>
         Promise.resolve(
-          browser.tabs.map(({ id, account }) => ({ id, url: `${SLACK_ORIGIN}/client/${account.teamId}` }))
+          url === WHATSAPP_TAB_URL
+            ? []
+            : browser.tabs.map(({ id, account }) => ({ id, url: `${SLACK_ORIGIN}/client/${account.teamId}` }))
         ),
       sendMessage,
       onRemoved: chromeEvent(),
       onUpdated: chromeEvent(),
+      onReplaced: chromeEvent(),
     },
     scripting: { executeScript },
     webRequest: fakeWebRequest(),

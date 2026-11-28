@@ -39,7 +39,7 @@ import { createWaitTool } from './tools/wait.tool.js'
 // The tab_* tools: the user's own browser, read through the extension and driven with real input.
 export const browserModule: IModuleDefinition = {
   create: () => {
-    // The tools never listen for the extension's Slack events, so none can reach this client.
+    // The tools never listen for the extension's events, so none can reach this client.
     const bridge = new BridgeClient({
       socketPath: SOCKET_PATH,
       requestTimeoutMs: REQUEST_TIMEOUT_MS,

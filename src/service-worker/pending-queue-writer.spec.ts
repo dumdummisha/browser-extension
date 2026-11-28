@@ -11,6 +11,7 @@ import {
 } from '../protocol/pending-queue.js'
 import { slackEventKey } from '../protocol/slack.js'
 import type { QueueHealth } from '../protocol/status.js'
+import { whatsappEventKey } from '../protocol/whatsapp.js'
 import { openPendingQueue, PendingQueueWriter } from './pending-queue-writer.js'
 
 const ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
@@ -40,6 +41,25 @@ const eventAt = (ts: string): BridgeEvent => {
 
 const fullQueue = (): BridgeEvent[] =>
   Array.from({ length: EVENT_QUEUE_MAX }, (_, index) => eventAt(`1700000000.${String(index + 1).padStart(6, '0')}`))
+
+// A WhatsApp message to Leo Novak, the index-th of its chat.
+const whatsappEventAt = (index: number): BridgeEvent => {
+  const account = { wid: '100000000000001@lid' }
+  const id = `3EB0${String(index).padStart(16, '0')}`
+  const message = {
+    chat: '100000000000002@lid',
+    id,
+    timestamp: 1_700_000_000,
+    fromMe: false,
+    type: 'chat',
+    text: 'hello',
+  } as const
+
+  return { type: 'event', id: whatsappEventKey(account, message), account, message }
+}
+
+const fullWhatsAppQueue = (): BridgeEvent[] =>
+  Array.from({ length: EVENT_QUEUE_MAX }, (_, index) => whatsappEventAt(index))
 
 const finished = (transaction: IDBTransaction): Promise<void> =>
   new Promise((resolve, reject) => {
@@ -219,6 +239,89 @@ describe('[service-worker] Pending queue writer - recovery', () => {
 
     assert.deepEqual(writer.health(), { state: 'committing', droppedEvents: 18 })
     assert.deepEqual((await storedQueue(factory)).lossRecord, { id: DROPPED_EVENTS_ID, droppedEvents: 18 })
+  })
+})
+
+describe('[service-worker] Pending queue writer - two platforms', () => {
+  it("should restore a queue holding both platforms' events and count each toward its own share", async () => {
+    // Arrange - Slack's share is full, and one WhatsApp event is stored beside it
+    const factory = new IDBFactory()
+    const stored = whatsappEventAt(0)
+    await seed(factory, [...fullQueue(), stored])
+    const { writer, restored } = createWriter(factory)
+
+    // Act
+    await writer.recover()
+    const admissions = [await writer.admit(eventAt('1700000099.000100')), await writer.admit(whatsappEventAt(1))]
+
+    // Assert
+    assert.equal(restored[0]?.length, EVENT_QUEUE_MAX + 1)
+    assert.deepEqual(admissions, ['lost', 'stored'])
+  })
+
+  it("should store a Slack event while WhatsApp's share is full, and count a WhatsApp event past its share as lost", async () => {
+    // Arrange
+    const factory = new IDBFactory()
+    await seed(factory, fullWhatsAppQueue())
+    const { writer } = createWriter(factory)
+    await writer.recover()
+
+    // Act
+    const admissions = [
+      await writer.admit(eventAt('1700000001.000100')),
+      await writer.admit(whatsappEventAt(EVENT_QUEUE_MAX)),
+    ]
+
+    // Assert
+    assert.deepEqual(admissions, ['stored', 'lost'])
+    assert.deepEqual(writer.health(), { state: 'committing', droppedEvents: 1 })
+  })
+
+  it('should keep remembering a Slack ack after EVENT_IDS_REMEMBERED WhatsApp acks', async () => {
+    // Arrange
+    const event = eventAt('1700000001.000100')
+    const { writer } = createWriter(new IDBFactory())
+    await writer.recover()
+    await writer.admit(event)
+    await writer.ack(event.id)
+
+    // Act
+    for (let index = 0; index < EVENT_IDS_REMEMBERED; index += 1) {
+      await writer.ack(whatsappEventAt(index).id)
+    }
+
+    const lateCopy = await writer.admit(event)
+
+    // Assert
+    assert.equal(lateCopy, 'duplicate')
+  })
+
+  it("should hold each platform's events apart while the queue fails, up to EVENT_QUEUE_MAX of each", async () => {
+    // Arrange
+    const { writer, control } = createWriter(new IDBFactory())
+    await writer.recover()
+    breakQueue(control)
+
+    for (const event of fullWhatsAppQueue()) {
+      await writer.admit(event)
+    }
+
+    // Act
+    const admissions = [
+      await writer.admit(whatsappEventAt(EVENT_QUEUE_MAX)),
+      await writer.admit(eventAt('1700000001.000100')),
+    ]
+
+    // Assert
+    assert.deepEqual(admissions, ['lost', 'held'])
+
+    assert.deepEqual(writer.health(), {
+      state: 'failing',
+      error: DISK_FULL,
+      unstoredEvents: EVENT_QUEUE_MAX + 1,
+      uncountedEvents: 1,
+      loss: { kind: 'last-known', droppedEvents: 0 },
+    })
   })
 })
 

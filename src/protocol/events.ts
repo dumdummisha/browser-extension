@@ -1,15 +1,20 @@
+import { z } from 'zod'
 import { type SlackEvent, SlackEventSchema } from './slack.js'
+import { WhatsAppEventSchema } from './whatsapp.js'
 
 // Every event the extension captures, whatever its platform: what the pending queue stores, the forwarder sends, the
-// host relay passes to the listener and the client hands the app. Slack's event is the only one, so it is the schema
-// itself, and a stored Slack event reads exactly as the platform's own schema reads it.
-export const BridgeEventSchema = SlackEventSchema
+// host relay passes to the listener and the client hands the app. Each platform's event is a strict object with its
+// own payload field (a Slack event's frame, a WhatsApp event's message), so exactly one schema reads any event, and a
+// stored Slack event reads as it did before WhatsApp existed.
+export const BridgeEventSchema = z.union([SlackEventSchema, WhatsAppEventSchema])
 
-export type BridgeEvent = SlackEvent
+export type BridgeEvent = z.infer<typeof BridgeEventSchema>
+
+export const isSlackEvent = (event: BridgeEvent): event is SlackEvent => 'frame' in event
 
 // The platforms whose events the extension captures. Each is the scheme its account ids, and so its event ids, start
-// with (slack.ts slackAccountId).
-export const BRIDGE_PLATFORMS = ['slack'] as const
+// with (slack.ts slackAccountId, whatsapp.ts whatsappAccountId).
+export const BRIDGE_PLATFORMS = ['slack', 'whatsapp'] as const
 
 export type BridgePlatform = (typeof BRIDGE_PLATFORMS)[number]
 
@@ -32,7 +37,8 @@ export const platformOf = (event: BridgeEvent): BridgePlatform => {
   return platform
 }
 
-// When the message an event carries was sent, in whole microseconds, so the pending queue forwards restored events
-// oldest first: Slack's ts already counts microseconds after its dot, and as one whole number ten-digit and nine-digit
-// seconds compare right.
-export const eventTimeMicros = (event: BridgeEvent): bigint => BigInt(event.frame.ts.replace('.', ''))
+// When the message an event carries was sent, in whole microseconds, so the pending queue forwards restored events of
+// both platforms oldest first on one clock: Slack's ts already counts microseconds after its dot, and as one whole
+// number ten-digit and nine-digit seconds compare right; WhatsApp's timestamp counts seconds.
+export const eventTimeMicros = (event: BridgeEvent): bigint =>
+  isSlackEvent(event) ? BigInt(event.frame.ts.replace('.', '')) : BigInt(event.message.timestamp) * 1_000_000n

@@ -1,8 +1,8 @@
 import { z } from 'zod'
 
 // How the service worker gives an open tab a relay once the extension reloaded (background.ts attachRelays, which names
-// the origin a tab's page must be on and the relay script it gets: Slack's). It lives with the extension's modules the
-// tests load, since the build replaces the compiled extension folder with its bundles.
+// the origin a tab's page must be on and the relay script it gets: Slack's, and WhatsApp's). It lives with the
+// extension's modules the tests load, since the build replaces the compiled extension folder with its bundles.
 //
 // The tab is probed first, in the extension's isolated world, where its content scripts run: the probe answers the top
 // document's origin, and whether a relay of this load of the extension runs there, from the mark a relay leaves in that

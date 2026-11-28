@@ -4,7 +4,7 @@
 
 **Connect local AI agents to your signed-in browser.**
 
-The Misha Browser extension and its native host, a small program on your Mac, let a local agent read and act in the browser you already use. They also carry Slack to the Misha app. The package is named `misha-browser`.
+The Misha Browser extension and its native host, a small program on your Mac, let a local agent read and act in the browser you already use. They also carry Slack and WhatsApp to the Misha app. The package is named `misha-browser`.
 
 - **Setting up the Misha app?** Follow [Get started](https://docs.dumdummisha.ai/start/get-started). Misha installs the native host itself, so you need none of the build steps below.
 - **Using the tools in your own agent?** Build this repository and [use the MCP server](#use-the-mcp-server). This needs neither the Misha app nor an invite.
@@ -15,13 +15,13 @@ Status: macOS only, in Chrome or Brave. The extension has no Chrome Web Store li
 ## How it fits together
 
 ```text
-signed-in tab        Slack, or any page an agent reads or acts on
+signed-in tab        Slack, WhatsApp Web, or any page an agent reads or acts on
   |                  scripts the extension runs in the tab
 service worker       the extension's background process
   |                  native messaging
 native host          on your Mac, with its relay
   |                  ~/.misha/browser-bridge/bridge.sock, a socket only you can open
-Misha app            Slack messages in, replies out
+Misha app            Slack and WhatsApp messages in, replies out
 or the MCP server    the tab_* tools
 ```
 
@@ -33,6 +33,7 @@ The desktop tools (`macos_*`) don't go through the browser: the MCP server moves
 - Page text it returns has only known credential shapes redacted, and screenshots have nothing redacted.
 - While it runs, it records every tab's fetch and XHR requests, with credentials redacted by name and pattern, which misses an opaque credential under an ordinary name.
 - On Slack's pages it also reads the requests Slack's own client sends, and keeps only listed transport fields.
+- In WhatsApp Web it reads new messages of your one-to-one chats through the page's own code, and sends only the text messages the Misha app asks for, from your account.
 - Any program running as you on the Mac can connect to the native host's socket and drive the browser through it.
 
 The [security model](docs/security.md) states each of these in full, with the threat model. [Browser permissions](https://docs.dumdummisha.ai/reference/permissions) explains each permission and its limits, and the [privacy policy](https://docs.dumdummisha.ai/privacy) covers where the data goes.
@@ -107,7 +108,7 @@ Both the extension and the native host run on macOS, in Chrome or Brave.
    ```
 
 3. Open `brave://extensions` or `chrome://extensions`, turn on Developer mode, click "Load unpacked" and pick `dist/extension`. Its id is `lkibgdfhoikfdbkhdlnoiajfelcmohjj`, fixed by the public key in the manifest. After a rebuild, reload it there.
-4. Reload any Slack tab that was already open when you first loaded the extension. Such a tab shows as signed in but not capturing until it reloads.
+4. Reload any Slack or WhatsApp Web tab that was already open when you first loaded the extension. Such a tab captures nothing until it reloads.
 
 Once the browser has started the host, clients connect to `~/.misha/browser-bridge/bridge.sock`.
 
@@ -129,16 +130,16 @@ The Misha app builds on these entry points of the `misha-browser` package:
 
 ## What the repository holds
 
-| Part          | Folder                                  | Purpose                                                               |
-| ------------- | --------------------------------------- | --------------------------------------------------------------------- |
-| Wire protocol | `src/protocol/`                         | How the extension, the native host and its clients talk to each other |
-| Extension     | `src/extension/`, `src/service-worker/` | The Manifest V3 extension: page reads, input and the Slack transport  |
-| Native host   | `src/host/`                             | Carries traffic between the extension and processes on the same Mac   |
-| Client        | `src/client/`                           | A Node client for the host's socket                                   |
-| Browser tools | `src/tools/`                            | The `tab_*` tools                                                     |
-| Desktop tools | `src/desktop/`                          | The `macos_*` tools                                                   |
-| MCP server    | `src/mcp/`                              | Serves both sets of tools over stdio                                  |
-| Store packet  | `docs/store/`                           | What the Chrome Web Store listing will need                           |
+| Part          | Folder                                  | Purpose                                                                             |
+| ------------- | --------------------------------------- | ----------------------------------------------------------------------------------- |
+| Wire protocol | `src/protocol/`                         | How the extension, the native host and its clients talk to each other               |
+| Extension     | `src/extension/`, `src/service-worker/` | The Manifest V3 extension: page reads, input, and the Slack and WhatsApp transports |
+| Native host   | `src/host/`                             | Carries traffic between the extension and processes on the same Mac                 |
+| Client        | `src/client/`                           | A Node client for the host's socket                                                 |
+| Browser tools | `src/tools/`                            | The `tab_*` tools                                                                   |
+| Desktop tools | `src/desktop/`                          | The `macos_*` tools                                                                 |
+| MCP server    | `src/mcp/`                              | Serves both sets of tools over stdio                                                |
+| Store packet  | `docs/store/`                           | What the Chrome Web Store listing will need                                         |
 
 ## Development
 

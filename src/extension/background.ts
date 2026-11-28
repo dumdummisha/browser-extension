@@ -52,6 +52,7 @@ import {
   type SlackPageResult,
   SlackPageResultSchema,
 } from '../service-worker/slack-page.js'
+import { whatsappHandlers } from '../service-worker/whatsapp-bridge.js'
 import { WhatsAppObservedMessageSchema, whatsappAnswerOf } from '../service-worker/whatsapp-observed.js'
 import { type IOpenWhatsAppTabs, type WhatsAppDocumentAsk, WhatsAppTabs } from '../service-worker/whatsapp-tabs.js'
 import {
@@ -73,10 +74,11 @@ import {
 import { startTabTracking, TAB_HANDLERS } from './tab-commands.js'
 
 // The service worker: the native port to the host, the pending queue and its forwarding, the status, the Slack bridge
-// methods, each run in a Slack tab signed in as the account it names and at a person's pace (request-pace.ts), and the
-// tab commands of the browser tools (tab-commands.ts). What the page reports is data: it becomes events and status,
-// never a native command, and the client query its relay holds only shapes the envelope of a Web API call the Misha
-// app asked for (callSlack).
+// methods, each run in a Slack tab signed in as the account it names and at a person's pace (request-pace.ts), the
+// WhatsApp bridge methods, each run in the one WhatsApp tab recorded as signed in as the account it names
+// (whatsapp-bridge.ts), and the tab commands of the browser tools (tab-commands.ts). What the page reports is data: it
+// becomes events and status, never a native command, and the client query its relay holds only shapes the envelope of
+// a Web API call the Misha app asked for (callSlack).
 
 // zod compiles its parsers with new Function unless told not to, and an extension's CSP refuses that.
 z.config({ jitless: true })
@@ -117,7 +119,8 @@ const postOn = (link: INativeLink, frame: ExtensionFrame): void => {
 const downloads = new Map<string, Uint8Array>()
 const uploads = new Map<string, Map<number, string>>()
 
-// Every request the transport sends Slack, at a person's pace.
+// Every request the transport sends Slack, and every message it builds or sends in WhatsApp, at a person's pace: a
+// Slack turn is keyed by its workspace's team id, a WhatsApp one by its account's id, so neither waits for the other.
 const pace = new RequestPace(() => paceGapMs(Math.random))
 
 // What Slack's client sends from its own pages, beside the requests the transport sends there.
@@ -270,7 +273,7 @@ const openWhatsAppTabs = async (): Promise<IOpenWhatsAppTabs> => {
 }
 
 // Has the relay of every WhatsApp tab that holds a page report, so the registry asks each one's document: when the
-// worker starts. A discarded tab holds no page.
+// worker starts, and when a command found no recorded page (whatsapp-bridge.ts). A discarded tab holds no page.
 const askWhatsAppTabs = async (): Promise<void> => {
   for (const { id } of (await whatsappTabs()).filter((tab) => !tab.discarded)) {
     askWhatsAppTab(id)
@@ -697,7 +700,16 @@ const slackHandlers: Handlers = {
   },
 }
 
-const handlers = { ...slackHandlers, ...TAB_HANDLERS }
+// A WhatsApp command goes to its relay pinned to the document the registry recorded, and to no other (U2-R40 point 7).
+const whatsappBridgeHandlers = whatsappHandlers({
+  tabs: whatsappTabState,
+  openTabs: openWhatsAppTabs,
+  askTabs: askWhatsAppTabs,
+  pace,
+  handOver: ({ tabId, documentId }, command) => chrome.tabs.sendMessage(tabId, command, { documentId }),
+})
+
+const handlers = { ...slackHandlers, ...whatsappBridgeHandlers, ...TAB_HANDLERS }
 
 const writer = new PendingQueueWriter(() => openPendingQueue(indexedDB), {
   onRestored: (events) => {

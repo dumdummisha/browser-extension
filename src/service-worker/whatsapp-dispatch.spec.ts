@@ -5,13 +5,14 @@ import type { BridgeEvent } from '../protocol/events.js'
 import { slackEventKey } from '../protocol/slack.js'
 import { whatsappEventKey } from '../protocol/whatsapp.js'
 import { openPendingQueue, PendingQueueWriter } from './pending-queue-writer.js'
-import { chromeEvent, emit, fakeWebRequest, HOST_HELLO, type IChromeEvent, settled } from './testing.js'
+import { chromeEvent, emit, fakeWebRequest, HOST_HELLO, type IChromeEvent, settled, tick } from './testing.js'
 
-// The service worker's WhatsApp intake and its record of WhatsApp tabs (extension/background.ts, whatsapp-tabs.ts),
-// driven through Chrome's events as Chrome drives them: the build's bundle of background.ts runs in a fake Chrome whose
-// WhatsApp tabs hold documents, each with a relay that answers the state request as the test sets it, and that posts a
-// report when asked unpinned, or whenever the test delivers one, late reports of dead documents included. A request
-// pinned to a document that is gone is rejected, and one to a document the test holds never settles, as the facts in
+// The service worker's WhatsApp intake, its record of WhatsApp tabs and its WhatsApp bridge methods
+// (extension/background.ts, whatsapp-tabs.ts, whatsapp-bridge.ts), driven through Chrome's events as Chrome drives
+// them: the build's bundle of background.ts runs in a fake Chrome whose WhatsApp tabs hold documents, each with a relay
+// that answers the state request as the test sets it, answers a command as the test's relay does, and posts a report
+// when asked unpinned, or whenever the test delivers one, late reports of dead documents included. A request pinned to
+// a document that is gone is rejected, and a state request to a document the test holds never settles, as the facts in
 // design U2 amendment 3 section C allow. The status the worker sends its listener is what the tests read. Each test
 // starts a worker of its own, a fresh copy of the bundle. The spec lives here, beside the modules the tests load, since
 // the build replaces the compiled extension folder with its bundles.
@@ -30,11 +31,18 @@ const CAPTURE_QUERY = 'misha-capture-query'
 const NO_RECEIVER = 'Could not establish connection. Receiving end does not exist.'
 const NOW = 1_794_900_000_000
 const DEADLINE = NOW + 60_000
+const GAVE_UP = 'The caller gave up on the request before it was sent, so it was not sent'
+
+// The gap the pace draws lies in this range (request-pace.ts).
+const GAP_MIN_MS = 500
+const GAP_MAX_MS = 2_000
 
 const LEO_NOVAK = { wid: '100000000000001@lid' }
+const EMMA_LEE = { wid: '100000000000002@lid' }
 const SLACK_ACCOUNT = { teamId: 'T0EXAMPLE1', userId: 'U0EXAMPLE1' }
 const TOKEN_1 = '00000000-0000-4000-8000-000000000001'
 const TOKEN_2 = '00000000-0000-4000-8000-000000000002'
+const TOKEN_3 = '00000000-0000-4000-8000-000000000003'
 const NOT_SHOWN = { state: 'not-shown' }
 
 const MESSAGE = {
@@ -52,6 +60,16 @@ const WHATSAPP_EVENT = {
   account: LEO_NOVAK,
   message: MESSAGE,
 } as const
+
+// What the app asks the extension in Leo Novak's account: a message to Emma Lee's chat, built and then sent, a history
+// read and a contact read.
+const EMMA_CHAT = '100000000000002@lid'
+const PREPARED_ID = '3EB0F1E2D3C4B5A69788'
+const PREPARE = { account: LEO_NOVAK, chat: EMMA_CHAT, text: 'See you at noon' }
+const commitOf = (token: string): object => ({ account: LEO_NOVAK, chat: EMMA_CHAT, messageId: PREPARED_ID, token })
+const HISTORY = { account: LEO_NOVAK, chat: EMMA_CHAT, anchor: null, count: 20 }
+const CONTACT = { account: LEO_NOVAK, wid: EMMA_CHAT }
+const SENT_AT = 1_794_900_000
 
 const SLACK_FRAME = {
   type: 'message',
@@ -91,14 +109,30 @@ interface IFakeTab {
   injectRelay: (tab: IFakeTab) => Promise<void>
 }
 
-// What the worker under test sent and was sent: its native port's frames, the unpinned report requests and the pinned
-// state requests it sent each tab, and the relay injections it made.
+// A command the worker handed to a tab, pinned to a document, and when (the mocked clock), whatever came of it.
+interface IHandedCommand {
+  readonly tabId: number
+  readonly documentId: string
+  readonly method: string
+  readonly message: unknown
+  readonly at: number
+}
+
+// What a document's relay answers a command (whatsapp-observed.ts RelayCommandAnswerSchema), or a rejection as Chrome
+// gives one.
+type CommandRelay = (tab: IFakeTab, document: IFakeDocument, method: string) => Promise<unknown>
+
+// What the worker under test sent and was sent: its native port's frames, the unpinned report requests, the pinned
+// state requests and the commands it sent each tab, and the relay injections it made; and how relays answer commands,
+// or null outside the command cases, where a pinned message that is not the state request fails the fake.
 interface IFakeBrowser {
   slackTabs: number[]
   tabs: IFakeTab[]
   posted: unknown[]
   reportRequests: number[]
   stateRequests: { readonly tabId: number; readonly documentId: string }[]
+  commands: IHandedCommand[]
+  relayCommand: CommandRelay | null
   injections: { readonly tabId: number; readonly documentId: string; readonly files: readonly string[] }[]
   portMessages: IChromeEvent
   runtimeMessages: IChromeEvent
@@ -111,10 +145,10 @@ type MessageListener = (message: unknown, sender: object, respond: () => void) =
 
 let workers = 0
 
-const observed = (token: string, isConnected = true): object => ({
+const observed = (token: string, isConnected = true, account = LEO_NOVAK): object => ({
   state: 'observed',
   token,
-  capture: { state: 'ready', account: LEO_NOVAK, isConnected, hasSynced: true },
+  capture: { state: 'ready', account, isConnected, hasSynced: true },
 })
 
 const readyStatus = (tabId: number, isConnected = true): object => ({
@@ -226,8 +260,44 @@ const askedForState = (browser: IFakeBrowser, tab: IFakeTab, documentId: string)
   return Promise.resolve(stateOf(document))
 }
 
+// The observer's answer to a command that went through: a prepared message under the document's token, a sent commit,
+// a history read and a contact read.
+const observerAnswers: CommandRelay = (_tab, document, method) => {
+  const token: unknown = Reflect.get(document.answer ?? {}, 'token')
+
+  const answers: Readonly<Record<string, object>> = {
+    whatsappSendPrepare: { outcome: 'prepared', messageId: PREPARED_ID, token },
+    whatsappSendCommit: { outcome: 'sent', timestamp: SENT_AT },
+    whatsappHistory: { outcome: 'read', messages: [MESSAGE], next: null },
+    whatsappContact: { outcome: 'read', name: 'Emma Lee', isMe: false },
+  }
+
+  return Promise.resolve({ kind: 'answer', answer: answers[method] })
+}
+
+// A command pinned to a document: recorded, then answered by that document's relay, or rejected when the document is
+// gone or holds no relay.
+const askedToRun = (
+  browser: IFakeBrowser,
+  relay: CommandRelay,
+  tab: IFakeTab,
+  documentId: string,
+  message: unknown
+): Promise<unknown> => {
+  assert.equal(Reflect.get(message as object, 'kind'), 'whatsapp-command')
+  const method = String(Reflect.get(Reflect.get(message as object, 'command') as object, 'method'))
+  browser.commands.push({ tabId: tab.id, documentId, method, message, at: Date.now() })
+  const document = tab.live.find(({ id }) => id === documentId)
+  if (document?.answer === null || document === undefined) {
+    return Promise.reject(new Error(NO_RECEIVER))
+  }
+
+  return relay(tab, document, method)
+}
+
 // A request pinned to a document goes to that document only: one that is gone, or holds no relay, has no receiver. The
-// unpinned report request reaches the relay of the document the tab shows, which reports while it is shown.
+// unpinned report request reaches the relay of the document the tab shows, which reports while it is shown. Only the
+// command cases take a command.
 const sendMessage =
   (browser: IFakeBrowser) =>
   (tabId: number, message: unknown, options?: { readonly documentId?: string }): Promise<unknown> => {
@@ -247,9 +317,13 @@ const sendMessage =
       return askedToReport(browser, tab)
     }
 
-    assert.equal(message, WHATSAPP_STATE_REQUEST)
+    if (message === WHATSAPP_STATE_REQUEST) {
+      return askedForState(browser, tab, options.documentId)
+    }
 
-    return askedForState(browser, tab, options.documentId)
+    assert.ok(browser.relayCommand !== null, 'outside the command cases a document is asked only for its state')
+
+    return askedToRun(browser, browser.relayCommand, tab, options.documentId, message)
   }
 
 // What a Slack tab answers the relay probe (its relay of this load runs) and the identity read.
@@ -370,7 +444,7 @@ const whatsappNow = async (browser: IFakeBrowser): Promise<unknown> => {
 
 // Starts a worker of its own for the test on these tabs, with the clock at NOW and an empty pending queue (or one
 // holding queued), its native port ready and a listener attached, unless isListening is false: a worker with no listener
-// takes no status snapshot.
+// takes no status snapshot. Its relays take commands, answering as the observer does, only when takesCommands is set.
 const startWorker = async (
   context: TestContext,
   tabs: IFakeTab[],
@@ -378,7 +452,13 @@ const startWorker = async (
     slackTabs = [],
     queued = [],
     isListening = true,
-  }: { readonly slackTabs?: number[]; readonly queued?: readonly BridgeEvent[]; readonly isListening?: boolean } = {}
+    takesCommands = false,
+  }: {
+    readonly slackTabs?: number[]
+    readonly queued?: readonly BridgeEvent[]
+    readonly isListening?: boolean
+    readonly takesCommands?: boolean
+  } = {}
 ): Promise<IFakeBrowser> => {
   const factory = new IDBFactory()
 
@@ -401,6 +481,8 @@ const startWorker = async (
     posted: [],
     reportRequests: [],
     stateRequests: [],
+    commands: [],
+    relayCommand: takesCommands ? observerAnswers : null,
     injections: [],
     portMessages: chromeEvent(),
     runtimeMessages: chromeEvent(),
@@ -439,10 +521,13 @@ const reload = (tab: IFakeTab, id: string, token: string): IFakeDocument => {
   return next
 }
 
-// Sends a request on the native port, as the relay does, and answers the reply the service worker sends back.
-const ask = async (browser: IFakeBrowser, id: number, method: string, params: unknown): Promise<unknown> => {
-  emit(browser.portMessages, { type: 'request', id, method, params, deadline: DEADLINE })
+// Sends a request on the native port, as the relay does.
+const request = (browser: IFakeBrowser, id: number, method: string, params: unknown, deadline = DEADLINE): void => {
+  emit(browser.portMessages, { type: 'request', id, method, params, deadline })
+}
 
+// The reply the service worker sent to the request with that id, once it sent one.
+const replyTo = async (browser: IFakeBrowser, id: number): Promise<unknown> => {
   const isReply = (frame: unknown): boolean =>
     typeof frame === 'object' &&
     frame !== null &&
@@ -452,6 +537,19 @@ const ask = async (browser: IFakeBrowser, id: number, method: string, params: un
   await until(() => browser.posted.some(isReply))
 
   return browser.posted.find(isReply)
+}
+
+// Sends a request on the native port, as the relay does, and answers the reply the service worker sends back.
+const ask = async (
+  browser: IFakeBrowser,
+  id: number,
+  method: string,
+  params: unknown,
+  deadline = DEADLINE
+): Promise<unknown> => {
+  request(browser, id, method, params, deadline)
+
+  return replyTo(browser, id)
 }
 
 const SLACK_CALL = { account: SLACK_ACCOUNT, method: 'conversations.history', params: { channel: 'D0EXAMPLE1' } }
@@ -1001,5 +1099,813 @@ describe('[extension] WhatsApp dispatch - lifecycle', () => {
     // Assert
     assert.equal(typeof Reflect.get(reply as object, 'error'), 'string')
     assert.deepEqual(whatsapp, [])
+  })
+})
+
+const resultOf = (id: number, result: unknown): object => ({ type: 'reply', id, result })
+
+const errorOf = (id: number, error: string): object => ({ type: 'reply', id, error })
+
+const NO_WHATSAPP_TAB = { outcome: 'refused', refusal: 'no-whatsapp-tab' }
+const UNKNOWN_MESSAGE = { outcome: 'refused', refusal: 'unknown-message' }
+const PREPARED = (token: string): object => ({ outcome: 'prepared', messageId: PREPARED_ID, token })
+const SENT = { outcome: 'sent', timestamp: SENT_AT }
+
+// The relay's answer that carries the observer's answer.
+const relayed = (answer: object): object => ({ kind: 'answer', answer })
+
+// The commands handed over, without their messages and times.
+const handed = (browser: IFakeBrowser): object[] =>
+  browser.commands.map(({ tabId, documentId, method }) => ({ tabId, documentId, method }))
+
+// A relay that answers the first command it gets with what answer gives, and every later one as the observer does.
+const answeringOnce = (answer: () => Promise<unknown>): CommandRelay => {
+  let isAnswered = false
+
+  return (tab, document, method) => {
+    if (isAnswered) {
+      return observerAnswers(tab, document, method)
+    }
+
+    isAnswered = true
+
+    return answer()
+  }
+}
+
+// The tab's page crashes or is discarded: no document of it answers any more.
+const die = (tab: IFakeTab): void => {
+  tab.shown = null
+  tab.live = []
+}
+
+// How long after it was asked the account's next prepare was handed over: 0 when at once, at least a gap's minimum when
+// it waited for one. Its reply is awaited.
+const nextPrepareDelay = async (context: TestContext, browser: IFakeBrowser, id: number): Promise<number> => {
+  const asked = Date.now()
+  request(browser, id, 'whatsappSendPrepare', PREPARE)
+  await settled()
+  await tick(context, GAP_MAX_MS)
+  await replyTo(browser, id)
+
+  return (browser.commands.at(-1)?.at ?? Number.NaN) - asked
+}
+
+// Starts a worker whose relays take commands (startWorker).
+const startCommandWorker = (context: TestContext, tabs: IFakeTab[]): Promise<IFakeBrowser> =>
+  startWorker(context, tabs, { takesCommands: true })
+
+const cancel = (browser: IFakeBrowser, id: number): void => {
+  emit(browser.portMessages, { type: 'cancel', id })
+}
+
+describe('[extension] WhatsApp dispatch - commands', () => {
+  it('should send a command only to the document of a tab ready as the account', async (context) => {
+    // Arrange - tab 41 is ready as another account, tab 42 signed out, tab 43 ready as Leo Novak
+    const browser = await startCommandWorker(context, [
+      whatsappTab(41, fakeDocument('DOC-1', observed(TOKEN_1, true, EMMA_LEE))),
+      whatsappTab(42, fakeDocument('DOC-2', { state: 'observed', token: TOKEN_2, capture: { state: 'signed-out' } })),
+      whatsappTab(43, fakeDocument('DOC-3', observed(TOKEN_3))),
+    ])
+
+    await whatsappNow(browser)
+
+    // Act
+    const reply = await ask(browser, 1, 'whatsappSendPrepare', PREPARE)
+
+    // Assert
+    assert.deepEqual(reply, resultOf(1, PREPARED(TOKEN_3)))
+    assert.deepEqual(handed(browser), [{ tabId: 43, documentId: 'DOC-3', method: 'whatsappSendPrepare' }])
+
+    const [command] = browser.commands
+    assert.ok(command !== undefined)
+    const { id, ...message } = command.message as Record<string, unknown>
+    assert.match(String(id), /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/u)
+
+    assert.deepEqual(message, {
+      kind: 'whatsapp-command',
+      deadline: DEADLINE,
+      command: { method: 'whatsappSendPrepare', params: PREPARE },
+    })
+  })
+
+  it('should answer no-whatsapp-tab, handing nothing over, when no tab is ready as the account', async (context) => {
+    // Arrange
+    const browser = await startCommandWorker(context, [
+      whatsappTab(41, fakeDocument('DOC-1', observed(TOKEN_1, true, EMMA_LEE))),
+    ])
+
+    await whatsappNow(browser)
+
+    // Act
+    const prepared = await ask(browser, 1, 'whatsappSendPrepare', PREPARE)
+    const history = await ask(browser, 2, 'whatsappHistory', HISTORY)
+
+    // Assert
+    assert.deepEqual([prepared, history], [resultOf(1, NO_WHATSAPP_TAB), resultOf(2, NO_WHATSAPP_TAB)])
+    assert.deepEqual(browser.commands, [])
+  })
+
+  it('should answer other-account from the one document it asked, and ask no other', async (context) => {
+    // Arrange - both tabs are recorded as Leo Novak; tab 41's page has signed in as someone else since
+    const browser = await startCommandWorker(context, [
+      whatsappTab(41, fakeDocument('DOC-1', observed(TOKEN_1))),
+      whatsappTab(42, fakeDocument('DOC-2', observed(TOKEN_2))),
+    ])
+
+    await whatsappNow(browser)
+    const otherAccount = relayed({ outcome: 'refused', refusal: 'other-account' })
+    browser.relayCommand = (tab, document, method) =>
+      tab.id === 41 ? Promise.resolve(otherAccount) : observerAnswers(tab, document, method)
+
+    // Act
+    const prepared = await ask(browser, 1, 'whatsappSendPrepare', PREPARE)
+    const history = await ask(browser, 2, 'whatsappHistory', HISTORY)
+
+    // Assert
+    assert.deepEqual(prepared, resultOf(1, { outcome: 'refused', refusal: 'other-account' }))
+    assert.deepEqual(history, resultOf(2, { outcome: 'refused', refusal: 'other-account' }))
+
+    assert.deepEqual(handed(browser), [
+      { tabId: 41, documentId: 'DOC-1', method: 'whatsappSendPrepare' },
+      { tabId: 41, documentId: 'DOC-1', method: 'whatsappHistory' },
+    ])
+  })
+
+  it('should hand nothing over when the caller cancels or the deadline passes during the gap', async (context) => {
+    for (const giveUp of ['cancels', 'deadline passes'] as const) {
+      await context.test(`the caller's ${giveUp === 'cancels' ? 'cancel' : 'deadline'}`, async (variant) => {
+        // Arrange - a prepare the page took leaves a gap
+        const browser = await startCommandWorker(variant, [whatsappTab(41, fakeDocument('DOC-1', observed(TOKEN_1)))])
+        await whatsappNow(browser)
+        await ask(browser, 1, 'whatsappSendPrepare', PREPARE)
+
+        // Act
+        if (giveUp === 'cancels') {
+          request(browser, 2, 'whatsappSendPrepare', PREPARE)
+          await settled()
+          cancel(browser, 2)
+        } else {
+          request(browser, 2, 'whatsappSendPrepare', PREPARE, NOW + GAP_MIN_MS - 1)
+        }
+
+        const reply = await replyTo(browser, 2)
+        await tick(variant, GAP_MAX_MS)
+
+        // Assert
+        assert.deepEqual(reply, errorOf(2, GAVE_UP))
+        assert.equal(browser.commands.length, 1)
+      })
+    }
+  })
+
+  it('should reject at the deadline, without a second attempt, when the page never answers a commit', async (context) => {
+    // Arrange - tab 42 is ready as the same account
+    const browser = await startCommandWorker(context, [
+      whatsappTab(41, fakeDocument('DOC-1', observed(TOKEN_1))),
+      whatsappTab(42, fakeDocument('DOC-2', observed(TOKEN_2))),
+    ])
+
+    await whatsappNow(browser)
+    browser.relayCommand = () => new Promise(() => undefined)
+
+    // Act
+    request(browser, 1, 'whatsappSendCommit', commitOf(TOKEN_1), NOW + 5_000)
+    await settled()
+    await tick(context, 5_000)
+    const reply = await replyTo(browser, 1)
+    await tick(context, GAP_MAX_MS)
+
+    // Assert
+    assert.deepEqual(
+      reply,
+      errorOf(
+        1,
+        "The WhatsApp page in tab 41 did not answer whatsappSendCommit by the caller's deadline, so whether the message was sent is unknown"
+      )
+    )
+
+    assert.deepEqual(handed(browser), [{ tabId: 41, documentId: 'DOC-1', method: 'whatsappSendCommit' }])
+  })
+
+  it("should reject an answer that does not read as the method's result", async (context) => {
+    const answers = [
+      {
+        name: 'no answer',
+        answer: undefined,
+        error: 'The WhatsApp relay in tab 41 answered whatsappContact with what does not read',
+      },
+      {
+        name: "an observer's answer the relay could not read",
+        answer: { kind: 'unreadable' },
+        error: 'The WhatsApp page in tab 41 answered whatsappContact with what does not read',
+      },
+      {
+        name: 'an empty name',
+        answer: relayed({ outcome: 'read', name: '', isMe: false }),
+        error: 'The WhatsApp page in tab 41 answered whatsappContact with what does not read',
+      },
+    ]
+
+    for (const { name, answer, error } of answers) {
+      await context.test(name, async (variant) => {
+        // Arrange
+        const browser = await startCommandWorker(variant, [whatsappTab(41, fakeDocument('DOC-1', observed(TOKEN_1)))])
+        await whatsappNow(browser)
+        browser.relayCommand = () => Promise.resolve(answer)
+
+        // Act
+        const reply = await ask(browser, 1, 'whatsappContact', CONTACT)
+
+        // Assert
+        assert.deepEqual(reply, errorOf(1, error))
+      })
+    }
+  })
+
+  it('should hand a commit only to the document whose observer reported its token', async (context) => {
+    // Arrange
+    const browser = await startCommandWorker(context, [
+      whatsappTab(41, fakeDocument('DOC-1', observed(TOKEN_1))),
+      whatsappTab(42, fakeDocument('DOC-2', observed(TOKEN_2))),
+    ])
+
+    await whatsappNow(browser)
+
+    // Act
+    const reply = await ask(browser, 1, 'whatsappSendCommit', commitOf(TOKEN_2))
+
+    // Assert
+    assert.deepEqual(reply, resultOf(1, SENT))
+    assert.deepEqual(handed(browser), [{ tabId: 42, documentId: 'DOC-2', method: 'whatsappSendCommit' }])
+    assert.deepEqual(browser.stateRequests.at(-1), { tabId: 42, documentId: 'DOC-2' })
+  })
+
+  it("should answer unknown-message, handing nothing over, when no open tab's page reported the token", async (context) => {
+    // Arrange
+    const browser = await startCommandWorker(context, [whatsappTab(41, fakeDocument('DOC-1', observed(TOKEN_1)))])
+    await whatsappNow(browser)
+
+    // Act
+    const reply = await ask(browser, 1, 'whatsappSendCommit', commitOf(TOKEN_3))
+    await settled()
+
+    // Assert
+    assert.deepEqual(reply, resultOf(1, UNKNOWN_MESSAGE))
+    assert.deepEqual(browser.commands, [])
+    assert.deepEqual(browser.reportRequests, [41, 41])
+  })
+
+  it("should hand a commit to no other document when the token's document fails or never answers", async (context) => {
+    const outcomes = [
+      {
+        name: 'its page call failed',
+        answer: { kind: 'failed' },
+        error: 'The WhatsApp page in tab 41 failed whatsappSendCommit, so whether the message was sent is unknown',
+      },
+      {
+        name: 'it has no observer',
+        answer: { kind: 'no-observer' },
+        error:
+          'The WhatsApp page in tab 41 has no observer to run whatsappSendCommit, so whether the message was sent is unknown',
+      },
+      {
+        name: 'it never answers',
+        answer: null,
+        error:
+          "The WhatsApp page in tab 41 did not answer whatsappSendCommit by the caller's deadline, so whether the message was sent is unknown",
+      },
+    ]
+
+    for (const { name, answer, error } of outcomes) {
+      await context.test(name, async (variant) => {
+        // Arrange - tab 42 is ready as the same account
+        const browser = await startCommandWorker(variant, [
+          whatsappTab(41, fakeDocument('DOC-1', observed(TOKEN_1))),
+          whatsappTab(42, fakeDocument('DOC-2', observed(TOKEN_2))),
+        ])
+
+        await whatsappNow(browser)
+        browser.relayCommand = () => (answer === null ? new Promise(() => undefined) : Promise.resolve(answer))
+
+        // Act
+        request(browser, 1, 'whatsappSendCommit', commitOf(TOKEN_1))
+        await settled()
+        await tick(variant, DEADLINE - NOW)
+        const reply = await replyTo(browser, 1)
+
+        // Assert
+        assert.deepEqual(reply, errorOf(1, error))
+        assert.deepEqual(handed(browser), [{ tabId: 41, documentId: 'DOC-1', method: 'whatsappSendCommit' }])
+      })
+    }
+  })
+
+  it('should reject a prepared answer whose token is not the one its page reported', async (context) => {
+    // Arrange
+    const browser = await startCommandWorker(context, [whatsappTab(41, fakeDocument('DOC-1', observed(TOKEN_1)))])
+    await whatsappNow(browser)
+    browser.relayCommand = () => Promise.resolve(relayed(PREPARED(TOKEN_2)))
+
+    // Act
+    const reply = await ask(browser, 1, 'whatsappSendPrepare', PREPARE)
+
+    // Assert
+    assert.deepEqual(reply, errorOf(1, "The WhatsApp page in tab 41 answered a preparation under another page's token"))
+  })
+
+  it('should leave a gap after a prepare and after a commit the page took, and none after a refused or broken one', async (context) => {
+    const outcomes = [
+      {
+        name: 'a prepared message',
+        method: 'whatsappSendPrepare',
+        params: PREPARE,
+        answer: relayed(PREPARED(TOKEN_1)),
+        waits: true,
+      },
+      {
+        name: 'a sent commit',
+        method: 'whatsappSendCommit',
+        params: commitOf(TOKEN_1),
+        answer: relayed(SENT),
+        waits: true,
+      },
+      {
+        name: 'an unconfirmed commit',
+        method: 'whatsappSendCommit',
+        params: commitOf(TOKEN_1),
+        answer: relayed({ outcome: 'unconfirmed', code: 'result-not-ok' }),
+        waits: true,
+      },
+      {
+        name: 'a refused commit',
+        method: 'whatsappSendCommit',
+        params: commitOf(TOKEN_1),
+        answer: relayed({ outcome: 'refused', refusal: 'chat-mismatch' }),
+        waits: false,
+      },
+      {
+        name: 'a broken commit',
+        method: 'whatsappSendCommit',
+        params: commitOf(TOKEN_1),
+        answer: relayed({ outcome: 'broken', drift: 'send' }),
+        waits: false,
+      },
+      {
+        name: 'a refused prepare',
+        method: 'whatsappSendPrepare',
+        params: PREPARE,
+        answer: relayed({ outcome: 'refused', refusal: 'not-connected' }),
+        waits: false,
+      },
+    ]
+
+    for (const { name, method, params, answer, waits } of outcomes) {
+      await context.test(name, async (variant) => {
+        // Arrange
+        const browser = await startCommandWorker(variant, [whatsappTab(41, fakeDocument('DOC-1', observed(TOKEN_1)))])
+        await whatsappNow(browser)
+        browser.relayCommand = answeringOnce(() => Promise.resolve(answer))
+
+        // Act
+        const first = await ask(browser, 1, method, params)
+        const delay = await nextPrepareDelay(variant, browser, 2)
+
+        // Assert
+        assert.deepEqual(first, resultOf(1, Reflect.get(answer, 'answer')))
+        assert.ok(waits ? delay >= GAP_MIN_MS : delay === 0, `the next prepare went ${delay} ms after it was asked`)
+      })
+    }
+  })
+
+  it('should answer history and contact reads without waiting for a gap after a send', async (context) => {
+    // Arrange - a sent commit leaves a gap
+    const browser = await startCommandWorker(context, [whatsappTab(41, fakeDocument('DOC-1', observed(TOKEN_1)))])
+    await whatsappNow(browser)
+    await ask(browser, 1, 'whatsappSendCommit', commitOf(TOKEN_1))
+
+    // Act
+    const history = await ask(browser, 2, 'whatsappHistory', HISTORY)
+    const contact = await ask(browser, 3, 'whatsappContact', CONTACT)
+
+    // Assert
+    assert.deepEqual(history, resultOf(2, { outcome: 'read', messages: [MESSAGE], next: null }))
+    assert.deepEqual(contact, resultOf(3, { outcome: 'read', name: 'Emma Lee', isMe: false }))
+    assert.deepEqual(
+      browser.commands.map(({ at }) => at),
+      [NOW, NOW, NOW]
+    )
+  })
+
+  it("should answer a prepare no-whatsapp-tab, leaving a gap, when Chrome rejects its hand-off, and record the tab's page again from the report that follows", async (context) => {
+    // Arrange - Chrome rejects the command while the document is still there (amendment 3 C2)
+    const browser = await startCommandWorker(context, [whatsappTab(41, fakeDocument('DOC-1', observed(TOKEN_1)))])
+    await whatsappNow(browser)
+    browser.relayCommand = answeringOnce(() => Promise.reject(new Error(NO_RECEIVER)))
+
+    // Act
+    const reply = await ask(browser, 1, 'whatsappSendPrepare', PREPARE)
+    const listed = await whatsappNow(browser)
+    const delay = await nextPrepareDelay(context, browser, 2)
+
+    // Assert
+    assert.deepEqual(reply, resultOf(1, NO_WHATSAPP_TAB))
+    assert.deepEqual(listed, [readyStatus(41)])
+    assert.deepEqual(browser.reportRequests, [41, 41])
+    assert.ok(delay >= GAP_MIN_MS, `the next prepare went ${delay} ms after it was asked`)
+    assert.deepEqual(await replyTo(browser, 2), resultOf(2, PREPARED(TOKEN_1)))
+  })
+
+  it('should answer no-whatsapp-tab without a gap when no open tab holds a recorded ready page, and ask every WhatsApp tab to report', async (context) => {
+    // Arrange - neither tab's document has answered yet
+    const first = fakeDocument('DOC-1', observed(TOKEN_1))
+    first.isHeld = true
+    const second = fakeDocument('DOC-2', observed(TOKEN_2))
+    second.isHeld = true
+    const firstTab = whatsappTab(41, first)
+    const browser = await startCommandWorker(context, [firstTab, whatsappTab(42, second)])
+
+    // Act
+    const reply = await ask(browser, 1, 'whatsappSendPrepare', PREPARE)
+    await settled()
+    const asked = [...browser.reportRequests]
+    first.isHeld = false
+    report(browser, firstTab, first)
+    await settled()
+    const delay = await nextPrepareDelay(context, browser, 2)
+
+    // Assert
+    assert.deepEqual(reply, resultOf(1, NO_WHATSAPP_TAB))
+    assert.deepEqual(asked, [41, 42, 41, 42])
+    assert.equal(delay, 0)
+    assert.deepEqual(handed(browser), [{ tabId: 41, documentId: 'DOC-1', method: 'whatsappSendPrepare' }])
+  })
+
+  it("should answer unknown-message, hand nothing over and leave no gap when the token's document is rejected by the commit's request", async (context) => {
+    // Arrange - tab 41's renderer crashes after its page prepared the message; tab 42 is ready as the same account
+    const crashed = whatsappTab(41, fakeDocument('DOC-1', observed(TOKEN_1)))
+    const browser = await startCommandWorker(context, [
+      crashed,
+      whatsappTab(42, fakeDocument('DOC-2', observed(TOKEN_2))),
+    ])
+    await whatsappNow(browser)
+    die(crashed)
+
+    // Act
+    const reply = await ask(browser, 1, 'whatsappSendCommit', commitOf(TOKEN_1))
+    const listed = await whatsappNow(browser)
+    const delay = await nextPrepareDelay(context, browser, 2)
+
+    // Assert
+    assert.deepEqual(reply, resultOf(1, UNKNOWN_MESSAGE))
+    assert.deepEqual(listed, [readyStatus(42)])
+    assert.equal(delay, 0)
+    assert.deepEqual(handed(browser), [{ tabId: 42, documentId: 'DOC-2', method: 'whatsappSendPrepare' }])
+  })
+
+  it("should answer unknown-message, handing nothing over, when the token's document answers not-shown to the commit's request", async (context) => {
+    // Arrange - the tab navigated away and its document went into the back/forward cache
+    const document = fakeDocument('DOC-1', observed(TOKEN_1))
+    const browser = await startCommandWorker(context, [whatsappTab(41, document)])
+    await whatsappNow(browser)
+    document.isHidden = true
+
+    // Act
+    const reply = await ask(browser, 1, 'whatsappSendCommit', commitOf(TOKEN_1))
+
+    // Assert
+    assert.deepEqual(reply, resultOf(1, UNKNOWN_MESSAGE))
+    assert.deepEqual(browser.commands, [])
+    assert.deepEqual(await whatsappNow(browser), [])
+  })
+
+  it("should hand nothing over and leave no gap when the caller cancels or the deadline passes while the commit's request never settles", async (context) => {
+    for (const giveUp of ['cancels', 'deadline passes'] as const) {
+      await context.test(`the caller's ${giveUp === 'cancels' ? 'cancel' : 'deadline'}`, async (variant) => {
+        // Arrange - the recorded document holds every request from now on
+        const document = fakeDocument('DOC-1', observed(TOKEN_1))
+        const browser = await startCommandWorker(variant, [whatsappTab(41, document)])
+        await whatsappNow(browser)
+        document.isHeld = true
+
+        // Act
+        if (giveUp === 'cancels') {
+          request(browser, 1, 'whatsappSendCommit', commitOf(TOKEN_1))
+          await settled()
+          cancel(browser, 1)
+        } else {
+          request(browser, 1, 'whatsappSendCommit', commitOf(TOKEN_1), NOW + 5_000)
+          await settled()
+          await tick(variant, 5_000)
+        }
+
+        const reply = await replyTo(browser, 1)
+        const delay = await nextPrepareDelay(variant, browser, 2)
+
+        // Assert
+        assert.deepEqual(reply, errorOf(1, GAVE_UP))
+        assert.equal(delay, 0)
+        assert.deepEqual(handed(browser), [{ tabId: 41, documentId: 'DOC-1', method: 'whatsappSendPrepare' }])
+      })
+    }
+  })
+
+  it("should reply that the outcome is unknown, try no other document and leave a gap when Chrome rejects the commit's own hand-off after its request was answered", async (context) => {
+    // Arrange - tab 41's page dies as the commit reaches it; tab 42 is ready as the same account
+    const dying = whatsappTab(41, fakeDocument('DOC-1', observed(TOKEN_1)))
+    const browser = await startCommandWorker(context, [
+      dying,
+      whatsappTab(42, fakeDocument('DOC-2', observed(TOKEN_2))),
+    ])
+    await whatsappNow(browser)
+
+    browser.relayCommand = (tab, document, method) => {
+      if (method !== 'whatsappSendCommit') {
+        return observerAnswers(tab, document, method)
+      }
+
+      die(tab)
+
+      return Promise.reject(new Error(NO_RECEIVER))
+    }
+
+    // Act
+    const reply = await ask(browser, 1, 'whatsappSendCommit', commitOf(TOKEN_1))
+    const delay = await nextPrepareDelay(context, browser, 2)
+
+    // Assert
+    assert.deepEqual(
+      reply,
+      errorOf(
+        1,
+        'The WhatsApp page in tab 41 went away after the commit was handed to it, so whether the message was sent is unknown'
+      )
+    )
+
+    assert.ok(delay >= GAP_MIN_MS, `the next prepare went ${delay} ms after it was asked`)
+    assert.deepEqual(browser.reportRequests.slice(2), [41])
+
+    assert.deepEqual(handed(browser), [
+      { tabId: 41, documentId: 'DOC-1', method: 'whatsappSendCommit' },
+      { tabId: 42, documentId: 'DOC-2', method: 'whatsappSendPrepare' },
+    ])
+  })
+
+  it("should commit only to the document whose record holds the token, never to the account's other tab", async (context) => {
+    // Arrange - tab 41's page prepares the message, then the tab reloads into DOC-2; tab 42 is ready as the same account
+    const tab = whatsappTab(41, fakeDocument('DOC-1', observed(TOKEN_1)))
+    const browser = await startCommandWorker(context, [tab, whatsappTab(42, fakeDocument('DOC-3', observed(TOKEN_3)))])
+    await whatsappNow(browser)
+    const prepared = await ask(browser, 1, 'whatsappSendPrepare', PREPARE)
+    const next = reload(tab, 'DOC-2', TOKEN_2)
+    updated(browser, tab, { status: 'loading' })
+    report(browser, tab, next)
+    await settled()
+
+    // Act
+    const reply = await ask(browser, 2, 'whatsappSendCommit', commitOf(TOKEN_1))
+
+    // Assert
+    assert.deepEqual(prepared, resultOf(1, PREPARED(TOKEN_1)))
+    assert.deepEqual(reply, resultOf(2, UNKNOWN_MESSAGE))
+    assert.deepEqual(handed(browser), [{ tabId: 41, documentId: 'DOC-1', method: 'whatsappSendPrepare' }])
+  })
+
+  it('should answer a history read no-whatsapp-tab when its hand-off is rejected, and ask the tab again', async (context) => {
+    // Arrange - the tab's renderer crashes as the read reaches it
+    const tab = whatsappTab(41, fakeDocument('DOC-1', observed(TOKEN_1)))
+    const browser = await startCommandWorker(context, [tab])
+    await whatsappNow(browser)
+
+    browser.relayCommand = (crashed) => {
+      die(crashed)
+
+      return Promise.reject(new Error(NO_RECEIVER))
+    }
+
+    // Act
+    const reply = await ask(browser, 1, 'whatsappHistory', HISTORY)
+
+    // Assert
+    assert.deepEqual(reply, resultOf(1, NO_WHATSAPP_TAB))
+    assert.deepEqual(browser.reportRequests, [41, 41])
+    assert.deepEqual(await whatsappNow(browser), [])
+  })
+
+  it('should keep taking commands in a WhatsApp tab while a request raised by its URL change never settles', async (context) => {
+    // Arrange - the page changes its URL in the same document, which now holds every state request
+    const document = fakeDocument('DOC-1', observed(TOKEN_1))
+    const tab = whatsappTab(41, document)
+    const browser = await startCommandWorker(context, [tab])
+    await whatsappNow(browser)
+    document.isHeld = true
+    tab.url = `${WHATSAPP_ORIGIN}/send`
+    updated(browser, tab, { url: tab.url })
+
+    // Act
+    const prepared = await ask(browser, 1, 'whatsappSendPrepare', PREPARE)
+    const history = await ask(browser, 2, 'whatsappHistory', HISTORY)
+
+    // Assert
+    assert.deepEqual(prepared, resultOf(1, PREPARED(TOKEN_1)))
+    assert.deepEqual(history, resultOf(2, { outcome: 'read', messages: [MESSAGE], next: null }))
+
+    assert.deepEqual(handed(browser), [
+      { tabId: 41, documentId: 'DOC-1', method: 'whatsappSendPrepare' },
+      { tabId: 41, documentId: 'DOC-1', method: 'whatsappHistory' },
+    ])
+  })
+
+  it('should send through the other tab of the account once the tab that prepared a message died before its commit', async (context) => {
+    // Arrange - both tabs are ready as Leo Novak (amendment 3 sequence 12)
+    const first = whatsappTab(41, fakeDocument('DOC-1', observed(TOKEN_1)))
+    const browser = await startCommandWorker(context, [
+      first,
+      whatsappTab(42, fakeDocument('DOC-3', observed(TOKEN_3))),
+    ])
+    await whatsappNow(browser)
+
+    // Act - D1 prepares, its renderer crashes, the commit is refused, and the app prepares and commits again
+    const prepared = await ask(browser, 1, 'whatsappSendPrepare', PREPARE)
+    die(first)
+    request(browser, 2, 'whatsappSendCommit', commitOf(TOKEN_1))
+    await settled()
+    await tick(context, GAP_MAX_MS)
+    const refused = await replyTo(browser, 2)
+    const preparedAgain = await ask(browser, 3, 'whatsappSendPrepare', PREPARE)
+    request(browser, 4, 'whatsappSendCommit', commitOf(TOKEN_3))
+    await settled()
+    await tick(context, GAP_MAX_MS)
+    const sent = await replyTo(browser, 4)
+
+    // Assert
+    assert.deepEqual(
+      [prepared, refused, preparedAgain, sent],
+      [resultOf(1, PREPARED(TOKEN_1)), resultOf(2, UNKNOWN_MESSAGE), resultOf(3, PREPARED(TOKEN_3)), resultOf(4, SENT)]
+    )
+
+    assert.deepEqual(handed(browser), [
+      { tabId: 41, documentId: 'DOC-1', method: 'whatsappSendPrepare' },
+      { tabId: 42, documentId: 'DOC-3', method: 'whatsappSendPrepare' },
+      { tabId: 42, documentId: 'DOC-3', method: 'whatsappSendCommit' },
+    ])
+
+    assert.deepEqual(await whatsappNow(browser), [readyStatus(42)])
+  })
+
+  it("should hand nothing over and leave no gap when the caller's deadline passes between the answer to the commit's request and its hand-off", async (context) => {
+    // Arrange - the recorded document holds the commit's request until the test releases it
+    const document = fakeDocument('DOC-1', observed(TOKEN_1))
+    const browser = await startCommandWorker(context, [whatsappTab(41, document)])
+    await whatsappNow(browser)
+    document.isHeld = true
+    request(browser, 1, 'whatsappSendCommit', commitOf(TOKEN_1), NOW + 5_000)
+    await settled()
+    const held = browser.heldStates.at(-1)
+    assert.ok(held !== undefined)
+
+    // Act - the clock reaches the deadline before any timer runs, and then the document answers
+    context.mock.timers.setTime(NOW + 5_000)
+    held.release()
+    const reply = await replyTo(browser, 1)
+    const delay = await nextPrepareDelay(context, browser, 2)
+
+    // Assert
+    assert.deepEqual(reply, errorOf(1, GAVE_UP))
+    assert.equal(delay, 0)
+    assert.deepEqual(handed(browser), [{ tabId: 41, documentId: 'DOC-1', method: 'whatsappSendPrepare' }])
+  })
+
+  it('should leave a gap after a prepare whose answer does not read, names another token or comes after the deadline', async (context) => {
+    const outcomes = [
+      {
+        name: 'no answer from the relay',
+        answer: () => Promise.resolve(undefined),
+        answeredAfter: 0,
+        error: 'The WhatsApp relay in tab 41 answered whatsappSendPrepare with what does not read',
+      },
+      {
+        name: "an observer's answer the relay could not read",
+        answer: () => Promise.resolve({ kind: 'unreadable' }),
+        answeredAfter: 0,
+        error: 'The WhatsApp page in tab 41 answered whatsappSendPrepare with what does not read',
+      },
+      {
+        name: 'a prepared answer with no token',
+        answer: () => Promise.resolve(relayed({ outcome: 'prepared', messageId: PREPARED_ID })),
+        answeredAfter: 0,
+        error: 'The WhatsApp page in tab 41 answered whatsappSendPrepare with what does not read',
+      },
+      {
+        name: "a preparation under another page's token",
+        answer: () => Promise.resolve(relayed(PREPARED(TOKEN_2))),
+        answeredAfter: 0,
+        error: "The WhatsApp page in tab 41 answered a preparation under another page's token",
+      },
+      {
+        name: 'no answer by the deadline',
+        answer: () => new Promise(() => undefined),
+        answeredAfter: 5_000,
+        error: "The WhatsApp page in tab 41 did not answer whatsappSendPrepare by the caller's deadline",
+      },
+    ]
+
+    for (const { name, answer, answeredAfter, error } of outcomes) {
+      await context.test(name, async (variant) => {
+        // Arrange
+        const browser = await startCommandWorker(variant, [whatsappTab(41, fakeDocument('DOC-1', observed(TOKEN_1)))])
+        await whatsappNow(browser)
+        browser.relayCommand = answeringOnce(answer)
+
+        // Act
+        request(browser, 1, 'whatsappSendPrepare', PREPARE, NOW + 5_000)
+        await settled()
+        await tick(variant, answeredAfter)
+        const reply = await replyTo(browser, 1)
+        const delay = await nextPrepareDelay(variant, browser, 2)
+
+        // Assert
+        assert.deepEqual(reply, errorOf(1, error))
+        assert.ok(delay >= GAP_MIN_MS, `the next prepare went ${delay} ms after it was asked`)
+      })
+    }
+  })
+
+  it("should refuse a prepare whose document's record was replaced while it waited for its gap, handing nothing over and leaving no gap", async (context) => {
+    // Arrange - a prepare the page took leaves a gap, and the next prepare selects DOC-1 and waits for it
+    const tab = whatsappTab(41, fakeDocument('DOC-1', observed(TOKEN_1)))
+    const browser = await startCommandWorker(context, [tab])
+    await whatsappNow(browser)
+    await ask(browser, 1, 'whatsappSendPrepare', PREPARE)
+    request(browser, 2, 'whatsappSendPrepare', PREPARE)
+    await settled()
+
+    // Act - the tab shows DOC-2 while DOC-1 can still answer, DOC-2's answer replaces the record, and the gap ends
+    const next = fakeDocument('DOC-2', observed(TOKEN_2))
+    tab.shown = next
+    tab.live = [...tab.live, next]
+    report(browser, tab, next)
+    await settled()
+    await tick(context, GAP_MAX_MS)
+    const reply = await replyTo(browser, 2)
+    const delay = await nextPrepareDelay(context, browser, 3)
+
+    // Assert
+    assert.deepEqual(reply, resultOf(2, NO_WHATSAPP_TAB))
+    assert.equal(delay, 0)
+
+    assert.deepEqual(handed(browser), [
+      { tabId: 41, documentId: 'DOC-1', method: 'whatsappSendPrepare' },
+      { tabId: 41, documentId: 'DOC-2', method: 'whatsappSendPrepare' },
+    ])
+  })
+
+  it('should reject a commit whose answer does not read after its hand-off, try no other document and leave a gap', async (context) => {
+    const answers = [
+      {
+        name: 'no answer from the relay',
+        answer: undefined,
+        error:
+          'The WhatsApp relay in tab 41 answered whatsappSendCommit with what does not read, so whether the message was sent is unknown',
+      },
+      {
+        name: "an observer's answer the relay could not read",
+        answer: { kind: 'unreadable' },
+        error:
+          'The WhatsApp page in tab 41 answered whatsappSendCommit with what does not read, so whether the message was sent is unknown',
+      },
+      {
+        name: 'a sent answer whose time does not read',
+        answer: relayed({ outcome: 'sent', timestamp: 'noon' }),
+        error:
+          'The WhatsApp page in tab 41 answered whatsappSendCommit with what does not read, so whether the message was sent is unknown',
+      },
+    ]
+
+    for (const { name, answer, error } of answers) {
+      await context.test(name, async (variant) => {
+        // Arrange - tab 42 is ready as the same account
+        const browser = await startCommandWorker(variant, [
+          whatsappTab(41, fakeDocument('DOC-1', observed(TOKEN_1))),
+          whatsappTab(42, fakeDocument('DOC-2', observed(TOKEN_2))),
+        ])
+
+        await whatsappNow(browser)
+        browser.relayCommand = answeringOnce(() => Promise.resolve(answer))
+
+        // Act
+        const reply = await ask(browser, 1, 'whatsappSendCommit', commitOf(TOKEN_1))
+        const delay = await nextPrepareDelay(variant, browser, 2)
+
+        // Assert
+        assert.deepEqual(reply, errorOf(1, error))
+        assert.ok(delay >= GAP_MIN_MS, `the next prepare went ${delay} ms after it was asked`)
+
+        assert.deepEqual(handed(browser), [
+          { tabId: 41, documentId: 'DOC-1', method: 'whatsappSendCommit' },
+          { tabId: 41, documentId: 'DOC-1', method: 'whatsappSendPrepare' },
+        ])
+      })
+    }
   })
 })

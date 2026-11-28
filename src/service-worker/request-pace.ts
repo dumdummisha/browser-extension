@@ -21,8 +21,12 @@ export const paceGapMs = (random: () => number): number => {
 }
 
 // Sends one request to the site a turn acts on, in a turn of the pace (RequestPace). request must hand its command to
-// the page with nothing asynchronous before the hand-off, from which the request counts as sent, and calls unsent only
-// when the page's result, read, shows that nothing went out to the site.
+// the page with nothing asynchronous before the hand-off, or check the caller again after its last asynchronous step and
+// call unsent before it gives up (a WhatsApp commit checks its document first), so the caller's deadline and cancel hold
+// at the hand-off itself. From the hand-off the request counts as sent. It calls unsent only when it handed the page
+// nothing, or when the result, read, shows that the site was handed nothing and nothing was kept. A WhatsApp prepare
+// sends nothing to WhatsApp but keeps a message in the page, so it counts like a sent request: that bounds how many
+// prepared messages a window holds (whatsapp-capture.ts PREPARED_SEND_WINDOW_MS).
 export type PacedSend = <TResult>(request: (unsent: () => void) => Promise<TResult>) => Promise<TResult>
 
 // Waits ms, or less once signal aborts.
@@ -44,16 +48,17 @@ interface IPacedKey {
   lastEnd: number
 }
 
-// Requests to the site a turn acts on at a person's pace, one queue per key (Slack passes a workspace's team id): a
-// key's turns run one at a time in the order they came, and each request a turn sends waits until a fresh gap
-// (drawGapMs) has passed since the key's previous request to the site ended, or goes at once when it has passed
-// already. A request handed to the page leaves a gap behind unless its result shows that nothing went out (a page
-// signed in as another account, a failure before the fetch); one that failed or whose result did not read after the
-// hand-off may have gone out, so it leaves one, and is never sent again. Whether the caller still waits is checked before the turn, at the end of the gap and so right
-// before the request hands its command to the page, which is the send boundary, after every asynchronous step of the
-// turn (finding the page, an upload's ticket). A request whose caller gave up by then is dropped; one whose deadline
-// would pass before its gap ends is dropped at once. A cancel after the hand-off is too late; the page checks only the
-// deadline once more, right before its fetch.
+// Requests to the site a turn acts on at a person's pace, one queue per key (Slack passes a workspace's team id,
+// WhatsApp an account's id): a key's turns run one at a time in the order they came, and each request a turn sends waits
+// until a fresh gap (drawGapMs) has passed since the key's previous request to the site ended, or goes at once when it
+// has passed already. A request handed to the page leaves a gap behind unless its result shows that the page did
+// nothing (a page signed in as another account, a failure before the fetch); one that failed or whose result did not
+// read after the hand-off may have gone out, so it leaves one, and is never sent again. Whether the caller still waits
+// is checked before the turn, and at the end of the gap, after every asynchronous step of the turn (finding the page, an
+// upload's ticket), right before the request hands its command to the page, which is the send boundary; a request that
+// takes one more asynchronous step after the gap checks the caller again itself (PacedSend). A request whose caller gave
+// up by then is dropped; one whose deadline would pass before its gap ends is dropped at once. A cancel after the
+// hand-off is too late; the page checks only the deadline once more, right before it acts.
 export class RequestPace {
   private readonly keys = new Map<string, IPacedKey>()
 
